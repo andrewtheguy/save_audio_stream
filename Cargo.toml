@@ -10,3 +10,4 @@ hound = "3.5"
 chrono = "0.4"
 httpdate = "1.0"
 clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"

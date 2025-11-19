@@ -1,13 +1,17 @@
-use clap::Parser;
 use chrono::{DateTime, Utc};
+use clap::Parser;
+use crossbeam_channel::{bounded, Receiver, Sender};
 use hound::{WavSpec, WavWriter};
 use reqwest::blocking::Client;
-use std::io::{Cursor, Read};
+use std::io::{Read, Seek, SeekFrom};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
@@ -21,6 +25,87 @@ struct Args {
     /// Duration in seconds to record
     #[arg(short, long, default_value = "30")]
     duration: u64,
+}
+
+/// A streaming media source that reads from a channel
+struct StreamingSource {
+    receiver: Receiver<Vec<u8>>,
+    buffer: Vec<u8>,
+    position: usize,
+    total_bytes: Arc<AtomicU64>,
+    is_finished: bool,
+}
+
+impl StreamingSource {
+    fn new(receiver: Receiver<Vec<u8>>, total_bytes: Arc<AtomicU64>) -> Self {
+        Self {
+            receiver,
+            buffer: Vec::new(),
+            position: 0,
+            total_bytes,
+            is_finished: false,
+        }
+    }
+
+    fn fill_buffer(&mut self) {
+        // Try to receive more data without blocking if buffer is getting low
+        while self.position >= self.buffer.len() && !self.is_finished {
+            match self.receiver.recv() {
+                Ok(chunk) => {
+                    if chunk.is_empty() {
+                        self.is_finished = true;
+                        break;
+                    }
+                    // Reset buffer with new chunk
+                    self.buffer = chunk;
+                    self.position = 0;
+                }
+                Err(_) => {
+                    // Channel closed
+                    self.is_finished = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+impl Read for StreamingSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.fill_buffer();
+
+        if self.position >= self.buffer.len() {
+            return Ok(0); // EOF
+        }
+
+        let available = self.buffer.len() - self.position;
+        let to_read = std::cmp::min(available, buf.len());
+        buf[..to_read].copy_from_slice(&self.buffer[self.position..self.position + to_read]);
+        self.position += to_read;
+
+        Ok(to_read)
+    }
+}
+
+impl Seek for StreamingSource {
+    fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+        // Streaming source doesn't support seeking
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Seeking not supported for streaming source",
+        ))
+    }
+}
+
+impl MediaSource for StreamingSource {
+    fn is_seekable(&self) -> bool {
+        false
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        // Return current known length
+        Some(self.total_bytes.load(Ordering::Relaxed))
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -81,53 +166,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "audio/mpeg" | "audio/mp3" => "mp3",
         "audio/aac" | "audio/aacp" | "audio/x-aac" => "aac",
         _ => {
-            println!("Warning: Unknown content type '{}', assuming MP3", content_type);
+            println!(
+                "Warning: Unknown content type '{}', assuming MP3",
+                content_type
+            );
             "mp3"
         }
     };
 
     println!("Detected codec: {}", codec_hint);
-    println!("Downloading audio data...");
 
-    // Buffer audio data for the specified duration
-    let mut audio_buffer = Vec::new();
-    let start_time = Instant::now();
-    let duration_limit = Duration::from_secs(args.duration);
+    // Create channel for streaming data
+    let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(100);
+    let total_bytes = Arc::new(AtomicU64::new(0));
+    let total_bytes_clone = Arc::clone(&total_bytes);
 
-    let mut reader = response;
-    let mut chunk = [0u8; 8192];
+    // Spawn download thread
+    let duration = args.duration;
+    let download_handle = thread::spawn(move || {
+        let start_time = Instant::now();
+        let duration_limit = Duration::from_secs(duration);
+        let mut reader = response;
+        let mut chunk = [0u8; 8192];
+        let mut bytes_downloaded = 0u64;
 
-    while start_time.elapsed() < duration_limit {
-        match reader.read(&mut chunk) {
-            Ok(0) => {
-                println!("Stream ended");
-                break;
-            }
-            Ok(n) => {
-                audio_buffer.extend_from_slice(&chunk[..n]);
-            }
-            Err(e) => {
-                eprintln!("Read error: {}", e);
-                break;
+        println!("Downloading audio data...");
+
+        while start_time.elapsed() < duration_limit {
+            match reader.read(&mut chunk) {
+                Ok(0) => {
+                    println!("Stream ended");
+                    break;
+                }
+                Ok(n) => {
+                    bytes_downloaded += n as u64;
+                    total_bytes_clone.store(bytes_downloaded, Ordering::Relaxed);
+
+                    // Send chunk through channel
+                    if tx.send(chunk[..n].to_vec()).is_err() {
+                        eprintln!("Receiver dropped, stopping download");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Read error: {}", e);
+                    break;
+                }
             }
         }
-    }
 
-    println!(
-        "Downloaded {} bytes in {:.1} seconds",
-        audio_buffer.len(),
-        start_time.elapsed().as_secs_f64()
-    );
+        println!(
+            "Download complete: {} bytes in {:.1} seconds",
+            bytes_downloaded,
+            start_time.elapsed().as_secs_f64()
+        );
 
-    if audio_buffer.is_empty() {
-        return Err("No audio data received".into());
-    }
+        // Signal end of stream
+        let _ = tx.send(Vec::new());
+        bytes_downloaded
+    });
 
-    // Decode audio using Symphonia
-    println!("Decoding audio...");
-
-    let cursor = Cursor::new(audio_buffer);
-    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+    // Create streaming source for decoder
+    let streaming_source = StreamingSource::new(rx, total_bytes);
+    let mss = MediaSourceStream::new(Box::new(streaming_source), Default::default());
 
     // Create a hint to help the format registry guess the format
     let mut hint = Hint::new();
@@ -138,7 +239,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metadata_opts = MetadataOptions::default();
 
     // Probe the media source
-    let probed = symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)?;
+    println!("Probing audio format...");
+    let probed =
+        symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)?;
 
     let mut format = probed.format;
 
@@ -154,13 +257,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create a decoder for the track
     let decoder_opts = DecoderOptions::default();
-    let mut decoder =
-        symphonia::default::get_codecs().make(&codec_params, &decoder_opts)?;
+    let mut decoder = symphonia::default::get_codecs().make(&codec_params, &decoder_opts)?;
 
     // Get audio parameters
-    let sample_rate = codec_params
-        .sample_rate
-        .ok_or("Unknown sample rate")?;
+    let sample_rate = codec_params.sample_rate.ok_or("Unknown sample rate")?;
     let channels = codec_params
         .channels
         .map(|c| c.count())
@@ -168,8 +268,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Audio format: {} Hz, {} channels", sample_rate, channels);
 
-    // Collect all PCM samples
-    let mut all_samples: Vec<i16> = Vec::new();
+    // Create WAV writer
+    let wav_spec = WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+
+    let mut wav_writer = WavWriter::create(&output_filename, wav_spec)?;
+
+    // Decode and write samples in real-time
+    println!("Decoding and writing in real-time...");
+    let mut total_samples = 0usize;
+    let mut packets_decoded = 0usize;
 
     loop {
         match format.next_packet() {
@@ -188,15 +300,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut sample_buf = SampleBuffer::<i16>::new(duration, spec);
                         sample_buf.copy_interleaved_ref(decoded);
 
-                        // Append samples to our collection
-                        all_samples.extend_from_slice(sample_buf.samples());
+                        // Write samples directly to WAV
+                        for sample in sample_buf.samples() {
+                            wav_writer.write_sample(*sample)?;
+                        }
+
+                        total_samples += sample_buf.samples().len();
+                        packets_decoded += 1;
+
+                        // Progress update every 100 packets
+                        if packets_decoded % 100 == 0 {
+                            let duration_secs =
+                                total_samples as f64 / (sample_rate as f64 * channels as f64);
+                            print!("\rDecoded {:.1}s of audio...", duration_secs);
+                            std::io::Write::flush(&mut std::io::stdout())?;
+                        }
                     }
                     Err(symphonia::core::errors::Error::DecodeError(e)) => {
-                        eprintln!("Decode error: {}", e);
+                        eprintln!("\nDecode error: {}", e);
                         continue;
                     }
                     Err(e) => {
-                        eprintln!("Fatal decode error: {}", e);
+                        eprintln!("\nFatal decode error: {}", e);
                         break;
                     }
                 }
@@ -208,40 +333,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
             Err(e) => {
-                eprintln!("Format error: {}", e);
+                eprintln!("\nFormat error: {}", e);
                 break;
             }
         }
     }
 
-    if all_samples.is_empty() {
+    println!(); // New line after progress
+
+    // Wait for download thread to finish
+    let bytes_downloaded = download_handle.join().expect("Download thread panicked");
+
+    if total_samples == 0 {
         return Err("No audio samples decoded".into());
     }
 
-    println!("Decoded {} samples", all_samples.len());
-
-    // Write WAV file
-    println!("Writing WAV file...");
-
-    let wav_spec = WavSpec {
-        channels,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-
-    let mut wav_writer = WavWriter::create(&output_filename, wav_spec)?;
-
-    for sample in &all_samples {
-        wav_writer.write_sample(*sample)?;
-    }
-
+    // Finalize WAV file
     wav_writer.finalize()?;
 
-    let duration_secs = all_samples.len() as f64 / (sample_rate as f64 * channels as f64);
+    let duration_secs = total_samples as f64 / (sample_rate as f64 * channels as f64);
+    println!("Decoded {} samples from {} packets", total_samples, packets_decoded);
     println!(
-        "Successfully saved {} ({:.1} seconds of audio)",
-        output_filename, duration_secs
+        "Successfully saved {} ({:.1} seconds of audio, {} bytes downloaded)",
+        output_filename, duration_secs, bytes_downloaded
     );
 
     Ok(())
