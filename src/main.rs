@@ -243,10 +243,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_dir = args.output_dir.or(config.output_dir).unwrap_or_else(|| "tmp".to_string());
     let split_interval = args.split_interval.or(config.split_interval).unwrap_or(0);
 
-    // Create output directory if it doesn't exist
-    std::fs::create_dir_all(&output_dir)
-        .map_err(|e| format!("Failed to create output directory '{}': {}", output_dir, e))?;
-
     println!("Connecting to: {}", url);
     println!("Recording duration: {} seconds", duration);
 
@@ -285,6 +281,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         system_time.into()
     };
 
+    // Generate output directory path: output_dir/name/yyyy/mm/dd
+    let output_path = format!(
+        "{}/{}/{}/{}/{}",
+        output_dir,
+        name,
+        timestamp.format("%Y"),
+        timestamp.format("%m"),
+        timestamp.format("%d")
+    );
+
+    // Create the full output directory structure
+    std::fs::create_dir_all(&output_path)
+        .map_err(|e| format!("Failed to create output directory '{}': {}", output_path, e))?;
+
     // Generate output filename (with optional segment number for splitting)
     let generate_filename = |segment: Option<u32>| -> String {
         let ext = match output_format {
@@ -294,8 +304,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let ts = timestamp.format("%Y%m%d_%H%M%S");
         match segment {
-            Some(n) => format!("{}/{}_{}_{:03}.{}", output_dir, name, ts, n, ext),
-            None => format!("{}/{}_{}.{}", output_dir, name, ts, ext),
+            Some(n) => format!("{}/{}_{}_{:03}.{}", output_path, name, ts, n, ext),
+            None => format!("{}/{}_{}.{}", output_path, name, ts, ext),
         }
     };
 

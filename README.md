@@ -127,19 +127,27 @@ save_audio_stream -c config/am1430.toml
 
 ## Output
 
-Files are saved to the output directory (default: `tmp/`) with timestamped names based on the server's response time.
+Files are saved to a date-organized directory structure based on the server's response time (UTC):
+
+```
+output_dir/name/yyyy/mm/dd/name_timestamp.ext
+```
 
 ### Without Splitting
-- `tmp/recording_20241118_143022.aac`
-- `tmp/recording_20241118_143022.opus`
-- `tmp/recording_20241118_143022.wav`
+- `tmp/recording/2024/11/18/recording_20241118_143022.aac`
+- `tmp/recording/2024/11/18/recording_20241118_143022.opus`
+- `tmp/recording/2024/11/18/recording_20241118_143022.wav`
 
 ### With Splitting
 When using `-s/--split-interval`, files are numbered sequentially:
-- `tmp/recording_20241118_143022_000.opus`
-- `tmp/recording_20241118_143022_001.opus`
-- `tmp/recording_20241118_143022_002.opus`
+- `tmp/recording/2024/11/18/recording_20241118_143022_000.opus`
+- `tmp/recording/2024/11/18/recording_20241118_143022_001.opus`
+- `tmp/recording/2024/11/18/recording_20241118_143022_002.opus`
 - ...
+
+### Custom Name Example
+With `-n myradio`:
+- `tmp/myradio/2024/11/18/myradio_20241118_143022.opus`
 
 ### Output Format Specifications
 
