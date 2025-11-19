@@ -47,6 +47,10 @@ struct Args {
     /// Bitrate in kbps (default: 32 for AAC, 16 for Opus)
     #[arg(short, long)]
     bitrate: Option<u32>,
+
+    /// Name prefix for output file (default: recording)
+    #[arg(short, long, default_value = "recording")]
+    name: String,
 }
 
 /// A streaming media source that reads from a channel
@@ -227,8 +231,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let output_filename = match args.format {
-        OutputFormat::Aac => format!("recording_{}.aac", timestamp),
-        OutputFormat::Opus => format!("recording_{}.opus", timestamp),
+        OutputFormat::Aac => format!("{}_{}.aac", args.name, timestamp),
+        OutputFormat::Opus => format!("{}_{}.opus", args.name, timestamp),
     };
 
     println!("Content-Type: {}", content_type);
