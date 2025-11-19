@@ -5,6 +5,7 @@ use axum::{
     routing::get,
     Router,
 };
+use tower_http::cors::{Any, CorsLayer};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -1118,10 +1119,16 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
     rt.block_on(async {
         let app_state = StdArc::new(AppState { db_path });
 
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
+
         let app = Router::new()
             .route("/audio", get(audio_handler))
             .route("/playlist.m3u8", get(playlist_handler))
             .route("/segment/:id", get(segment_handler))
+            .layer(cors)
             .with_state(app_state);
 
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await
