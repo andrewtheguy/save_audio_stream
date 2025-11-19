@@ -1,9 +1,11 @@
+use opus::{Application, Bitrate, Channels, Encoder};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use hound::{WavSpec, WavWriter};
+use ogg::writing::PacketWriter;
 use reqwest::blocking::Client;
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -16,7 +18,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Download Shoutcast stream and save as WAV")]
+#[command(author, version, about = "Download Shoutcast stream and save as Opus")]
 struct Args {
     /// URL of the Shoutcast/Icecast stream
     #[arg(short, long)]
@@ -108,6 +110,61 @@ impl MediaSource for StreamingSource {
     }
 }
 
+/// Create Opus identification header
+fn create_opus_id_header(channels: u8, sample_rate: u32) -> Vec<u8> {
+    let mut header = Vec::with_capacity(19);
+    header.extend_from_slice(b"OpusHead");
+    header.push(1); // Version
+    header.push(channels); // Channel count
+    header.extend_from_slice(&0u16.to_le_bytes()); // Pre-skip
+    header.extend_from_slice(&sample_rate.to_le_bytes()); // Input sample rate
+    header.extend_from_slice(&0i16.to_le_bytes()); // Output gain
+    header.push(0); // Channel mapping family
+    header
+}
+
+/// Create Opus comment header
+fn create_opus_comment_header() -> Vec<u8> {
+    let mut header = Vec::new();
+    header.extend_from_slice(b"OpusTags");
+    let vendor = b"testdecode";
+    header.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+    header.extend_from_slice(vendor);
+    header.extend_from_slice(&0u32.to_le_bytes()); // No user comments
+    header
+}
+
+/// Resample audio from source sample rate to 48kHz
+fn resample_to_48k(samples: &[i16], src_rate: u32) -> Vec<i16> {
+    if src_rate == 48000 {
+        return samples.to_vec();
+    }
+
+    let ratio = 48000.0 / src_rate as f64;
+    let new_len = (samples.len() as f64 * ratio) as usize;
+    let mut resampled = Vec::with_capacity(new_len);
+
+    for i in 0..new_len {
+        let src_pos = i as f64 / ratio;
+        let src_idx = src_pos as usize;
+        let frac = src_pos - src_idx as f64;
+
+        let sample = if src_idx + 1 < samples.len() {
+            let s1 = samples[src_idx] as f64;
+            let s2 = samples[src_idx + 1] as f64;
+            (s1 + frac * (s2 - s1)) as i16
+        } else if src_idx < samples.len() {
+            samples[src_idx]
+        } else {
+            0
+        };
+
+        resampled.push(sample);
+    }
+
+    resampled
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
@@ -149,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         datetime.format("%Y%m%d_%H%M%S").to_string()
     };
 
-    let output_filename = format!("recording_{}.wav", timestamp);
+    let output_filename = format!("recording_{}.opus", timestamp);
 
     println!("Content-Type: {}", content_type);
     println!("Output file: {}", output_filename);
@@ -252,28 +309,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut decoder = symphonia::default::get_codecs().make(&codec_params, &decoder_opts)?;
 
     // Get audio parameters
-    let sample_rate = codec_params.sample_rate.ok_or("Unknown sample rate")?;
-    let channels = codec_params
+    let src_sample_rate = codec_params.sample_rate.ok_or("Unknown sample rate")?;
+    let src_channels = codec_params
         .channels
         .ok_or("Unknown channel count")?
         .count() as u16;
 
-    println!("Audio format: {} Hz, {} channels", sample_rate, channels);
+    println!(
+        "Source audio format: {} Hz, {} channels",
+        src_sample_rate, src_channels
+    );
 
-    // Create WAV writer
-    let wav_spec = WavSpec {
-        channels,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
+    let bitrate = 16000;
 
-    let mut wav_writer = WavWriter::create(&output_filename, wav_spec)?;
+    println!("Output: 48000 Hz, mono, {} kbps Opus", bitrate / 1000);
 
-    // Decode and write samples in real-time
-    println!("Decoding and writing in real-time...");
-    let mut total_samples = 0usize;
+    // Create Opus encoder (48kHz mono, 16 kbps)
+    let mut opus_encoder = Encoder::new(48000, Channels::Mono, Application::Audio)
+        .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
+
+    opus_encoder
+        .set_bitrate(Bitrate::Bits(bitrate))
+        .map_err(|e| format!("Failed to set bitrate: {}", e))?;
+
+    // Create OGG file writer
+    let output_file = File::create(&output_filename)?;
+    let mut ogg_writer = PacketWriter::new(output_file);
+
+    // Write Opus headers
+    let serial = 1;
+    let id_header = create_opus_id_header(1, src_sample_rate);
+    ogg_writer.write_packet(id_header, serial, ogg::writing::PacketWriteEndInfo::EndPage, 0)?;
+
+    let comment_header = create_opus_comment_header();
+    ogg_writer.write_packet(
+        comment_header,
+        serial,
+        ogg::writing::PacketWriteEndInfo::EndPage,
+        0,
+    )?;
+
+    // Decode and encode in real-time
+    println!("Decoding and encoding to Opus...");
+    let mut total_input_samples = 0usize;
     let mut packets_decoded = 0usize;
+    let mut granule_pos: u64 = 0;
+
+    // Buffer for collecting mono samples before encoding
+    let mut mono_buffer: Vec<i16> = Vec::new();
+    let frame_size = 960; // 20ms at 48kHz
+    let mut opus_output = vec![0u8; 4000]; // Max Opus packet size
 
     loop {
         match format.next_packet() {
@@ -292,20 +377,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut sample_buf = SampleBuffer::<i16>::new(duration, spec);
                         sample_buf.copy_interleaved_ref(decoded);
 
-                        // Write samples directly to WAV
-                        for sample in sample_buf.samples() {
-                            wav_writer.write_sample(*sample)?;
+                        let samples = sample_buf.samples();
+                        total_input_samples += samples.len();
+
+                        // Convert to mono
+                        let mono_samples: Vec<i16> = if src_channels == 1 {
+                            samples.to_vec()
+                        } else {
+                            // Average channels to mono
+                            samples
+                                .chunks(src_channels as usize)
+                                .map(|chunk| {
+                                    let sum: i32 = chunk.iter().map(|&s| s as i32).sum();
+                                    (sum / chunk.len() as i32) as i16
+                                })
+                                .collect()
+                        };
+
+                        // Resample to 48kHz if needed
+                        let resampled = resample_to_48k(&mono_samples, src_sample_rate);
+                        mono_buffer.extend_from_slice(&resampled);
+
+                        // Encode complete frames
+                        while mono_buffer.len() >= frame_size {
+                            let frame: Vec<i16> = mono_buffer.drain(..frame_size).collect();
+
+                            match opus_encoder.encode(&frame, &mut opus_output) {
+                                Ok(len) => {
+                                    granule_pos += frame_size as u64;
+                                    ogg_writer.write_packet(
+                                        opus_output[..len].to_vec(),
+                                        serial,
+                                        ogg::writing::PacketWriteEndInfo::NormalPacket,
+                                        granule_pos,
+                                    )?;
+                                }
+                                Err(e) => {
+                                    eprintln!("Opus encode error: {:?}", e);
+                                }
+                            }
                         }
 
-                        total_samples += sample_buf.samples().len();
                         packets_decoded += 1;
 
                         // Progress update every 100 packets
                         if packets_decoded % 100 == 0 {
-                            let duration_secs =
-                                total_samples as f64 / (sample_rate as f64 * channels as f64);
+                            let duration_secs = total_input_samples as f64
+                                / (src_sample_rate as f64 * src_channels as f64);
                             print!("\rDecoded {:.1}s of audio...", duration_secs);
-                            std::io::Write::flush(&mut std::io::stdout())?;
+                            std::io::stdout().flush()?;
                         }
                     }
                     Err(symphonia::core::errors::Error::DecodeError(e)) => {
@@ -331,20 +451,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Encode any remaining samples (pad with silence if needed)
+    if !mono_buffer.is_empty() {
+        mono_buffer.resize(frame_size, 0);
+        if let Ok(len) = opus_encoder.encode(&mono_buffer, &mut opus_output) {
+            granule_pos += frame_size as u64;
+            ogg_writer.write_packet(
+                opus_output[..len].to_vec(),
+                serial,
+                ogg::writing::PacketWriteEndInfo::EndStream,
+                granule_pos,
+            )?;
+        }
+    }
+
     println!(); // New line after progress
 
     // Wait for download thread to finish
     let bytes_downloaded = download_handle.join().expect("Download thread panicked");
 
-    if total_samples == 0 {
+    if total_input_samples == 0 {
         return Err("No audio samples decoded".into());
     }
 
-    // Finalize WAV file
-    wav_writer.finalize()?;
-
-    let duration_secs = total_samples as f64 / (sample_rate as f64 * channels as f64);
-    println!("Decoded {} samples from {} packets", total_samples, packets_decoded);
+    let duration_secs =
+        total_input_samples as f64 / (src_sample_rate as f64 * src_channels as f64);
+    println!(
+        "Decoded {} samples from {} packets",
+        total_input_samples, packets_decoded
+    );
     println!(
         "Successfully saved {} ({:.1} seconds of audio, {} bytes downloaded)",
         output_filename, duration_secs, bytes_downloaded

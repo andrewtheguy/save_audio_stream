@@ -6,8 +6,9 @@ edition = "2021"
 [dependencies]
 reqwest = { version = "0.11", features = ["blocking"] }
 symphonia = { version = "0.5", features = ["mp3", "aac"] }
-hound = "3.5"
 chrono = "0.4"
 httpdate = "1.0"
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"
+opus = "0.3"
+ogg = "0.9"
