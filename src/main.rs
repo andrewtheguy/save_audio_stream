@@ -36,52 +36,34 @@ enum OutputFormat {
 }
 
 /// Configuration file structure
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 struct Config {
-    url: Option<String>,
+    /// URL of the Shoutcast/Icecast stream (required)
+    url: String,
+    /// Duration in seconds to record (default: 30)
     duration: Option<u64>,
+    /// Output format: aac, opus, or wav (default: aac)
     format: Option<OutputFormat>,
+    /// Bitrate in kbps (default: 32 for AAC, 16 for Opus)
     bitrate: Option<u32>,
+    /// Name prefix for output file (default: recording)
     name: Option<String>,
+    /// Output directory (default: tmp)
     output_dir: Option<String>,
     /// Split interval in seconds (0 = no splitting)
     split_interval: Option<u64>,
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Download Shoutcast stream and save as AAC or Opus")]
+#[command(author, version, about = "Download Shoutcast stream and save as AAC, Opus, or WAV")]
 struct Args {
     /// Path to config file (TOML format)
     #[arg(short, long)]
-    config: Option<PathBuf>,
+    config: PathBuf,
 
-    /// URL of the Shoutcast/Icecast stream
-    #[arg(short, long)]
-    url: Option<String>,
-
-    /// Duration in seconds to record
+    /// Duration in seconds to record (overrides config file)
     #[arg(short, long)]
     duration: Option<u64>,
-
-    /// Output format
-    #[arg(short, long, value_enum)]
-    format: Option<OutputFormat>,
-
-    /// Bitrate in kbps (default: 32 for AAC, 16 for Opus)
-    #[arg(short, long)]
-    bitrate: Option<u32>,
-
-    /// Name prefix for output file (default: recording)
-    #[arg(short = 'n', long)]
-    name: Option<String>,
-
-    /// Output directory (default: tmp/)
-    #[arg(short = 'o', long)]
-    output_dir: Option<String>,
-
-    /// Split interval in seconds (0 = no splitting)
-    #[arg(short = 's', long)]
-    split_interval: Option<u64>,
 }
 
 /// A streaming media source that reads from a channel
@@ -223,25 +205,20 @@ fn resample(samples: &[i16], src_rate: u32, target_rate: u32) -> Vec<i16> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Load config file if specified
-    let config = if let Some(config_path) = &args.config {
-        let config_content = std::fs::read_to_string(config_path)
-            .map_err(|e| format!("Failed to read config file '{}': {}", config_path.display(), e))?;
-        toml::from_str(&config_content)
-            .map_err(|e| format!("Failed to parse config file '{}': {}", config_path.display(), e))?
-    } else {
-        Config::default()
-    };
+    // Load config file (required)
+    let config_content = std::fs::read_to_string(&args.config)
+        .map_err(|e| format!("Failed to read config file '{}': {}", args.config.display(), e))?;
+    let config: Config = toml::from_str(&config_content)
+        .map_err(|e| format!("Failed to parse config file '{}': {}", args.config.display(), e))?;
 
-    // Merge CLI args with config (CLI takes precedence)
-    let url = args.url.or(config.url)
-        .ok_or("URL is required. Specify via --url or in config file.")?;
+    // Extract config values with defaults
+    let url = config.url;
     let duration = args.duration.or(config.duration).unwrap_or(30);
-    let output_format = args.format.or(config.format).unwrap_or(OutputFormat::Aac);
-    let bitrate = args.bitrate.or(config.bitrate);
-    let name = args.name.or(config.name).unwrap_or_else(|| "recording".to_string());
-    let output_dir = args.output_dir.or(config.output_dir).unwrap_or_else(|| "tmp".to_string());
-    let split_interval = args.split_interval.or(config.split_interval).unwrap_or(0);
+    let output_format = config.format.unwrap_or(OutputFormat::Aac);
+    let bitrate = config.bitrate;
+    let name = config.name.unwrap_or_else(|| "recording".to_string());
+    let output_dir = config.output_dir.unwrap_or_else(|| "tmp".to_string());
+    let split_interval = config.split_interval.unwrap_or(0);
 
     println!("Connecting to: {}", url);
     println!("Recording duration: {} seconds", duration);

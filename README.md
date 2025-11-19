@@ -56,73 +56,60 @@ The binary will be at `target/release/save_audio_stream`.
 ## Usage
 
 ```bash
-save_audio_stream -u <STREAM_URL> [OPTIONS]
+save_audio_stream -c <CONFIG_FILE> [-d <DURATION>]
 ```
 
-Or with a config file:
-```bash
-save_audio_stream -c config/mystream.toml
-```
+### CLI Options
 
-### Options
+| Option | Description |
+|--------|-------------|
+| `-c, --config` | Path to config file (required) |
+| `-d, --duration` | Recording duration in seconds (overrides config) |
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `-c, --config <FILE>` | Path to TOML config file | None |
-| `-u, --url <URL>` | URL of the Shoutcast/Icecast stream | Required |
-| `-d, --duration <SECONDS>` | Recording duration in seconds | 30 |
-| `-f, --format <FORMAT>` | Output format: `aac`, `opus`, or `wav` | aac |
-| `-b, --bitrate <KBPS>` | Bitrate in kbps | 32 (AAC), 16 (Opus) |
-| `-n, --name <NAME>` | Name prefix for output file | recording |
-| `-o, --output-dir <DIR>` | Output directory | tmp/ |
-| `-s, --split-interval <SECONDS>` | Split files every N seconds (0 = no split) | 0 |
+### Config File Format (Required)
 
-### Config File Format
-
-Create a TOML config file for frequently used streams:
+Most settings are specified in a TOML config file:
 
 ```toml
+# Required
 url = 'https://stream.example.com/radio'
-name = 'myradio'
-format = 'opus'
-duration = 3600
-bitrate = 24
-output_dir = 'recordings'
-split_interval = 300
+
+# Optional (with defaults)
+name = 'myradio'           # default: 'recording'
+format = 'opus'            # default: 'aac' (options: aac, opus, wav)
+duration = 3600            # default: 30 (seconds)
+bitrate = 24               # default: 32 for AAC, 16 for Opus
+output_dir = 'recordings'  # default: 'tmp'
+split_interval = 300       # default: 0 (no splitting, in seconds)
 ```
 
-CLI arguments override config file values.
+### Config Options
+
+| Option | Description | Default | Required |
+|--------|-------------|---------|----------|
+| `url` | URL of the Shoutcast/Icecast stream | - | Yes |
+| `name` | Name prefix for output file | recording | No |
+| `format` | Output format: `aac`, `opus`, or `wav` | aac | No |
+| `duration` | Recording duration in seconds | 30 | No |
+| `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
+| `output_dir` | Base output directory | tmp | No |
+| `split_interval` | Split files every N seconds (0 = no split) | 0 | No |
 
 ### Examples
 
-Record 60 seconds from a stream to AAC:
-```bash
-save_audio_stream -u "http://stream.example.com/radio" -d 60
-```
-
-Record 5 minutes to Opus format:
-```bash
-save_audio_stream -u "http://stream.example.com/radio" -d 300 -f opus
-```
-
-Record with custom bitrate:
-```bash
-save_audio_stream -u "http://stream.example.com/radio" -d 120 -f aac -b 48
-```
-
-**Record with automatic file splitting** (1 hour, split every 5 minutes):
-```bash
-save_audio_stream -u "http://stream.example.com/radio" -d 3600 -f opus -s 300
-```
-
-Record to WAV format (lossless):
-```bash
-save_audio_stream -u "http://stream.example.com/radio" -d 60 -f wav
-```
-
-Use a config file:
+Use a config file with default duration:
 ```bash
 save_audio_stream -c config/am1430.toml
+```
+
+Override duration from CLI (record 60 seconds):
+```bash
+save_audio_stream -c config/am1430.toml -d 60
+```
+
+Record for 1 hour:
+```bash
+save_audio_stream -c config/am1430.toml -d 3600
 ```
 
 ## Output
