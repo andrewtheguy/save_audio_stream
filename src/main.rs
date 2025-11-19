@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
+use serde::Deserialize;
+use std::path::PathBuf;
 use fdk_aac::enc::{
     AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
     Transport,
@@ -21,7 +23,8 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum OutputFormat {
     /// AAC-LC format (16kHz mono, 32kbps)
     Aac,
@@ -29,28 +32,42 @@ enum OutputFormat {
     Opus,
 }
 
+/// Configuration file structure
+#[derive(Debug, Deserialize, Default)]
+struct Config {
+    url: Option<String>,
+    duration: Option<u64>,
+    format: Option<OutputFormat>,
+    bitrate: Option<u32>,
+    name: Option<String>,
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Download Shoutcast stream and save as AAC or Opus")]
 struct Args {
+    /// Path to config file (TOML format)
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+
     /// URL of the Shoutcast/Icecast stream
     #[arg(short, long)]
-    url: String,
+    url: Option<String>,
 
     /// Duration in seconds to record
-    #[arg(short, long, default_value = "30")]
-    duration: u64,
+    #[arg(short, long)]
+    duration: Option<u64>,
 
     /// Output format
-    #[arg(short, long, value_enum, default_value = "aac")]
-    format: OutputFormat,
+    #[arg(short, long, value_enum)]
+    format: Option<OutputFormat>,
 
     /// Bitrate in kbps (default: 32 for AAC, 16 for Opus)
     #[arg(short, long)]
     bitrate: Option<u32>,
 
     /// Name prefix for output file (default: recording)
-    #[arg(short, long, default_value = "recording")]
-    name: String,
+    #[arg(short = 'n', long)]
+    name: Option<String>,
 }
 
 /// A streaming media source that reads from a channel
@@ -192,15 +209,33 @@ fn resample(samples: &[i16], src_rate: u32, target_rate: u32) -> Vec<i16> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    println!("Connecting to: {}", args.url);
-    println!("Recording duration: {} seconds", args.duration);
+    // Load config file if specified
+    let config = if let Some(config_path) = &args.config {
+        let config_content = std::fs::read_to_string(config_path)
+            .map_err(|e| format!("Failed to read config file '{}': {}", config_path.display(), e))?;
+        toml::from_str(&config_content)
+            .map_err(|e| format!("Failed to parse config file '{}': {}", config_path.display(), e))?
+    } else {
+        Config::default()
+    };
+
+    // Merge CLI args with config (CLI takes precedence)
+    let url = args.url.or(config.url)
+        .ok_or("URL is required. Specify via --url or in config file.")?;
+    let duration = args.duration.or(config.duration).unwrap_or(30);
+    let output_format = args.format.or(config.format).unwrap_or(OutputFormat::Aac);
+    let bitrate = args.bitrate.or(config.bitrate);
+    let name = args.name.or(config.name).unwrap_or_else(|| "recording".to_string());
+
+    println!("Connecting to: {}", url);
+    println!("Recording duration: {} seconds", duration);
 
     // Create HTTP client and make request
     let client = Client::builder()
         .timeout(None) // No timeout for streaming
         .build()?;
 
-    let response = client.get(&args.url).send()?;
+    let response = client.get(&url).send()?;
 
     if !response.status().is_success() {
         return Err(format!("HTTP error: {}", response.status()).into());
@@ -230,14 +265,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         datetime.format("%Y%m%d_%H%M%S").to_string()
     };
 
-    let output_filename = match args.format {
-        OutputFormat::Aac => format!("{}_{}.aac", args.name, timestamp),
-        OutputFormat::Opus => format!("{}_{}.opus", args.name, timestamp),
+    let output_filename = match output_format {
+        OutputFormat::Aac => format!("{}_{}.aac", name, timestamp),
+        OutputFormat::Opus => format!("{}_{}.opus", name, timestamp),
     };
 
     println!("Content-Type: {}", content_type);
     println!("Output file: {}", output_filename);
-    println!("Output format: {:?}", args.format);
+    println!("Output format: {:?}", output_format);
 
     // Determine codec from content type
     let codec_hint = match content_type.as_str() {
@@ -348,18 +383,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Format-specific setup
-    let (output_sample_rate, frame_size, default_bitrate) = match args.format {
+    let (output_sample_rate, frame_size, default_bitrate) = match output_format {
         OutputFormat::Aac => (16000u32, 1024usize, 32u32),
         OutputFormat::Opus => (48000u32, 960usize, 16u32),
     };
-    let bitrate_kbps = args.bitrate.unwrap_or(default_bitrate);
+    let bitrate_kbps = bitrate.unwrap_or(default_bitrate);
     let bitrate = bitrate_kbps as i32 * 1000;
 
     println!(
         "Output: {} Hz, mono, {} kbps {:?}",
         output_sample_rate,
         bitrate_kbps,
-        args.format
+        output_format
     );
 
     // Create encoders based on format
@@ -368,7 +403,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ogg_writer = None;
     let mut output_file = None;
 
-    match args.format {
+    match output_format {
         OutputFormat::Aac => {
             let params = EncoderParams {
                 bit_rate: AacBitRate::Cbr(bitrate as u32),
@@ -417,7 +452,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Decode and encode in real-time
-    println!("Decoding and encoding to {:?}...", args.format);
+    println!("Decoding and encoding to {:?}...", output_format);
     let mut total_input_samples = 0usize;
     let mut packets_decoded = 0usize;
     let mut total_output_samples: u64 = 0;
@@ -427,7 +462,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut encode_output = vec![0u8; 8192]; // Buffer for encoded output
 
     // Target duration in samples at output rate
-    let target_samples = args.duration * output_sample_rate as u64;
+    let target_samples = duration * output_sample_rate as u64;
 
     loop {
         // Check if we've reached target duration
@@ -477,7 +512,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         while mono_buffer.len() >= frame_size {
                             let frame: Vec<i16> = mono_buffer.drain(..frame_size).collect();
 
-                            match args.format {
+                            match output_format {
                                 OutputFormat::Aac => {
                                     if let Some(ref encoder) = aac_encoder {
                                         match encoder.encode(&frame, &mut encode_output) {
@@ -554,7 +589,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Encode any remaining samples (pad with silence if needed)
     if !mono_buffer.is_empty() {
         mono_buffer.resize(frame_size, 0);
-        match args.format {
+        match output_format {
             OutputFormat::Aac => {
                 if let Some(ref encoder) = aac_encoder {
                     if let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {

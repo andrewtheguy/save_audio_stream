@@ -9,7 +9,10 @@ symphonia = { version = "0.5", features = ["mp3", "aac"] }
 chrono = "0.4"
 httpdate = "1.0"
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 crossbeam-channel = "0.5"
 fdk-aac = "0.8.0"
 opus = "0.3"
 ogg = "0.9"
+cmake = "0.1.54"
