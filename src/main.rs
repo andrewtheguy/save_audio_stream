@@ -6,10 +6,10 @@ use ogg::writing::PacketWriter;
 use reqwest::blocking::Client;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
@@ -229,19 +229,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(100);
     let total_bytes = Arc::new(AtomicU64::new(0));
     let total_bytes_clone = Arc::clone(&total_bytes);
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_flag_clone = Arc::clone(&stop_flag);
 
     // Spawn download thread
-    let duration = args.duration;
     let download_handle = thread::spawn(move || {
         let start_time = Instant::now();
-        let duration_limit = Duration::from_secs(duration);
         let mut reader = response;
         let mut chunk = [0u8; 8192];
         let mut bytes_downloaded = 0u64;
 
         println!("Downloading audio data...");
 
-        while start_time.elapsed() < duration_limit {
+        while !stop_flag_clone.load(Ordering::Relaxed) {
             match reader.read(&mut chunk) {
                 Ok(0) => {
                     println!("Stream ended");
@@ -253,7 +253,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     // Send chunk through channel
                     if tx.send(chunk[..n].to_vec()).is_err() {
-                        eprintln!("Receiver dropped, stopping download");
                         break;
                     }
                 }
@@ -360,7 +359,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let frame_size = 960; // 20ms at 48kHz
     let mut opus_output = vec![0u8; 4000]; // Max Opus packet size
 
+    // Target duration in samples at 48kHz (output rate)
+    let target_samples = args.duration * 48000;
+
     loop {
+        // Check if we've reached target duration
+        if granule_pos >= target_samples {
+            stop_flag.store(true, Ordering::Relaxed);
+            break;
+        }
+
         match format.next_packet() {
             Ok(packet) => {
                 if packet.track_id() != track_id {
@@ -442,10 +450,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
                 // End of stream
+                stop_flag.store(true, Ordering::Relaxed);
                 break;
             }
             Err(e) => {
                 eprintln!("\nFormat error: {}", e);
+                stop_flag.store(true, Ordering::Relaxed);
                 break;
             }
         }
