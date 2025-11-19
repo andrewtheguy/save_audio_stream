@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
@@ -1108,7 +1108,10 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
     let db_path = sqlite_file.to_string_lossy().to_string();
     println!("Starting server for: {}", db_path);
     println!("Listening on: http://0.0.0.0:{}", port);
-    println!("Endpoint: GET /audio?start_id=<N>&end_id=<N>");
+    println!("Endpoints:");
+    println!("  GET /audio?start_id=<N>&end_id=<N>  - Ogg/Opus stream");
+    println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
+    println!("  GET /segment/:id  - WebM audio segment");
 
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
@@ -1117,6 +1120,8 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
 
         let app = Router::new()
             .route("/audio", get(audio_handler))
+            .route("/playlist.m3u8", get(playlist_handler))
+            .route("/segment/:id", get(segment_handler))
             .with_state(app_state);
 
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await
@@ -1287,5 +1292,278 @@ async fn audio_handler(
             ("x-duration-seconds", &format!("{:.3}", duration_secs)),
         ],
         ogg_data,
+    ).into_response()
+}
+
+// EBML/WebM writing helpers
+fn write_ebml_id(buf: &mut Vec<u8>, id: u32) {
+    // EBML IDs already include their size marker bits, just write raw bytes
+    if id <= 0xFF {
+        buf.push(id as u8);
+    } else if id <= 0xFFFF {
+        buf.push((id >> 8) as u8);
+        buf.push(id as u8);
+    } else if id <= 0xFFFFFF {
+        buf.push((id >> 16) as u8);
+        buf.push((id >> 8) as u8);
+        buf.push(id as u8);
+    } else {
+        buf.push((id >> 24) as u8);
+        buf.push((id >> 16) as u8);
+        buf.push((id >> 8) as u8);
+        buf.push(id as u8);
+    }
+}
+
+fn write_ebml_size(buf: &mut Vec<u8>, size: u64) {
+    if size <= 0x7E {
+        buf.push((size | 0x80) as u8);
+    } else if size <= 0x3FFE {
+        buf.push(((size >> 8) | 0x40) as u8);
+        buf.push(size as u8);
+    } else if size <= 0x1FFFFE {
+        buf.push(((size >> 16) | 0x20) as u8);
+        buf.push((size >> 8) as u8);
+        buf.push(size as u8);
+    } else if size <= 0x0FFFFFFE {
+        buf.push(((size >> 24) | 0x10) as u8);
+        buf.push((size >> 16) as u8);
+        buf.push((size >> 8) as u8);
+        buf.push(size as u8);
+    } else {
+        // 8-byte size for unknown/streaming
+        buf.extend_from_slice(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+}
+
+fn write_ebml_uint(buf: &mut Vec<u8>, id: u32, value: u64) {
+    write_ebml_id(buf, id);
+    let bytes = if value == 0 {
+        1
+    } else {
+        ((64 - value.leading_zeros()) + 7) / 8
+    } as usize;
+    write_ebml_size(buf, bytes as u64);
+    for i in (0..bytes).rev() {
+        buf.push((value >> (i * 8)) as u8);
+    }
+}
+
+fn write_ebml_string(buf: &mut Vec<u8>, id: u32, value: &str) {
+    write_ebml_id(buf, id);
+    write_ebml_size(buf, value.len() as u64);
+    buf.extend_from_slice(value.as_bytes());
+}
+
+fn write_ebml_binary(buf: &mut Vec<u8>, id: u32, data: &[u8]) {
+    write_ebml_id(buf, id);
+    write_ebml_size(buf, data.len() as u64);
+    buf.extend_from_slice(data);
+}
+
+fn write_ebml_float(buf: &mut Vec<u8>, id: u32, value: f64) {
+    write_ebml_id(buf, id);
+    write_ebml_size(buf, 8);
+    buf.extend_from_slice(&value.to_be_bytes());
+}
+
+// Query parameters for playlist
+#[derive(Deserialize)]
+struct PlaylistQuery {
+    start_id: i64,
+    end_id: i64,
+}
+
+// HLS-style m3u8 playlist handler
+async fn playlist_handler(
+    State(state): State<StdArc<AppState>>,
+    Query(query): Query<PlaylistQuery>,
+) -> impl IntoResponse {
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+    };
+
+    // Validate end_id
+    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::NOT_FOUND, "No segments in database").into_response(),
+    };
+
+    if query.end_id > max_id {
+        return (StatusCode::BAD_REQUEST, format!("end_id {} exceeds max id {}", query.end_id, max_id)).into_response();
+    }
+
+    if query.start_id > query.end_id {
+        return (StatusCode::BAD_REQUEST, "start_id must be <= end_id").into_response();
+    }
+
+    // Get split_interval from metadata (in seconds)
+    let split_interval: f64 = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| {
+            let val: String = row.get(0)?;
+            Ok(val.parse().unwrap_or(1.0))
+        })
+        .unwrap_or(1.0);
+
+    // Build simple M3U playlist (not HLS)
+    let mut playlist = String::from("#EXTM3U\n");
+
+    for id in query.start_id..=query.end_id {
+        playlist.push_str(&format!("#EXTINF:{},Segment {}\n", split_interval as i64, id));
+        playlist.push_str(&format!("segment/{}\n", id));
+    }
+
+    (
+        StatusCode::OK,
+        [("content-type", "audio/x-mpegurl")],
+        playlist,
+    ).into_response()
+}
+
+// Segment handler - returns complete standalone WebM file for a single segment
+async fn segment_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+    };
+
+    // Get the segment
+    let segment: Vec<u8> = match conn.query_row(
+        "SELECT audio_data FROM segments WHERE id = ?1",
+        [id],
+        |row| row.get(0),
+    ) {
+        Ok(data) => data,
+        Err(_) => return (StatusCode::NOT_FOUND, format!("Segment {} not found", id)).into_response(),
+    };
+
+    // Get split_interval and calculate timecode
+    let split_interval: u64 = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| {
+            let val: String = row.get(0)?;
+            Ok(val.parse().unwrap_or(1))
+        })
+        .unwrap_or(1);
+
+    // Get the first segment ID to calculate relative position
+    let first_id: i64 = conn
+        .query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
+        .unwrap_or(1);
+
+    let relative_pos = (id - first_id) as u64;
+    let timecode_ms = relative_pos * split_interval * 1000;
+
+    // Build complete standalone WebM file
+    let mut webm = Vec::new();
+
+    // EBML Header
+    let mut ebml_header = Vec::new();
+    write_ebml_uint(&mut ebml_header, 0x4286, 1);      // EBMLVersion
+    write_ebml_uint(&mut ebml_header, 0x42F7, 1);      // EBMLReadVersion
+    write_ebml_uint(&mut ebml_header, 0x42F2, 4);      // EBMLMaxIDLength
+    write_ebml_uint(&mut ebml_header, 0x42F3, 8);      // EBMLMaxSizeLength
+    write_ebml_string(&mut ebml_header, 0x4282, "webm"); // DocType
+    write_ebml_uint(&mut ebml_header, 0x4287, 4);      // DocTypeVersion
+    write_ebml_uint(&mut ebml_header, 0x4285, 2);      // DocTypeReadVersion
+
+    write_ebml_id(&mut webm, 0x1A45DFA3); // EBML
+    write_ebml_size(&mut webm, ebml_header.len() as u64);
+    webm.extend_from_slice(&ebml_header);
+
+    // Build Segment content
+    let mut segment_content = Vec::new();
+
+    // Info
+    let mut info = Vec::new();
+    write_ebml_uint(&mut info, 0x2AD7B1, 1_000_000);   // TimecodeScale (1ms)
+    write_ebml_string(&mut info, 0x4D80, "save_audio_stream"); // MuxingApp
+    write_ebml_string(&mut info, 0x5741, "save_audio_stream"); // WritingApp
+
+    write_ebml_id(&mut segment_content, 0x1549A966); // Info
+    write_ebml_size(&mut segment_content, info.len() as u64);
+    segment_content.extend_from_slice(&info);
+
+    // Tracks
+    let mut tracks = Vec::new();
+    let mut track_entry = Vec::new();
+    write_ebml_uint(&mut track_entry, 0xD7, 1);        // TrackNumber
+    write_ebml_uint(&mut track_entry, 0x73C5, 1);      // TrackUID
+    write_ebml_uint(&mut track_entry, 0x83, 2);        // TrackType (audio)
+    write_ebml_string(&mut track_entry, 0x86, "A_OPUS"); // CodecID
+
+    // CodecPrivate - OpusHead
+    let mut opus_head = Vec::new();
+    opus_head.extend_from_slice(b"OpusHead");
+    opus_head.push(1);                                  // Version
+    opus_head.push(1);                                  // Channels
+    opus_head.extend_from_slice(&0u16.to_le_bytes());   // Pre-skip
+    opus_head.extend_from_slice(&48000u32.to_le_bytes()); // Sample rate
+    opus_head.extend_from_slice(&0i16.to_le_bytes());   // Output gain
+    opus_head.push(0);                                  // Channel mapping
+    write_ebml_binary(&mut track_entry, 0x63A2, &opus_head); // CodecPrivate
+
+    // Audio settings
+    let mut audio = Vec::new();
+    write_ebml_float(&mut audio, 0xB5, 48000.0);       // SamplingFrequency
+    write_ebml_uint(&mut audio, 0x9F, 1);              // Channels
+
+    write_ebml_id(&mut track_entry, 0xE1); // Audio
+    write_ebml_size(&mut track_entry, audio.len() as u64);
+    track_entry.extend_from_slice(&audio);
+
+    write_ebml_id(&mut tracks, 0xAE); // TrackEntry
+    write_ebml_size(&mut tracks, track_entry.len() as u64);
+    tracks.extend_from_slice(&track_entry);
+
+    write_ebml_id(&mut segment_content, 0x1654AE6B); // Tracks
+    write_ebml_size(&mut segment_content, tracks.len() as u64);
+    segment_content.extend_from_slice(&tracks);
+
+    // Cluster
+    let mut cluster_content = Vec::new();
+    write_ebml_uint(&mut cluster_content, 0xE7, timecode_ms); // Cluster Timecode
+
+    // Parse and write SimpleBlocks
+    let mut offset = 0;
+    let mut block_time: i16 = 0;
+    while offset + 2 <= segment.len() {
+        let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
+        offset += 2;
+
+        if offset + len > segment.len() {
+            break;
+        }
+
+        let packet = &segment[offset..offset + len];
+        offset += len;
+
+        let mut simple_block = Vec::new();
+        simple_block.push(0x81); // Track 1 (VINT encoded)
+        simple_block.extend_from_slice(&block_time.to_be_bytes()); // Relative timecode
+        simple_block.push(0x80); // Flags: keyframe
+        simple_block.extend_from_slice(packet);
+
+        write_ebml_binary(&mut cluster_content, 0xA3, &simple_block);
+
+        block_time += 20; // 20ms per Opus frame
+    }
+
+    write_ebml_id(&mut segment_content, 0x1F43B675); // Cluster
+    write_ebml_size(&mut segment_content, cluster_content.len() as u64);
+    segment_content.extend_from_slice(&cluster_content);
+
+    // Write Segment
+    write_ebml_id(&mut webm, 0x18538067); // Segment
+    write_ebml_size(&mut webm, segment_content.len() as u64);
+    webm.extend_from_slice(&segment_content);
+
+    (
+        StatusCode::OK,
+        [("content-type", "video/webm")],
+        webm,
     ).into_response()
 }
