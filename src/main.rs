@@ -46,8 +46,8 @@ struct Config {
     format: Option<OutputFormat>,
     /// Bitrate in kbps (default: 32 for AAC, 16 for Opus)
     bitrate: Option<u32>,
-    /// Name prefix for output file (default: recording)
-    name: Option<String>,
+    /// Name prefix for output file (required)
+    name: String,
     /// Output directory (default: tmp)
     output_dir: Option<String>,
     /// Split interval in seconds (0 = no splitting)
@@ -216,7 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let duration = args.duration.or(config.duration).unwrap_or(30);
     let output_format = config.format.unwrap_or(OutputFormat::Aac);
     let bitrate = config.bitrate;
-    let name = config.name.unwrap_or_else(|| "recording".to_string());
+    let name = config.name;
     let output_dir = config.output_dir.unwrap_or_else(|| "tmp".to_string());
     let split_interval = config.split_interval.unwrap_or(0);
 

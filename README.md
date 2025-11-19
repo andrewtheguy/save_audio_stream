@@ -73,9 +73,9 @@ Most settings are specified in a TOML config file:
 ```toml
 # Required
 url = 'https://stream.example.com/radio'
+name = 'myradio'           # Name prefix for output file
 
 # Optional (with defaults)
-name = 'myradio'           # default: 'recording'
 format = 'opus'            # default: 'aac' (options: aac, opus, wav)
 duration = 3600            # default: 30 (seconds)
 bitrate = 24               # default: 32 for AAC, 16 for Opus
@@ -88,7 +88,7 @@ split_interval = 300       # default: 0 (no splitting, in seconds)
 | Option | Description | Default | Required |
 |--------|-------------|---------|----------|
 | `url` | URL of the Shoutcast/Icecast stream | - | Yes |
-| `name` | Name prefix for output file | recording | No |
+| `name` | Name prefix for output file | - | Yes |
 | `format` | Output format: `aac`, `opus`, or `wav` | aac | No |
 | `duration` | Recording duration in seconds | 30 | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
