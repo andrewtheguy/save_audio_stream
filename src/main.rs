@@ -522,6 +522,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let db_path = format!("{}/{}.sqlite", output_dir, name);
             let conn = Connection::open(&db_path)?;
 
+            // Enable WAL mode for better concurrent access
+            conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
             // Create tables
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -536,20 +539,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 [],
             )?;
 
-            // Insert metadata
-            let session_uuid = Uuid::new_v4().to_string();
+            // Check if database already has metadata and validate it matches config
             let audio_format_str = match audio_format {
                 AudioFormat::Aac => "aac",
                 AudioFormat::Opus => "opus",
                 AudioFormat::Wav => "wav",
             };
-            conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('uuid', ?1)", [&session_uuid])?;
-            conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('name', ?1)", [&name])?;
-            conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('audio_format', ?1)", [audio_format_str])?;
-            conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('split_interval', ?1)", [&split_interval.to_string()])?;
 
-            println!("SQLite database: {}", db_path);
-            println!("Session UUID: {}", session_uuid);
+            let existing_uuid: Option<String> = conn
+                .query_row("SELECT value FROM metadata WHERE key = 'uuid'", [], |row| row.get(0))
+                .ok();
+            let existing_name: Option<String> = conn
+                .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| row.get(0))
+                .ok();
+            let existing_format: Option<String> = conn
+                .query_row("SELECT value FROM metadata WHERE key = 'audio_format'", [], |row| row.get(0))
+                .ok();
+            let existing_interval: Option<String> = conn
+                .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| row.get(0))
+                .ok();
+
+            // Check if this is an existing database
+            let is_existing_db = existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
+
+            if is_existing_db {
+                // Existing database must have uuid
+                if existing_uuid.is_none() {
+                    return Err("Database is missing uuid in metadata".into());
+                }
+
+                // Validate metadata matches config
+                if let Some(ref db_name) = existing_name {
+                    if db_name != &name {
+                        return Err(format!(
+                            "Config mismatch: database has name '{}' but config specifies '{}'",
+                            db_name, name
+                        ).into());
+                    }
+                }
+                if let Some(ref db_format) = existing_format {
+                    if db_format != audio_format_str {
+                        return Err(format!(
+                            "Config mismatch: database has audio_format '{}' but config specifies '{}'",
+                            db_format, audio_format_str
+                        ).into());
+                    }
+                }
+                if let Some(ref db_interval) = existing_interval {
+                    let db_interval_val: u64 = db_interval.parse().unwrap_or(0);
+                    if db_interval_val != split_interval {
+                        return Err(format!(
+                            "Config mismatch: database has split_interval '{}' but config specifies '{}'",
+                            db_interval_val, split_interval
+                        ).into());
+                    }
+                }
+
+                println!("SQLite database: {}", db_path);
+                println!("Session UUID: {}", existing_uuid.unwrap());
+            } else {
+                // New database - insert metadata with new uuid
+                let session_uuid = Uuid::new_v4().to_string();
+                conn.execute("INSERT INTO metadata (key, value) VALUES ('uuid', ?1)", [&session_uuid])?;
+                conn.execute("INSERT INTO metadata (key, value) VALUES ('name', ?1)", [&name])?;
+                conn.execute("INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)", [audio_format_str])?;
+                conn.execute("INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)", [&split_interval.to_string()])?;
+
+                println!("SQLite database: {}", db_path);
+                println!("Session UUID: {}", session_uuid);
+            }
 
             sqlite_conn = Some(conn);
 
