@@ -1186,12 +1186,69 @@ async fn audio_handler(
         return (StatusCode::NOT_FOUND, "No segments found in range").into_response();
     }
 
+    // First pass: count total samples to calculate duration
+    let mut total_samples: u64 = 0;
+    for segment in &segments {
+        let mut offset = 0;
+        while offset + 2 <= segment.len() {
+            let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
+            offset += 2;
+            if offset + len > segment.len() {
+                break;
+            }
+            offset += len;
+            total_samples += 960; // Each Opus packet is 960 samples at 48kHz
+        }
+    }
+    let duration_secs = total_samples as f64 / 48000.0;
+
     // Build Ogg container with Opus data
     let mut ogg_data = Vec::new();
+    let mut granule_pos: u64 = 0;
     {
         let mut writer = PacketWriter::new(&mut ogg_data);
-        let mut granule_pos: u64 = 0;
 
+        // Write OpusHead header (required for valid Ogg/Opus)
+        let mut opus_head = Vec::new();
+        opus_head.extend_from_slice(b"OpusHead");  // Magic signature
+        opus_head.push(1);                          // Version
+        opus_head.push(1);                          // Channel count (mono)
+        opus_head.extend_from_slice(&0u16.to_le_bytes());  // Pre-skip
+        opus_head.extend_from_slice(&48000u32.to_le_bytes()); // Sample rate
+        opus_head.extend_from_slice(&0i16.to_le_bytes());  // Output gain
+        opus_head.push(0);                          // Channel mapping family
+
+        if let Err(e) = writer.write_packet(
+            opus_head,
+            1,
+            ogg::writing::PacketWriteEndInfo::EndPage,
+            0,
+        ) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("OpusHead write error: {}", e)).into_response();
+        }
+
+        // Write OpusTags header with duration
+        let mut opus_tags = Vec::new();
+        opus_tags.extend_from_slice(b"OpusTags");  // Magic signature
+        let vendor = b"save_audio_stream";
+        opus_tags.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+        opus_tags.extend_from_slice(vendor);
+        // Add DURATION comment
+        let duration_comment = format!("DURATION={:.3}", duration_secs);
+        opus_tags.extend_from_slice(&1u32.to_le_bytes());  // 1 comment
+        opus_tags.extend_from_slice(&(duration_comment.len() as u32).to_le_bytes());
+        opus_tags.extend_from_slice(duration_comment.as_bytes());
+
+        if let Err(e) = writer.write_packet(
+            opus_tags,
+            1,
+            ogg::writing::PacketWriteEndInfo::EndPage,
+            0,
+        ) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("OpusTags write error: {}", e)).into_response();
+        }
+
+        // Write audio data packets
         for (i, segment) in segments.iter().enumerate() {
             // Parse length-prefixed Opus packets from segment
             let mut offset = 0;
@@ -1225,7 +1282,10 @@ async fn audio_handler(
 
     (
         StatusCode::OK,
-        [("content-type", "audio/ogg")],
+        [
+            ("content-type", "audio/ogg"),
+            ("x-duration-seconds", &format!("{:.3}", duration_secs)),
+        ],
         ogg_data,
     ).into_response()
 }
