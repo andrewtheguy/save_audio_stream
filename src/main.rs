@@ -1,8 +1,12 @@
-use opus::{Application, Bitrate, Channels, Encoder};
 use chrono::{DateTime, Utc};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
+use fdk_aac::enc::{
+    AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
+    Transport,
+};
 use ogg::writing::PacketWriter;
+use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
 use reqwest::blocking::Client;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -17,8 +21,16 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputFormat {
+    /// AAC-LC format (16kHz mono, 32kbps)
+    Aac,
+    /// Opus format (48kHz mono, 16kbps)
+    Opus,
+}
+
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Download Shoutcast stream and save as Opus")]
+#[command(author, version, about = "Download Shoutcast stream and save as AAC or Opus")]
 struct Args {
     /// URL of the Shoutcast/Icecast stream
     #[arg(short, long)]
@@ -27,6 +39,14 @@ struct Args {
     /// Duration in seconds to record
     #[arg(short, long, default_value = "30")]
     duration: u64,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "aac")]
+    format: OutputFormat,
+
+    /// Bitrate in kbps (default: 32 for AAC, 16 for Opus)
+    #[arg(short, long)]
+    bitrate: Option<u32>,
 }
 
 /// A streaming media source that reads from a channel
@@ -134,13 +154,13 @@ fn create_opus_comment_header() -> Vec<u8> {
     header
 }
 
-/// Resample audio from source sample rate to 48kHz
-fn resample_to_48k(samples: &[i16], src_rate: u32) -> Vec<i16> {
-    if src_rate == 48000 {
+/// Resample audio from source sample rate to target rate
+fn resample(samples: &[i16], src_rate: u32, target_rate: u32) -> Vec<i16> {
+    if src_rate == target_rate {
         return samples.to_vec();
     }
 
-    let ratio = 48000.0 / src_rate as f64;
+    let ratio = target_rate as f64 / src_rate as f64;
     let new_len = (samples.len() as f64 * ratio) as usize;
     let mut resampled = Vec::with_capacity(new_len);
 
@@ -206,10 +226,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         datetime.format("%Y%m%d_%H%M%S").to_string()
     };
 
-    let output_filename = format!("recording_{}.opus", timestamp);
+    let output_filename = match args.format {
+        OutputFormat::Aac => format!("recording_{}.aac", timestamp),
+        OutputFormat::Opus => format!("recording_{}.opus", timestamp),
+    };
 
     println!("Content-Type: {}", content_type);
     println!("Output file: {}", output_filename);
+    println!("Output format: {:?}", args.format);
 
     // Determine codec from content type
     let codec_hint = match content_type.as_str() {
@@ -319,52 +343,91 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         src_sample_rate, src_channels
     );
 
-    let bitrate = 16000;
+    // Format-specific setup
+    let (output_sample_rate, frame_size, default_bitrate) = match args.format {
+        OutputFormat::Aac => (16000u32, 1024usize, 32u32),
+        OutputFormat::Opus => (48000u32, 960usize, 16u32),
+    };
+    let bitrate_kbps = args.bitrate.unwrap_or(default_bitrate);
+    let bitrate = bitrate_kbps as i32 * 1000;
 
-    println!("Output: 48000 Hz, mono, {} kbps Opus", bitrate / 1000);
+    println!(
+        "Output: {} Hz, mono, {} kbps {:?}",
+        output_sample_rate,
+        bitrate_kbps,
+        args.format
+    );
 
-    // Create Opus encoder (48kHz mono, 16 kbps)
-    let mut opus_encoder = Encoder::new(48000, Channels::Mono, Application::Audio)
-        .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
+    // Create encoders based on format
+    let mut aac_encoder = None;
+    let mut opus_encoder = None;
+    let mut ogg_writer = None;
+    let mut output_file = None;
 
-    opus_encoder
-        .set_bitrate(Bitrate::Bits(bitrate))
-        .map_err(|e| format!("Failed to set bitrate: {}", e))?;
+    match args.format {
+        OutputFormat::Aac => {
+            let params = EncoderParams {
+                bit_rate: AacBitRate::Cbr(bitrate as u32),
+                sample_rate: 16000,
+                channels: ChannelMode::Mono,
+                transport: Transport::Adts,
+                audio_object_type: AudioObjectType::Mpeg4LowComplexity,
+            };
+            aac_encoder = Some(
+                AacEncoder::new(params)
+                    .map_err(|e| format!("Failed to create AAC encoder: {:?}", e))?,
+            );
+            output_file = Some(File::create(&output_filename)?);
+        }
+        OutputFormat::Opus => {
+            let mut encoder = OpusEncoder::new(48000, Channels::Mono, Application::Voip)
+                .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
+            encoder
+                .set_bitrate(OpusBitrate::Bits(bitrate))
+                .map_err(|e| format!("Failed to set bitrate: {}", e))?;
+            opus_encoder = Some(encoder);
 
-    // Create OGG file writer
-    let output_file = File::create(&output_filename)?;
-    let mut ogg_writer = PacketWriter::new(output_file);
+            let file = File::create(&output_filename)?;
+            let mut writer = PacketWriter::new(file);
 
-    // Write Opus headers
-    let serial = 1;
-    let id_header = create_opus_id_header(1, src_sample_rate);
-    ogg_writer.write_packet(id_header, serial, ogg::writing::PacketWriteEndInfo::EndPage, 0)?;
+            // Write Opus headers
+            let serial = 1;
+            let id_header = create_opus_id_header(1, src_sample_rate);
+            writer.write_packet(
+                id_header,
+                serial,
+                ogg::writing::PacketWriteEndInfo::EndPage,
+                0,
+            )?;
 
-    let comment_header = create_opus_comment_header();
-    ogg_writer.write_packet(
-        comment_header,
-        serial,
-        ogg::writing::PacketWriteEndInfo::EndPage,
-        0,
-    )?;
+            let comment_header = create_opus_comment_header();
+            writer.write_packet(
+                comment_header,
+                serial,
+                ogg::writing::PacketWriteEndInfo::EndPage,
+                0,
+            )?;
+
+            ogg_writer = Some(writer);
+        }
+    }
 
     // Decode and encode in real-time
-    println!("Decoding and encoding to Opus...");
+    println!("Decoding and encoding to {:?}...", args.format);
     let mut total_input_samples = 0usize;
     let mut packets_decoded = 0usize;
-    let mut granule_pos: u64 = 0;
+    let mut total_output_samples: u64 = 0;
 
     // Buffer for collecting mono samples before encoding
     let mut mono_buffer: Vec<i16> = Vec::new();
-    let frame_size = 960; // 20ms at 48kHz
-    let mut opus_output = vec![0u8; 4000]; // Max Opus packet size
+    let mut encode_output = vec![0u8; 8192]; // Buffer for encoded output
 
-    // Target duration in samples at 48kHz (output rate)
-    let target_samples = args.duration * 48000;
+    // Target duration in samples at output rate
+    let target_samples = args.duration * output_sample_rate as u64;
 
     loop {
         // Check if we've reached target duration
-        if granule_pos >= target_samples {
+        if total_output_samples >= target_samples {
             stop_flag.store(true, Ordering::Relaxed);
             break;
         }
@@ -402,26 +465,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .collect()
                         };
 
-                        // Resample to 48kHz if needed
-                        let resampled = resample_to_48k(&mono_samples, src_sample_rate);
+                        // Resample to output sample rate
+                        let resampled = resample(&mono_samples, src_sample_rate, output_sample_rate);
                         mono_buffer.extend_from_slice(&resampled);
 
                         // Encode complete frames
                         while mono_buffer.len() >= frame_size {
                             let frame: Vec<i16> = mono_buffer.drain(..frame_size).collect();
 
-                            match opus_encoder.encode(&frame, &mut opus_output) {
-                                Ok(len) => {
-                                    granule_pos += frame_size as u64;
-                                    ogg_writer.write_packet(
-                                        opus_output[..len].to_vec(),
-                                        serial,
-                                        ogg::writing::PacketWriteEndInfo::NormalPacket,
-                                        granule_pos,
-                                    )?;
+                            match args.format {
+                                OutputFormat::Aac => {
+                                    if let Some(ref encoder) = aac_encoder {
+                                        match encoder.encode(&frame, &mut encode_output) {
+                                            Ok(info) => {
+                                                total_output_samples += frame_size as u64;
+                                                if let Some(ref mut file) = output_file {
+                                                    file.write_all(&encode_output[..info.output_size])?;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("AAC encode error: {:?}", e);
+                                            }
+                                        }
+                                    }
                                 }
-                                Err(e) => {
-                                    eprintln!("Opus encode error: {:?}", e);
+                                OutputFormat::Opus => {
+                                    if let Some(ref mut encoder) = opus_encoder {
+                                        match encoder.encode(&frame, &mut encode_output) {
+                                            Ok(len) => {
+                                                total_output_samples += frame_size as u64;
+                                                if let Some(ref mut writer) = ogg_writer {
+                                                    writer.write_packet(
+                                                        encode_output[..len].to_vec(),
+                                                        1,
+                                                        ogg::writing::PacketWriteEndInfo::NormalPacket,
+                                                        total_output_samples,
+                                                    )?;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Opus encode error: {:?}", e);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -464,14 +550,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Encode any remaining samples (pad with silence if needed)
     if !mono_buffer.is_empty() {
         mono_buffer.resize(frame_size, 0);
-        if let Ok(len) = opus_encoder.encode(&mono_buffer, &mut opus_output) {
-            granule_pos += frame_size as u64;
-            ogg_writer.write_packet(
-                opus_output[..len].to_vec(),
-                serial,
-                ogg::writing::PacketWriteEndInfo::EndStream,
-                granule_pos,
-            )?;
+        match args.format {
+            OutputFormat::Aac => {
+                if let Some(ref encoder) = aac_encoder {
+                    if let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {
+                        total_output_samples += frame_size as u64;
+                        if let Some(ref mut file) = output_file {
+                            file.write_all(&encode_output[..info.output_size])?;
+                        }
+                    }
+                }
+            }
+            OutputFormat::Opus => {
+                if let Some(ref mut encoder) = opus_encoder {
+                    if let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output) {
+                        total_output_samples += frame_size as u64;
+                        if let Some(ref mut writer) = ogg_writer {
+                            writer.write_packet(
+                                encode_output[..len].to_vec(),
+                                1,
+                                ogg::writing::PacketWriteEndInfo::EndStream,
+                                total_output_samples,
+                            )?;
+                        }
+                    }
+                }
+            }
         }
     }
 

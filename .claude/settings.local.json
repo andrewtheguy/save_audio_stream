@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(cargo build:*)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "mcp__fetch__fetch_markdown"
     ],
     "deny": [],
     "ask": []
