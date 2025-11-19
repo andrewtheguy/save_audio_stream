@@ -1111,7 +1111,8 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
     println!("Listening on: http://0.0.0.0:{}", port);
     println!("Endpoints:");
     println!("  GET /audio?start_id=<N>&end_id=<N>  - Ogg/Opus stream");
-    println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
+    println!("  GET /manifest.mpd?start_id=<N>&end_id=<N>  - DASH MPD");
+    println!("  GET /init.webm  - WebM initialization segment");
     println!("  GET /segment/:id  - WebM audio segment");
 
     // Create tokio runtime and run server
@@ -1126,7 +1127,8 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
 
         let app = Router::new()
             .route("/audio", get(audio_handler))
-            .route("/playlist.m3u8", get(playlist_handler))
+            .route("/manifest.mpd", get(mpd_handler))
+            .route("/init.webm", get(init_handler))
             .route("/segment/:id", get(segment_handler))
             .layer(cors)
             .with_state(app_state);
@@ -1374,17 +1376,17 @@ fn write_ebml_float(buf: &mut Vec<u8>, id: u32, value: f64) {
     buf.extend_from_slice(&value.to_be_bytes());
 }
 
-// Query parameters for playlist
+// Query parameters for MPD
 #[derive(Deserialize)]
-struct PlaylistQuery {
+struct MpdQuery {
     start_id: i64,
     end_id: i64,
 }
 
-// HLS-style m3u8 playlist handler
-async fn playlist_handler(
+// DASH MPD manifest handler
+async fn mpd_handler(
     State(state): State<StdArc<AppState>>,
-    Query(query): Query<PlaylistQuery>,
+    Query(query): Query<MpdQuery>,
 ) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
         Ok(c) => c,
@@ -1413,58 +1415,75 @@ async fn playlist_handler(
         })
         .unwrap_or(1.0);
 
-    // Build simple M3U playlist (not HLS)
-    let mut playlist = String::from("#EXTM3U\n");
+    // Get sample_rate from metadata
+    let sample_rate: u32 = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| {
+            let val: String = row.get(0)?;
+            Ok(val.parse().unwrap_or(48000))
+        })
+        .unwrap_or(48000);
 
-    for id in query.start_id..=query.end_id {
-        playlist.push_str(&format!("#EXTINF:{},Segment {}\n", split_interval as i64, id));
-        playlist.push_str(&format!("segment/{}\n", id));
-    }
+    // Calculate total duration
+    let segment_count = (query.end_id - query.start_id + 1) as f64;
+    let total_duration = segment_count * split_interval;
+
+    // Duration in milliseconds for timescale=1000
+    let duration_ms = (split_interval * 1000.0) as u32;
+
+    // Build DASH MPD
+    let mpd = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="static"
+     mediaPresentationDuration="PT{:.3}S"
+     minBufferTime="PT2S"
+     profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+  <Period duration="PT{:.3}S">
+    <AdaptationSet mimeType="audio/webm" codecs="opus" lang="en">
+      <SegmentTemplate
+        initialization="init.webm"
+        media="segment/$Number$"
+        startNumber="{}"
+        duration="{}"
+        timescale="1000"/>
+      <Representation id="audio" bandwidth="128000" audioSamplingRate="{}">
+        <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>"#,
+        total_duration,
+        total_duration,
+        query.start_id,
+        duration_ms,
+        sample_rate
+    );
 
     (
         StatusCode::OK,
-        [("content-type", "audio/x-mpegurl")],
-        playlist,
+        [("content-type", "application/dash+xml")],
+        mpd,
     ).into_response()
 }
 
-// Segment handler - returns complete standalone WebM file for a single segment
-async fn segment_handler(
+// Initialization segment handler - returns WebM header without media data
+async fn init_handler(
     State(state): State<StdArc<AppState>>,
-    Path(id): Path<i64>,
 ) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
     };
 
-    // Get the segment
-    let segment: Vec<u8> = match conn.query_row(
-        "SELECT audio_data FROM segments WHERE id = ?1",
-        [id],
-        |row| row.get(0),
-    ) {
-        Ok(data) => data,
-        Err(_) => return (StatusCode::NOT_FOUND, format!("Segment {} not found", id)).into_response(),
-    };
-
-    // Get split_interval and calculate timecode
-    let split_interval: u64 = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| {
+    // Get sample_rate from metadata
+    let sample_rate: f64 = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| {
             let val: String = row.get(0)?;
-            Ok(val.parse().unwrap_or(1))
+            Ok(val.parse().unwrap_or(48000.0))
         })
-        .unwrap_or(1);
+        .unwrap_or(48000.0);
 
-    // Get the first segment ID to calculate relative position
-    let first_id: i64 = conn
-        .query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
-        .unwrap_or(1);
-
-    let relative_pos = (id - first_id) as u64;
-    let timecode_ms = relative_pos * split_interval * 1000;
-
-    // Build complete standalone WebM file
+    // Build WebM initialization segment
     let mut webm = Vec::new();
 
     // EBML Header
@@ -1508,14 +1527,14 @@ async fn segment_handler(
     opus_head.push(1);                                  // Version
     opus_head.push(1);                                  // Channels
     opus_head.extend_from_slice(&0u16.to_le_bytes());   // Pre-skip
-    opus_head.extend_from_slice(&48000u32.to_le_bytes()); // Sample rate
+    opus_head.extend_from_slice(&(sample_rate as u32).to_le_bytes()); // Sample rate
     opus_head.extend_from_slice(&0i16.to_le_bytes());   // Output gain
     opus_head.push(0);                                  // Channel mapping
     write_ebml_binary(&mut track_entry, 0x63A2, &opus_head); // CodecPrivate
 
     // Audio settings
     let mut audio = Vec::new();
-    write_ebml_float(&mut audio, 0xB5, 48000.0);       // SamplingFrequency
+    write_ebml_float(&mut audio, 0xB5, sample_rate);   // SamplingFrequency
     write_ebml_uint(&mut audio, 0x9F, 1);              // Channels
 
     write_ebml_id(&mut track_entry, 0xE1); // Audio
@@ -1530,7 +1549,56 @@ async fn segment_handler(
     write_ebml_size(&mut segment_content, tracks.len() as u64);
     segment_content.extend_from_slice(&tracks);
 
-    // Cluster
+    // Write Segment with unknown size (for streaming)
+    write_ebml_id(&mut webm, 0x18538067); // Segment
+    // Use unknown size marker for streaming
+    webm.extend_from_slice(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    webm.extend_from_slice(&segment_content);
+
+    (
+        StatusCode::OK,
+        [("content-type", "video/webm")],
+        webm,
+    ).into_response()
+}
+
+// Segment handler - returns Cluster data only (media segment for DASH)
+async fn segment_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+    };
+
+    // Get the segment
+    let segment: Vec<u8> = match conn.query_row(
+        "SELECT audio_data FROM segments WHERE id = ?1",
+        [id],
+        |row| row.get(0),
+    ) {
+        Ok(data) => data,
+        Err(_) => return (StatusCode::NOT_FOUND, format!("Segment {} not found", id)).into_response(),
+    };
+
+    // Get split_interval and calculate timecode
+    let split_interval: u64 = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| {
+            let val: String = row.get(0)?;
+            Ok(val.parse().unwrap_or(1))
+        })
+        .unwrap_or(1);
+
+    // Get the first segment ID to calculate relative position
+    let first_id: i64 = conn
+        .query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
+        .unwrap_or(1);
+
+    let relative_pos = (id - first_id) as u64;
+    let timecode_ms = relative_pos * split_interval * 1000;
+
+    // Build Cluster only (media segment for DASH)
     let mut cluster_content = Vec::new();
     write_ebml_uint(&mut cluster_content, 0xE7, timecode_ms); // Cluster Timecode
 
@@ -1559,14 +1627,11 @@ async fn segment_handler(
         block_time += 20; // 20ms per Opus frame
     }
 
-    write_ebml_id(&mut segment_content, 0x1F43B675); // Cluster
-    write_ebml_size(&mut segment_content, cluster_content.len() as u64);
-    segment_content.extend_from_slice(&cluster_content);
-
-    // Write Segment
-    write_ebml_id(&mut webm, 0x18538067); // Segment
-    write_ebml_size(&mut webm, segment_content.len() as u64);
-    webm.extend_from_slice(&segment_content);
+    // Write Cluster element
+    let mut webm = Vec::new();
+    write_ebml_id(&mut webm, 0x1F43B675); // Cluster
+    write_ebml_size(&mut webm, cluster_content.len() as u64);
+    webm.extend_from_slice(&cluster_content);
 
     (
         StatusCode::OK,
