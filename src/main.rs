@@ -147,7 +147,7 @@ fn create_opus_id_header(channels: u8, sample_rate: u32) -> Vec<u8> {
 fn create_opus_comment_header() -> Vec<u8> {
     let mut header = Vec::new();
     header.extend_from_slice(b"OpusTags");
-    let vendor = b"testdecode";
+    let vendor = b"save_audio_stream";
     header.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
     header.extend_from_slice(vendor);
     header.extend_from_slice(&0u32.to_le_bytes()); // No user comments
