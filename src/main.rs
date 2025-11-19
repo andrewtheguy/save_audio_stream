@@ -277,12 +277,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_str()
         .map_err(|_| "Invalid Date header encoding")?;
 
-    // Parse date for filename
-    let timestamp = {
+    // Parse date for filename (HTTP Date header is always GMT/UTC per RFC 7231)
+    let timestamp: DateTime<Utc> = {
         let system_time = httpdate::parse_http_date(date_header)
             .map_err(|_| format!("Failed to parse Date header: {}", date_header))?;
-        let datetime: DateTime<Utc> = system_time.into();
-        datetime.format("%Y%m%d_%H%M%S").to_string()
+        // Convert to DateTime<Utc> to ensure UTC timezone
+        system_time.into()
     };
 
     // Generate output filename (with optional segment number for splitting)
@@ -292,9 +292,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             OutputFormat::Opus => "opus",
             OutputFormat::Wav => "wav",
         };
+        let ts = timestamp.format("%Y%m%d_%H%M%S");
         match segment {
-            Some(n) => format!("{}/{}_{}_{:03}.{}", output_dir, name, timestamp, n, ext),
-            None => format!("{}/{}_{}.{}", output_dir, name, timestamp, ext),
+            Some(n) => format!("{}/{}_{}_{:03}.{}", output_dir, name, ts, n, ext),
+            None => format!("{}/{}_{}.{}", output_dir, name, ts, ext),
         }
     };
 
