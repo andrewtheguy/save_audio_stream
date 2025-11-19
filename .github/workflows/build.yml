@@ -1,10 +1,10 @@
-name: Build Linux
+name: Build
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-linux:
     strategy:
       matrix:
         include:
@@ -32,3 +32,29 @@ jobs:
         with:
           name: save_audio_stream-linux-${{ matrix.arch }}
           path: target/release/save_audio_stream
+
+  build-windows:
+    runs-on: windows-latest
+
+    env:
+      VCPKG_ROOT: C:\vcpkg
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies via vcpkg
+        run: |
+          vcpkg install fdk-aac:x64-windows opus:x64-windows
+          vcpkg integrate install
+
+      - name: Build
+        env:
+          VCPKG_ROOT: C:\vcpkg
+        run: cargo build --release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: save_audio_stream-windows-x86_64
+          path: target/release/save_audio_stream.exe
