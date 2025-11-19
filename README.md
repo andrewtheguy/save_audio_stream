@@ -22,10 +22,29 @@ This tool connects to internet radio streams, decodes the audio in real-time, an
 - System libraries for audio encoding:
   - **macOS**: `brew install fdk-aac opus`
   - **Ubuntu/Debian**: `apt install libfdk-aac-dev libopus-dev`
+  - **Windows**: Install via vcpkg (see below)
 
 ### Build
 
+**macOS/Linux:**
 ```bash
+cargo build --release
+```
+
+**Windows:**
+```powershell
+# Install vcpkg if not already installed
+cd C:\
+git clone https://github.com/microsoft/vcpkg.git
+cd vcpkg
+.\bootstrap-vcpkg.bat
+.\vcpkg integrate install
+
+# Install dependencies
+vcpkg install fdk-aac:x64-windows opus:x64-windows
+
+# Set VCPKG_ROOT and build
+$env:VCPKG_ROOT = "C:\vcpkg"
 cargo build --release
 ```
 
