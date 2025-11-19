@@ -2,8 +2,10 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use hound::{WavSpec, WavWriter};
+use rusqlite::Connection;
 use serde::Deserialize;
 use std::path::PathBuf;
+use uuid::Uuid;
 use fdk_aac::enc::{
     AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
     Transport,
@@ -26,13 +28,22 @@ use symphonia::core::probe::Hint;
 
 #[derive(Debug, Clone, Copy, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum OutputFormat {
+enum AudioFormat {
     /// AAC-LC format (16kHz mono, 32kbps)
     Aac,
     /// Opus format (48kHz mono, 16kbps)
     Opus,
     /// WAV format (lossless, preserves original sample rate)
     Wav,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum StorageFormat {
+    /// Save to individual files
+    File,
+    /// Save to SQLite database
+    Sqlite,
 }
 
 /// Configuration file structure
@@ -42,8 +53,10 @@ struct Config {
     url: String,
     /// Duration in seconds to record (default: 30)
     duration: Option<u64>,
-    /// Output format: aac, opus, or wav (default: aac)
-    format: Option<OutputFormat>,
+    /// Audio format: aac, opus, or wav (default: opus)
+    audio_format: Option<AudioFormat>,
+    /// Storage format: file or sqlite (default: sqlite)
+    storage_format: Option<StorageFormat>,
     /// Bitrate in kbps (default: 32 for AAC, 16 for Opus)
     bitrate: Option<u32>,
     /// Name prefix for output file (required)
@@ -214,7 +227,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Extract config values with defaults
     let url = config.url;
     let duration = args.duration.or(config.duration).unwrap_or(30);
-    let output_format = config.format.unwrap_or(OutputFormat::Aac);
+    let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
+    let storage_format = config.storage_format.unwrap_or(StorageFormat::Sqlite);
     let bitrate = config.bitrate;
     let name = config.name;
     let output_dir = config.output_dir.unwrap_or_else(|| "tmp".to_string());
@@ -274,10 +288,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Generate output filename (with optional segment number for splitting)
     let generate_filename = |segment: Option<u32>| -> String {
-        let ext = match output_format {
-            OutputFormat::Aac => "aac",
-            OutputFormat::Opus => "opus",
-            OutputFormat::Wav => "wav",
+        let ext = match audio_format {
+            AudioFormat::Aac => "aac",
+            AudioFormat::Opus => "opus",
+            AudioFormat::Wav => "wav",
         };
         let ts = timestamp.format("%Y%m%d_%H%M%S");
         match segment {
@@ -294,7 +308,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Content-Type: {}", content_type);
     println!("Output file: {}", output_filename);
-    println!("Output format: {:?}", output_format);
+    println!("Audio format: {:?}", audio_format);
     if split_interval > 0 {
         println!("Split interval: {} seconds", split_interval);
     }
@@ -408,16 +422,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Format-specific setup
-    let (output_sample_rate, frame_size, default_bitrate) = match output_format {
-        OutputFormat::Aac => (16000u32, 1024usize, 32u32),
-        OutputFormat::Opus => (48000u32, 960usize, 16u32),
-        OutputFormat::Wav => (src_sample_rate, 1024usize, 0u32), // WAV uses source rate, frame_size is arbitrary
+    let (output_sample_rate, frame_size, default_bitrate) = match audio_format {
+        AudioFormat::Aac => (16000u32, 1024usize, 32u32),
+        AudioFormat::Opus => (48000u32, 960usize, 16u32),
+        AudioFormat::Wav => (src_sample_rate, 1024usize, 0u32), // WAV uses source rate, frame_size is arbitrary
     };
     let bitrate_kbps = bitrate.unwrap_or(default_bitrate);
     let bitrate = bitrate_kbps as i32 * 1000;
 
-    match output_format {
-        OutputFormat::Wav => println!(
+    match audio_format {
+        AudioFormat::Wav => println!(
             "Output: {} Hz, mono, lossless WAV",
             output_sample_rate
         ),
@@ -425,7 +439,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Output: {} Hz, mono, {} kbps {:?}",
             output_sample_rate,
             bitrate_kbps,
-            output_format
+            audio_format
         ),
     }
 
@@ -497,17 +511,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut output_file = None;
     let mut wav_writer: Option<WavWriter<std::io::BufWriter<File>>> = None;
 
-    match output_format {
-        OutputFormat::Aac => {
-            aac_encoder = Some(create_aac_encoder()?);
-            output_file = Some(File::create(&output_filename)?);
+    // SQLite storage setup
+    let mut sqlite_conn: Option<Connection> = None;
+    let mut segment_buffer: Vec<u8> = Vec::new();
+    let base_timestamp_ms = timestamp.timestamp_millis();
+
+    match storage_format {
+        StorageFormat::Sqlite => {
+            // Create database file
+            let db_path = format!("{}/{}.sqlite", output_dir, name);
+            let conn = Connection::open(&db_path)?;
+
+            // Create tables
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )?;
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS segments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_ms INTEGER NOT NULL,
+                    audio_data BLOB NOT NULL
+                )",
+                [],
+            )?;
+
+            // Insert metadata
+            let session_uuid = Uuid::new_v4().to_string();
+            let audio_format_str = match audio_format {
+                AudioFormat::Aac => "aac",
+                AudioFormat::Opus => "opus",
+                AudioFormat::Wav => "wav",
+            };
+            conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('uuid', ?1)", [&session_uuid])?;
+            conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('name', ?1)", [&name])?;
+            conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('audio_format', ?1)", [audio_format_str])?;
+            conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('split_interval', ?1)", [&split_interval.to_string()])?;
+
+            println!("SQLite database: {}", db_path);
+            println!("Session UUID: {}", session_uuid);
+
+            sqlite_conn = Some(conn);
+
+            // Still need encoders for SQLite storage
+            match audio_format {
+                AudioFormat::Aac => {
+                    aac_encoder = Some(create_aac_encoder()?);
+                }
+                AudioFormat::Opus => {
+                    opus_encoder = Some(create_opus_encoder()?);
+                }
+                AudioFormat::Wav => {
+                    // WAV will be stored as raw PCM in the blob
+                }
+            }
         }
-        OutputFormat::Opus => {
-            opus_encoder = Some(create_opus_encoder()?);
-            ogg_writer = Some(create_ogg_writer(&output_filename)?);
-        }
-        OutputFormat::Wav => {
-            wav_writer = Some(create_wav_writer(&output_filename)?);
+        StorageFormat::File => {
+            match audio_format {
+                AudioFormat::Aac => {
+                    aac_encoder = Some(create_aac_encoder()?);
+                    output_file = Some(File::create(&output_filename)?);
+                }
+                AudioFormat::Opus => {
+                    opus_encoder = Some(create_opus_encoder()?);
+                    ogg_writer = Some(create_ogg_writer(&output_filename)?);
+                }
+                AudioFormat::Wav => {
+                    wav_writer = Some(create_wav_writer(&output_filename)?);
+                }
+            }
         }
     }
 
@@ -519,10 +591,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut segment_number: u32 = 0;
     let mut segment_samples: u64 = 0;
+    let mut segment_start_samples: u64 = 0; // For SQLite timestamp calculation
     let mut files_written: Vec<String> = vec![output_filename.clone()];
 
+    // Helper to insert segment into SQLite
+    let insert_segment = |conn: &Connection, timestamp_ms: i64, data: &[u8]| -> Result<(), Box<dyn std::error::Error>> {
+        conn.execute(
+            "INSERT INTO segments (timestamp_ms, audio_data) VALUES (?1, ?2)",
+            rusqlite::params![timestamp_ms, data],
+        )?;
+        Ok(())
+    };
+
     // Decode and encode in real-time
-    println!("Decoding and encoding to {:?}...", output_format);
+    println!("Decoding and encoding to {:?}...", audio_format);
     let mut total_input_samples = 0usize;
     let mut packets_decoded = 0usize;
     let mut total_output_samples: u64 = 0;
@@ -582,25 +664,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         while mono_buffer.len() >= frame_size {
                             let frame: Vec<i16> = mono_buffer.drain(..frame_size).collect();
 
-                            match output_format {
-                                OutputFormat::Aac => {
+                            match audio_format {
+                                AudioFormat::Aac => {
                                     if let Some(ref encoder) = aac_encoder {
                                         match encoder.encode(&frame, &mut encode_output) {
                                             Ok(info) => {
                                                 total_output_samples += frame_size as u64;
                                                 segment_samples += frame_size as u64;
-                                                if let Some(ref mut file) = output_file {
-                                                    file.write_all(&encode_output[..info.output_size])?;
+
+                                                match storage_format {
+                                                    StorageFormat::File => {
+                                                        if let Some(ref mut file) = output_file {
+                                                            file.write_all(&encode_output[..info.output_size])?;
+                                                        }
+                                                    }
+                                                    StorageFormat::Sqlite => {
+                                                        segment_buffer.extend_from_slice(&encode_output[..info.output_size]);
+                                                    }
                                                 }
 
-                                                // Check if we need to split to a new file
+                                                // Check if we need to split
                                                 if split_interval > 0 && segment_samples >= split_samples {
-                                                    segment_number += 1;
-                                                    segment_samples = 0;
-                                                    let new_filename = generate_filename(Some(segment_number));
-                                                    println!("\nStarting new segment: {}", new_filename);
-                                                    files_written.push(new_filename.clone());
-                                                    output_file = Some(File::create(&new_filename)?);
+                                                    match storage_format {
+                                                        StorageFormat::File => {
+                                                            segment_number += 1;
+                                                            segment_samples = 0;
+                                                            let new_filename = generate_filename(Some(segment_number));
+                                                            println!("\nStarting new segment: {}", new_filename);
+                                                            files_written.push(new_filename.clone());
+                                                            output_file = Some(File::create(&new_filename)?);
+                                                        }
+                                                        StorageFormat::Sqlite => {
+                                                            if let Some(ref conn) = sqlite_conn {
+                                                                let timestamp_ms = base_timestamp_ms + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
+                                                                insert_segment(conn, timestamp_ms, &segment_buffer)?;
+                                                                println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                            }
+                                                            segment_buffer.clear();
+                                                            segment_number += 1;
+                                                            segment_start_samples = total_output_samples;
+                                                            segment_samples = 0;
+                                                        }
+                                                    }
                                                 }
                                             }
                                             Err(e) => {
@@ -609,36 +714,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
-                                OutputFormat::Opus => {
+                                AudioFormat::Opus => {
                                     if let Some(ref mut encoder) = opus_encoder {
                                         match encoder.encode(&frame, &mut encode_output) {
                                             Ok(len) => {
                                                 total_output_samples += frame_size as u64;
                                                 segment_samples += frame_size as u64;
-                                                if let Some(ref mut writer) = ogg_writer {
-                                                    // Check if this is the last packet before split
-                                                    let is_end_of_segment = split_interval > 0 && segment_samples >= split_samples;
-                                                    let end_info = if is_end_of_segment {
-                                                        ogg::writing::PacketWriteEndInfo::EndStream
-                                                    } else {
-                                                        ogg::writing::PacketWriteEndInfo::NormalPacket
-                                                    };
-                                                    writer.write_packet(
-                                                        encode_output[..len].to_vec(),
-                                                        1,
-                                                        end_info,
-                                                        total_output_samples,
-                                                    )?;
+
+                                                match storage_format {
+                                                    StorageFormat::File => {
+                                                        if let Some(ref mut writer) = ogg_writer {
+                                                            // Check if this is the last packet before split
+                                                            let is_end_of_segment = split_interval > 0 && segment_samples >= split_samples;
+                                                            let end_info = if is_end_of_segment {
+                                                                ogg::writing::PacketWriteEndInfo::EndStream
+                                                            } else {
+                                                                ogg::writing::PacketWriteEndInfo::NormalPacket
+                                                            };
+                                                            writer.write_packet(
+                                                                encode_output[..len].to_vec(),
+                                                                1,
+                                                                end_info,
+                                                                total_output_samples,
+                                                            )?;
+                                                        }
+                                                    }
+                                                    StorageFormat::Sqlite => {
+                                                        // Store raw Opus packets with length prefix
+                                                        segment_buffer.extend_from_slice(&(len as u16).to_le_bytes());
+                                                        segment_buffer.extend_from_slice(&encode_output[..len]);
+                                                    }
                                                 }
 
-                                                // Check if we need to split to a new file
+                                                // Check if we need to split
                                                 if split_interval > 0 && segment_samples >= split_samples {
-                                                    segment_number += 1;
-                                                    segment_samples = 0;
-                                                    let new_filename = generate_filename(Some(segment_number));
-                                                    println!("\nStarting new segment: {}", new_filename);
-                                                    files_written.push(new_filename.clone());
-                                                    ogg_writer = Some(create_ogg_writer(&new_filename)?);
+                                                    match storage_format {
+                                                        StorageFormat::File => {
+                                                            segment_number += 1;
+                                                            segment_samples = 0;
+                                                            let new_filename = generate_filename(Some(segment_number));
+                                                            println!("\nStarting new segment: {}", new_filename);
+                                                            files_written.push(new_filename.clone());
+                                                            ogg_writer = Some(create_ogg_writer(&new_filename)?);
+                                                        }
+                                                        StorageFormat::Sqlite => {
+                                                            if let Some(ref conn) = sqlite_conn {
+                                                                let timestamp_ms = base_timestamp_ms + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
+                                                                insert_segment(conn, timestamp_ms, &segment_buffer)?;
+                                                                println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                            }
+                                                            segment_buffer.clear();
+                                                            segment_number += 1;
+                                                            segment_start_samples = total_output_samples;
+                                                            segment_samples = 0;
+                                                        }
+                                                    }
                                                 }
                                             }
                                             Err(e) => {
@@ -647,27 +777,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
-                                OutputFormat::Wav => {
-                                    if let Some(ref mut writer) = wav_writer {
-                                        for sample in &frame {
-                                            writer.write_sample(*sample)?;
+                                AudioFormat::Wav => {
+                                    total_output_samples += frame_size as u64;
+                                    segment_samples += frame_size as u64;
+
+                                    match storage_format {
+                                        StorageFormat::File => {
+                                            if let Some(ref mut writer) = wav_writer {
+                                                for sample in &frame {
+                                                    writer.write_sample(*sample)?;
+                                                }
+                                            }
                                         }
-                                        total_output_samples += frame_size as u64;
-                                        segment_samples += frame_size as u64;
+                                        StorageFormat::Sqlite => {
+                                            // Store raw PCM samples as bytes
+                                            for sample in &frame {
+                                                segment_buffer.extend_from_slice(&sample.to_le_bytes());
+                                            }
+                                        }
                                     }
 
-                                    // Check if we need to split to a new file
+                                    // Check if we need to split
                                     if split_interval > 0 && segment_samples >= split_samples {
-                                        // Finalize current WAV file
-                                        if let Some(writer) = wav_writer.take() {
-                                            writer.finalize()?;
+                                        match storage_format {
+                                            StorageFormat::File => {
+                                                // Finalize current WAV file
+                                                if let Some(writer) = wav_writer.take() {
+                                                    writer.finalize()?;
+                                                }
+                                                segment_number += 1;
+                                                segment_samples = 0;
+                                                let new_filename = generate_filename(Some(segment_number));
+                                                println!("\nStarting new segment: {}", new_filename);
+                                                files_written.push(new_filename.clone());
+                                                wav_writer = Some(create_wav_writer(&new_filename)?);
+                                            }
+                                            StorageFormat::Sqlite => {
+                                                if let Some(ref conn) = sqlite_conn {
+                                                    let timestamp_ms = base_timestamp_ms + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
+                                                    insert_segment(conn, timestamp_ms, &segment_buffer)?;
+                                                    println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                }
+                                                segment_buffer.clear();
+                                                segment_number += 1;
+                                                segment_start_samples = total_output_samples;
+                                                segment_samples = 0;
+                                            }
                                         }
-                                        segment_number += 1;
-                                        segment_samples = 0;
-                                        let new_filename = generate_filename(Some(segment_number));
-                                        println!("\nStarting new segment: {}", new_filename);
-                                        files_written.push(new_filename.clone());
-                                        wav_writer = Some(create_wav_writer(&new_filename)?);
                                     }
                                 }
                             }
@@ -710,49 +866,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Encode any remaining samples (pad with silence if needed for AAC/Opus, write as-is for WAV)
     if !mono_buffer.is_empty() {
-        match output_format {
-            OutputFormat::Aac => {
+        match audio_format {
+            AudioFormat::Aac => {
                 mono_buffer.resize(frame_size, 0);
                 if let Some(ref encoder) = aac_encoder {
                     if let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {
                         total_output_samples += frame_size as u64;
-                        if let Some(ref mut file) = output_file {
-                            file.write_all(&encode_output[..info.output_size])?;
+                        match storage_format {
+                            StorageFormat::File => {
+                                if let Some(ref mut file) = output_file {
+                                    file.write_all(&encode_output[..info.output_size])?;
+                                }
+                            }
+                            StorageFormat::Sqlite => {
+                                segment_buffer.extend_from_slice(&encode_output[..info.output_size]);
+                            }
                         }
                     }
                 }
             }
-            OutputFormat::Opus => {
+            AudioFormat::Opus => {
                 mono_buffer.resize(frame_size, 0);
                 if let Some(ref mut encoder) = opus_encoder {
                     if let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output) {
                         total_output_samples += frame_size as u64;
-                        if let Some(ref mut writer) = ogg_writer {
-                            writer.write_packet(
-                                encode_output[..len].to_vec(),
-                                1,
-                                ogg::writing::PacketWriteEndInfo::EndStream,
-                                total_output_samples,
-                            )?;
+                        match storage_format {
+                            StorageFormat::File => {
+                                if let Some(ref mut writer) = ogg_writer {
+                                    writer.write_packet(
+                                        encode_output[..len].to_vec(),
+                                        1,
+                                        ogg::writing::PacketWriteEndInfo::EndStream,
+                                        total_output_samples,
+                                    )?;
+                                }
+                            }
+                            StorageFormat::Sqlite => {
+                                segment_buffer.extend_from_slice(&(len as u16).to_le_bytes());
+                                segment_buffer.extend_from_slice(&encode_output[..len]);
+                            }
                         }
                     }
                 }
             }
-            OutputFormat::Wav => {
+            AudioFormat::Wav => {
                 // WAV doesn't need padding - write remaining samples as-is
-                if let Some(ref mut writer) = wav_writer {
-                    for sample in &mono_buffer {
-                        writer.write_sample(*sample)?;
+                match storage_format {
+                    StorageFormat::File => {
+                        if let Some(ref mut writer) = wav_writer {
+                            for sample in &mono_buffer {
+                                writer.write_sample(*sample)?;
+                            }
+                            total_output_samples += mono_buffer.len() as u64;
+                        }
                     }
-                    total_output_samples += mono_buffer.len() as u64;
+                    StorageFormat::Sqlite => {
+                        for sample in &mono_buffer {
+                            segment_buffer.extend_from_slice(&sample.to_le_bytes());
+                        }
+                        total_output_samples += mono_buffer.len() as u64;
+                    }
                 }
             }
         }
     }
 
-    // Finalize WAV file if needed
-    if let Some(writer) = wav_writer.take() {
-        writer.finalize()?;
+    // Finalize storage
+    match storage_format {
+        StorageFormat::File => {
+            if let Some(writer) = wav_writer.take() {
+                writer.finalize()?;
+            }
+        }
+        StorageFormat::Sqlite => {
+            // Insert final segment if there's any buffered data
+            if !segment_buffer.is_empty() {
+                if let Some(ref conn) = sqlite_conn {
+                    let timestamp_ms = base_timestamp_ms + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
+                    insert_segment(conn, timestamp_ms, &segment_buffer)?;
+                    println!("\nInserted final segment {} ({} bytes)", segment_number, segment_buffer.len());
+                }
+            }
+        }
     }
 
     println!(); // New line after progress
@@ -771,19 +966,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         total_input_samples, packets_decoded
     );
 
-    if files_written.len() > 1 {
-        println!(
-            "Successfully saved {} files ({:.1} seconds of audio, {} bytes downloaded):",
-            files_written.len(), duration_secs, bytes_downloaded
-        );
-        for file in &files_written {
-            println!("  - {}", file);
+    match storage_format {
+        StorageFormat::File => {
+            if files_written.len() > 1 {
+                println!(
+                    "Successfully saved {} files ({:.1} seconds of audio, {} bytes downloaded):",
+                    files_written.len(), duration_secs, bytes_downloaded
+                );
+                for file in &files_written {
+                    println!("  - {}", file);
+                }
+            } else {
+                println!(
+                    "Successfully saved {} ({:.1} seconds of audio, {} bytes downloaded)",
+                    output_filename, duration_secs, bytes_downloaded
+                );
+            }
         }
-    } else {
-        println!(
-            "Successfully saved {} ({:.1} seconds of audio, {} bytes downloaded)",
-            output_filename, duration_secs, bytes_downloaded
-        );
+        StorageFormat::Sqlite => {
+            let db_path = format!("{}/{}.sqlite", output_dir, name);
+            let total_segments = segment_number + 1; // segment_number is 0-indexed
+            println!(
+                "Successfully saved {} segments to {} ({:.1} seconds of audio, {} bytes downloaded)",
+                total_segments, db_path, duration_secs, bytes_downloaded
+            );
+        }
     }
 
     Ok(())

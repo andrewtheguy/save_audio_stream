@@ -16,3 +16,5 @@ fdk-aac = "0.8.0"
 opus = "0.3"
 ogg = "0.9"
 hound = "3.5"
+rusqlite = { version = "0.37", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }

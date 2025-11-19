@@ -73,10 +73,11 @@ Most settings are specified in a TOML config file:
 ```toml
 # Required
 url = 'https://stream.example.com/radio'
-name = 'myradio'           # Name prefix for output file
+name = 'myradio'           # Name prefix for output
 
 # Optional (with defaults)
-format = 'opus'            # default: 'aac' (options: aac, opus, wav)
+audio_format = 'opus'      # default: 'opus' (options: aac, opus, wav)
+storage_format = 'sqlite'  # default: 'sqlite' (options: file, sqlite)
 duration = 3600            # default: 30 (seconds)
 bitrate = 24               # default: 32 for AAC, 16 for Opus
 output_dir = 'recordings'  # default: 'tmp'
@@ -88,8 +89,9 @@ split_interval = 300       # default: 0 (no splitting, in seconds)
 | Option | Description | Default | Required |
 |--------|-------------|---------|----------|
 | `url` | URL of the Shoutcast/Icecast stream | - | Yes |
-| `name` | Name prefix for output file | - | Yes |
-| `format` | Output format: `aac`, `opus`, or `wav` | aac | No |
+| `name` | Name prefix for output | - | Yes |
+| `audio_format` | Audio encoding: `aac`, `opus`, or `wav` | opus | No |
+| `storage_format` | Storage format: `file` or `sqlite` | sqlite | No |
 | `duration` | Recording duration in seconds | 30 | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
 | `output_dir` | Base output directory | tmp | No |
@@ -114,27 +116,49 @@ save_audio_stream -c config/am1430.toml -d 3600
 
 ## Output
 
-Files are saved to a date-organized directory structure based on the server's response time (UTC):
+### SQLite Storage (Default)
+
+When `storage_format = 'sqlite'`, audio segments are stored in a SQLite database:
+
+```
+output_dir/name.sqlite
+```
+
+**Database Schema:**
+
+```sql
+-- Key-value metadata
+CREATE TABLE metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+-- Keys: uuid, name, audio_format, split_interval
+
+-- Audio segments
+CREATE TABLE segments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp_ms INTEGER NOT NULL,  -- Unix timestamp in milliseconds
+    audio_data BLOB NOT NULL
+);
+```
+
+### File Storage
+
+When `storage_format = 'file'`, files are saved to a date-organized directory structure:
 
 ```
 output_dir/name/yyyy/mm/dd/name_timestamp.ext
 ```
 
-### Without Splitting
-- `tmp/recording/2024/11/18/recording_20241118_143022.aac`
-- `tmp/recording/2024/11/18/recording_20241118_143022.opus`
-- `tmp/recording/2024/11/18/recording_20241118_143022.wav`
-
-### With Splitting
-When using `-s/--split-interval`, files are numbered sequentially:
-- `tmp/recording/2024/11/18/recording_20241118_143022_000.opus`
-- `tmp/recording/2024/11/18/recording_20241118_143022_001.opus`
-- `tmp/recording/2024/11/18/recording_20241118_143022_002.opus`
-- ...
-
-### Custom Name Example
-With `-n myradio`:
+#### Without Splitting
 - `tmp/myradio/2024/11/18/myradio_20241118_143022.opus`
+
+#### With Splitting
+When using `split_interval`, files are numbered sequentially:
+- `tmp/myradio/2024/11/18/myradio_20241118_143022_000.opus`
+- `tmp/myradio/2024/11/18/myradio_20241118_143022_001.opus`
+- `tmp/myradio/2024/11/18/myradio_20241118_143022_002.opus`
+- ...
 
 ### Output Format Specifications
 
