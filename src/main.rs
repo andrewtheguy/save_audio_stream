@@ -1,10 +1,18 @@
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
 use chrono::{DateTime, Utc};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use hound::{WavSpec, WavWriter};
 use rusqlite::Connection;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::Arc as StdArc;
 use uuid::Uuid;
 use fdk_aac::enc::{
     AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
@@ -70,13 +78,31 @@ struct Config {
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Download Shoutcast stream and save as AAC, Opus, or WAV")]
 struct Args {
-    /// Path to config file (TOML format)
-    #[arg(short, long)]
-    config: PathBuf,
+    #[command(subcommand)]
+    command: Command,
+}
 
-    /// Duration in seconds to record (overrides config file)
-    #[arg(short, long)]
-    duration: Option<u64>,
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Record audio from a stream
+    Record {
+        /// Path to config file (TOML format)
+        #[arg(short, long)]
+        config: PathBuf,
+
+        /// Duration in seconds to record (overrides config file)
+        #[arg(short, long)]
+        duration: Option<u64>,
+    },
+    /// Serve audio from SQLite database via HTTP
+    Serve {
+        /// Path to SQLite database file
+        sqlite_file: PathBuf,
+
+        /// Port to listen on
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+    },
 }
 
 /// A streaming media source that reads from a channel
@@ -218,15 +244,22 @@ fn resample(samples: &[i16], src_rate: u32, target_rate: u32) -> Vec<i16> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
+    match args.command {
+        Command::Record { config, duration } => record(config, duration),
+        Command::Serve { sqlite_file, port } => serve(sqlite_file, port),
+    }
+}
+
+fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Box<dyn std::error::Error>> {
     // Load config file (required)
-    let config_content = std::fs::read_to_string(&args.config)
-        .map_err(|e| format!("Failed to read config file '{}': {}", args.config.display(), e))?;
+    let config_content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config file '{}': {}", config_path.display(), e))?;
     let config: Config = toml::from_str(&config_content)
-        .map_err(|e| format!("Failed to parse config file '{}': {}", args.config.display(), e))?;
+        .map_err(|e| format!("Failed to parse config file '{}': {}", config_path.display(), e))?;
 
     // Extract config values with defaults
     let url = config.url;
-    let duration = args.duration.or(config.duration).unwrap_or(30);
+    let duration = duration_override.or(config.duration).unwrap_or(30);
     let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
     let storage_format = config.storage_format.unwrap_or(StorageFormat::Sqlite);
     let bitrate = config.bitrate;
@@ -1052,4 +1085,147 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+// Serve subcommand implementation
+fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    // Verify database exists and is Opus format
+    if !sqlite_file.exists() {
+        return Err(format!("Database file not found: {}", sqlite_file.display()).into());
+    }
+
+    let conn = Connection::open(&sqlite_file)?;
+
+    // Check audio format
+    let audio_format: String = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'audio_format'", [], |row| row.get(0))
+        .map_err(|_| "Database missing audio_format metadata")?;
+
+    if audio_format != "opus" {
+        return Err(format!("Only Opus format is supported for serving, found: {}", audio_format).into());
+    }
+
+    let db_path = sqlite_file.to_string_lossy().to_string();
+    println!("Starting server for: {}", db_path);
+    println!("Listening on: http://0.0.0.0:{}", port);
+    println!("Endpoint: GET /audio?start_id=<N>&end_id=<N>");
+
+    // Create tokio runtime and run server
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let app_state = StdArc::new(AppState { db_path });
+
+        let app = Router::new()
+            .route("/audio", get(audio_handler))
+            .with_state(app_state);
+
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await
+            .map_err(|e| format!("Failed to bind to port {}: {}", port, e))?;
+        axum::serve(listener, app).await
+            .map_err(|e| format!("Server error: {}", e))?;
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+}
+
+// State for axum handlers
+struct AppState {
+    db_path: String,
+}
+
+// Query parameters for audio endpoint
+#[derive(Deserialize)]
+struct AudioQuery {
+    start_id: i64,
+    end_id: i64,
+}
+
+// Audio endpoint handler
+async fn audio_handler(
+    State(state): State<StdArc<AppState>>,
+    Query(query): Query<AudioQuery>,
+) -> impl IntoResponse {
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+    };
+
+    // Get max id
+    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::NOT_FOUND, "No segments in database").into_response(),
+    };
+
+    // Validate end_id
+    if query.end_id > max_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("end_id {} exceeds max id {}", query.end_id, max_id),
+        ).into_response();
+    }
+
+    if query.start_id > query.end_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("start_id {} cannot be greater than end_id {}", query.start_id, query.end_id),
+        ).into_response();
+    }
+
+    // Query segments
+    let mut stmt = match conn.prepare("SELECT audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
+    };
+
+    let segments: Vec<Vec<u8>> = match stmt.query_map([query.start_id, query.end_id], |row| row.get(0)) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Fetch error: {}", e)).into_response(),
+    };
+
+    if segments.is_empty() {
+        return (StatusCode::NOT_FOUND, "No segments found in range").into_response();
+    }
+
+    // Build Ogg container with Opus data
+    let mut ogg_data = Vec::new();
+    {
+        let mut writer = PacketWriter::new(&mut ogg_data);
+        let mut granule_pos: u64 = 0;
+
+        for (i, segment) in segments.iter().enumerate() {
+            // Parse length-prefixed Opus packets from segment
+            let mut offset = 0;
+            while offset + 2 <= segment.len() {
+                let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
+                offset += 2;
+
+                if offset + len > segment.len() {
+                    break;
+                }
+
+                let packet = &segment[offset..offset + len];
+                offset += len;
+
+                // Each Opus packet is 960 samples at 48kHz (20ms)
+                granule_pos += 960;
+
+                let is_last = i == segments.len() - 1 && offset >= segment.len();
+                let end_info = if is_last {
+                    ogg::writing::PacketWriteEndInfo::EndStream
+                } else {
+                    ogg::writing::PacketWriteEndInfo::NormalPacket
+                };
+
+                if let Err(e) = writer.write_packet(packet.to_vec(), 1, end_info, granule_pos) {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Ogg write error: {}", e)).into_response();
+                }
+            }
+        }
+    }
+
+    (
+        StatusCode::OK,
+        [("content-type", "audio/ogg")],
+        ogg_data,
+    ).into_response()
 }
