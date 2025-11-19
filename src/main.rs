@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
+use hound::{WavSpec, WavWriter};
 use serde::Deserialize;
 use std::path::PathBuf;
 use fdk_aac::enc::{
@@ -30,6 +31,8 @@ enum OutputFormat {
     Aac,
     /// Opus format (48kHz mono, 16kbps)
     Opus,
+    /// WAV format (lossless, preserves original sample rate)
+    Wav,
 }
 
 /// Configuration file structure
@@ -40,6 +43,9 @@ struct Config {
     format: Option<OutputFormat>,
     bitrate: Option<u32>,
     name: Option<String>,
+    output_dir: Option<String>,
+    /// Split interval in seconds (0 = no splitting)
+    split_interval: Option<u64>,
 }
 
 #[derive(Parser, Debug)]
@@ -68,6 +74,14 @@ struct Args {
     /// Name prefix for output file (default: recording)
     #[arg(short = 'n', long)]
     name: Option<String>,
+
+    /// Output directory (default: tmp/)
+    #[arg(short = 'o', long)]
+    output_dir: Option<String>,
+
+    /// Split interval in seconds (0 = no splitting)
+    #[arg(short = 's', long)]
+    split_interval: Option<u64>,
 }
 
 /// A streaming media source that reads from a channel
@@ -226,6 +240,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_format = args.format.or(config.format).unwrap_or(OutputFormat::Aac);
     let bitrate = args.bitrate.or(config.bitrate);
     let name = args.name.or(config.name).unwrap_or_else(|| "recording".to_string());
+    let output_dir = args.output_dir.or(config.output_dir).unwrap_or_else(|| "tmp".to_string());
+    let split_interval = args.split_interval.or(config.split_interval).unwrap_or(0);
+
+    // Create output directory if it doesn't exist
+    std::fs::create_dir_all(&output_dir)
+        .map_err(|e| format!("Failed to create output directory '{}': {}", output_dir, e))?;
 
     println!("Connecting to: {}", url);
     println!("Recording duration: {} seconds", duration);
@@ -265,14 +285,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         datetime.format("%Y%m%d_%H%M%S").to_string()
     };
 
-    let output_filename = match output_format {
-        OutputFormat::Aac => format!("{}_{}.aac", name, timestamp),
-        OutputFormat::Opus => format!("{}_{}.opus", name, timestamp),
+    // Generate output filename (with optional segment number for splitting)
+    let generate_filename = |segment: Option<u32>| -> String {
+        let ext = match output_format {
+            OutputFormat::Aac => "aac",
+            OutputFormat::Opus => "opus",
+            OutputFormat::Wav => "wav",
+        };
+        match segment {
+            Some(n) => format!("{}/{}_{}_{:03}.{}", output_dir, name, timestamp, n, ext),
+            None => format!("{}/{}_{}.{}", output_dir, name, timestamp, ext),
+        }
+    };
+
+    let output_filename = if split_interval > 0 {
+        generate_filename(Some(0))
+    } else {
+        generate_filename(None)
     };
 
     println!("Content-Type: {}", content_type);
     println!("Output file: {}", output_filename);
     println!("Output format: {:?}", output_format);
+    if split_interval > 0 {
+        println!("Split interval: {} seconds", split_interval);
+    }
 
     // Determine codec from content type
     let codec_hint = match content_type.as_str() {
@@ -386,70 +423,115 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (output_sample_rate, frame_size, default_bitrate) = match output_format {
         OutputFormat::Aac => (16000u32, 1024usize, 32u32),
         OutputFormat::Opus => (48000u32, 960usize, 16u32),
+        OutputFormat::Wav => (src_sample_rate, 1024usize, 0u32), // WAV uses source rate, frame_size is arbitrary
     };
     let bitrate_kbps = bitrate.unwrap_or(default_bitrate);
     let bitrate = bitrate_kbps as i32 * 1000;
 
-    println!(
-        "Output: {} Hz, mono, {} kbps {:?}",
-        output_sample_rate,
-        bitrate_kbps,
-        output_format
-    );
+    match output_format {
+        OutputFormat::Wav => println!(
+            "Output: {} Hz, mono, lossless WAV",
+            output_sample_rate
+        ),
+        _ => println!(
+            "Output: {} Hz, mono, {} kbps {:?}",
+            output_sample_rate,
+            bitrate_kbps,
+            output_format
+        ),
+    }
+
+    // Helper to create AAC encoder
+    let create_aac_encoder = || -> Result<AacEncoder, Box<dyn std::error::Error>> {
+        let params = EncoderParams {
+            bit_rate: AacBitRate::Cbr(bitrate as u32),
+            sample_rate: 16000,
+            channels: ChannelMode::Mono,
+            transport: Transport::Adts,
+            audio_object_type: AudioObjectType::Mpeg4LowComplexity,
+        };
+        AacEncoder::new(params)
+            .map_err(|e| format!("Failed to create AAC encoder: {:?}", e).into())
+    };
+
+    // Helper to create Opus encoder
+    let create_opus_encoder = || -> Result<OpusEncoder, Box<dyn std::error::Error>> {
+        let mut encoder = OpusEncoder::new(48000, Channels::Mono, Application::Voip)
+            .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
+        encoder
+            .set_bitrate(OpusBitrate::Bits(bitrate))
+            .map_err(|e| format!("Failed to set bitrate: {}", e))?;
+        Ok(encoder)
+    };
+
+    // Helper to create Ogg writer with Opus headers
+    let create_ogg_writer = |filename: &str| -> Result<PacketWriter<File>, Box<dyn std::error::Error>> {
+        let file = File::create(filename)?;
+        let mut writer = PacketWriter::new(file);
+
+        // Write Opus headers
+        let serial = 1;
+        let id_header = create_opus_id_header(1, src_sample_rate);
+        writer.write_packet(
+            id_header,
+            serial,
+            ogg::writing::PacketWriteEndInfo::EndPage,
+            0,
+        )?;
+
+        let comment_header = create_opus_comment_header();
+        writer.write_packet(
+            comment_header,
+            serial,
+            ogg::writing::PacketWriteEndInfo::EndPage,
+            0,
+        )?;
+
+        Ok(writer)
+    };
+
+    // Helper to create WAV writer
+    let create_wav_writer = |filename: &str| -> Result<WavWriter<std::io::BufWriter<File>>, Box<dyn std::error::Error>> {
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: output_sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let writer = WavWriter::create(filename, spec)?;
+        Ok(writer)
+    };
 
     // Create encoders based on format
     let mut aac_encoder = None;
     let mut opus_encoder = None;
     let mut ogg_writer = None;
     let mut output_file = None;
+    let mut wav_writer: Option<WavWriter<std::io::BufWriter<File>>> = None;
 
     match output_format {
         OutputFormat::Aac => {
-            let params = EncoderParams {
-                bit_rate: AacBitRate::Cbr(bitrate as u32),
-                sample_rate: 16000,
-                channels: ChannelMode::Mono,
-                transport: Transport::Adts,
-                audio_object_type: AudioObjectType::Mpeg4LowComplexity,
-            };
-            aac_encoder = Some(
-                AacEncoder::new(params)
-                    .map_err(|e| format!("Failed to create AAC encoder: {:?}", e))?,
-            );
+            aac_encoder = Some(create_aac_encoder()?);
             output_file = Some(File::create(&output_filename)?);
         }
         OutputFormat::Opus => {
-            let mut encoder = OpusEncoder::new(48000, Channels::Mono, Application::Voip)
-                .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
-            encoder
-                .set_bitrate(OpusBitrate::Bits(bitrate))
-                .map_err(|e| format!("Failed to set bitrate: {}", e))?;
-            opus_encoder = Some(encoder);
-
-            let file = File::create(&output_filename)?;
-            let mut writer = PacketWriter::new(file);
-
-            // Write Opus headers
-            let serial = 1;
-            let id_header = create_opus_id_header(1, src_sample_rate);
-            writer.write_packet(
-                id_header,
-                serial,
-                ogg::writing::PacketWriteEndInfo::EndPage,
-                0,
-            )?;
-
-            let comment_header = create_opus_comment_header();
-            writer.write_packet(
-                comment_header,
-                serial,
-                ogg::writing::PacketWriteEndInfo::EndPage,
-                0,
-            )?;
-
-            ogg_writer = Some(writer);
+            opus_encoder = Some(create_opus_encoder()?);
+            ogg_writer = Some(create_ogg_writer(&output_filename)?);
+        }
+        OutputFormat::Wav => {
+            wav_writer = Some(create_wav_writer(&output_filename)?);
         }
     }
+
+    // Splitting state
+    let split_samples = if split_interval > 0 {
+        split_interval * output_sample_rate as u64
+    } else {
+        u64::MAX // No splitting
+    };
+    let mut segment_number: u32 = 0;
+    let mut segment_samples: u64 = 0;
+    let mut files_written: Vec<String> = vec![output_filename.clone()];
 
     // Decode and encode in real-time
     println!("Decoding and encoding to {:?}...", output_format);
@@ -518,8 +600,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         match encoder.encode(&frame, &mut encode_output) {
                                             Ok(info) => {
                                                 total_output_samples += frame_size as u64;
+                                                segment_samples += frame_size as u64;
                                                 if let Some(ref mut file) = output_file {
                                                     file.write_all(&encode_output[..info.output_size])?;
+                                                }
+
+                                                // Check if we need to split to a new file
+                                                if split_interval > 0 && segment_samples >= split_samples {
+                                                    segment_number += 1;
+                                                    segment_samples = 0;
+                                                    let new_filename = generate_filename(Some(segment_number));
+                                                    println!("\nStarting new segment: {}", new_filename);
+                                                    files_written.push(new_filename.clone());
+                                                    output_file = Some(File::create(&new_filename)?);
                                                 }
                                             }
                                             Err(e) => {
@@ -533,19 +626,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         match encoder.encode(&frame, &mut encode_output) {
                                             Ok(len) => {
                                                 total_output_samples += frame_size as u64;
+                                                segment_samples += frame_size as u64;
                                                 if let Some(ref mut writer) = ogg_writer {
+                                                    // Check if this is the last packet before split
+                                                    let is_end_of_segment = split_interval > 0 && segment_samples >= split_samples;
+                                                    let end_info = if is_end_of_segment {
+                                                        ogg::writing::PacketWriteEndInfo::EndStream
+                                                    } else {
+                                                        ogg::writing::PacketWriteEndInfo::NormalPacket
+                                                    };
                                                     writer.write_packet(
                                                         encode_output[..len].to_vec(),
                                                         1,
-                                                        ogg::writing::PacketWriteEndInfo::NormalPacket,
+                                                        end_info,
                                                         total_output_samples,
                                                     )?;
+                                                }
+
+                                                // Check if we need to split to a new file
+                                                if split_interval > 0 && segment_samples >= split_samples {
+                                                    segment_number += 1;
+                                                    segment_samples = 0;
+                                                    let new_filename = generate_filename(Some(segment_number));
+                                                    println!("\nStarting new segment: {}", new_filename);
+                                                    files_written.push(new_filename.clone());
+                                                    ogg_writer = Some(create_ogg_writer(&new_filename)?);
                                                 }
                                             }
                                             Err(e) => {
                                                 eprintln!("Opus encode error: {:?}", e);
                                             }
                                         }
+                                    }
+                                }
+                                OutputFormat::Wav => {
+                                    if let Some(ref mut writer) = wav_writer {
+                                        for sample in &frame {
+                                            writer.write_sample(*sample)?;
+                                        }
+                                        total_output_samples += frame_size as u64;
+                                        segment_samples += frame_size as u64;
+                                    }
+
+                                    // Check if we need to split to a new file
+                                    if split_interval > 0 && segment_samples >= split_samples {
+                                        // Finalize current WAV file
+                                        if let Some(writer) = wav_writer.take() {
+                                            writer.finalize()?;
+                                        }
+                                        segment_number += 1;
+                                        segment_samples = 0;
+                                        let new_filename = generate_filename(Some(segment_number));
+                                        println!("\nStarting new segment: {}", new_filename);
+                                        files_written.push(new_filename.clone());
+                                        wav_writer = Some(create_wav_writer(&new_filename)?);
                                     }
                                 }
                             }
@@ -586,11 +720,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Encode any remaining samples (pad with silence if needed)
+    // Encode any remaining samples (pad with silence if needed for AAC/Opus, write as-is for WAV)
     if !mono_buffer.is_empty() {
-        mono_buffer.resize(frame_size, 0);
         match output_format {
             OutputFormat::Aac => {
+                mono_buffer.resize(frame_size, 0);
                 if let Some(ref encoder) = aac_encoder {
                     if let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {
                         total_output_samples += frame_size as u64;
@@ -601,6 +735,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             OutputFormat::Opus => {
+                mono_buffer.resize(frame_size, 0);
                 if let Some(ref mut encoder) = opus_encoder {
                     if let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output) {
                         total_output_samples += frame_size as u64;
@@ -615,7 +750,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            OutputFormat::Wav => {
+                // WAV doesn't need padding - write remaining samples as-is
+                if let Some(ref mut writer) = wav_writer {
+                    for sample in &mono_buffer {
+                        writer.write_sample(*sample)?;
+                    }
+                    total_output_samples += mono_buffer.len() as u64;
+                }
+            }
         }
+    }
+
+    // Finalize WAV file if needed
+    if let Some(writer) = wav_writer.take() {
+        writer.finalize()?;
     }
 
     println!(); // New line after progress
@@ -633,10 +782,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Decoded {} samples from {} packets",
         total_input_samples, packets_decoded
     );
-    println!(
-        "Successfully saved {} ({:.1} seconds of audio, {} bytes downloaded)",
-        output_filename, duration_secs, bytes_downloaded
-    );
+
+    if files_written.len() > 1 {
+        println!(
+            "Successfully saved {} files ({:.1} seconds of audio, {} bytes downloaded):",
+            files_written.len(), duration_secs, bytes_downloaded
+        );
+        for file in &files_written {
+            println!("  - {}", file);
+        }
+    } else {
+        println!(
+            "Successfully saved {} ({:.1} seconds of audio, {} bytes downloaded)",
+            output_filename, duration_secs, bytes_downloaded
+        );
+    }
 
     Ok(())
 }
