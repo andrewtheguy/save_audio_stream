@@ -972,7 +972,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
- "cmake",
  "crossbeam-channel",
  "fdk-aac",
  "httpdate",
