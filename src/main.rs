@@ -129,31 +129,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let content_type = response
         .headers()
         .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("audio/mpeg")
+        .ok_or("Missing Content-Type header")?
+        .to_str()
+        .map_err(|_| "Invalid Content-Type header encoding")?
         .to_string();
 
     let date_header = response
         .headers()
         .get("date")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .ok_or("Missing Date header")?
+        .to_str()
+        .map_err(|_| "Invalid Date header encoding")?;
 
     // Parse date for filename
-    let timestamp = if !date_header.is_empty() {
-        match httpdate::parse_http_date(date_header) {
-            Ok(system_time) => {
-                let datetime: DateTime<Utc> = system_time.into();
-                datetime.format("%Y%m%d_%H%M%S").to_string()
-            }
-            Err(_) => {
-                let now: DateTime<Utc> = Utc::now();
-                now.format("%Y%m%d_%H%M%S").to_string()
-            }
-        }
-    } else {
-        let now: DateTime<Utc> = Utc::now();
-        now.format("%Y%m%d_%H%M%S").to_string()
+    let timestamp = {
+        let system_time = httpdate::parse_http_date(date_header)
+            .map_err(|_| format!("Failed to parse Date header: {}", date_header))?;
+        let datetime: DateTime<Utc> = system_time.into();
+        datetime.format("%Y%m%d_%H%M%S").to_string()
     };
 
     let output_filename = format!("recording_{}.wav", timestamp);
@@ -166,11 +159,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "audio/mpeg" | "audio/mp3" => "mp3",
         "audio/aac" | "audio/aacp" | "audio/x-aac" => "aac",
         _ => {
-            println!(
-                "Warning: Unknown content type '{}', assuming MP3",
+            return Err(format!(
+                "Unsupported Content-Type: '{}'. Supported types: audio/mpeg, audio/mp3, audio/aac, audio/aacp, audio/x-aac",
                 content_type
-            );
-            "mp3"
+            ).into());
         }
     };
 
@@ -263,8 +255,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sample_rate = codec_params.sample_rate.ok_or("Unknown sample rate")?;
     let channels = codec_params
         .channels
-        .map(|c| c.count())
-        .unwrap_or(2) as u16;
+        .ok_or("Unknown channel count")?
+        .count() as u16;
 
     println!("Audio format: {} Hz, {} channels", sample_rate, channels);
 
