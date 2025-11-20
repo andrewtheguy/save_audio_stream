@@ -66,8 +66,8 @@ pub struct SyncConfig {
     pub remote_url: String,
     /// Local base directory for synced databases
     pub local_dir: String,
-    /// Show names to sync
-    pub shows: Vec<String>,
+    /// Show names to sync (optional - if not specified, sync all shows from remote)
+    pub shows: Option<Vec<String>>,
     /// Chunk size for batch fetching (default: 100)
     pub chunk_size: Option<u64>,
 }

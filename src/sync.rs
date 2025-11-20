@@ -2,8 +2,25 @@ use fs2::FileExt;
 use reqwest::blocking::Client;
 use rusqlite::Connection;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
+
+#[derive(Debug, Deserialize)]
+struct ShowInfo {
+    name: String,
+    #[allow(dead_code)]
+    database_file: String,
+    #[allow(dead_code)]
+    min_id: i64,
+    #[allow(dead_code)]
+    max_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShowsList {
+    shows: Vec<ShowInfo>,
+}
 
 #[derive(Debug, Deserialize)]
 struct ShowMetadata {
@@ -34,7 +51,7 @@ struct SegmentData {
 pub fn sync_shows(
     remote_url: String,
     local_dir: PathBuf,
-    show_names: Vec<String>,
+    show_names_filter: Option<Vec<String>>,
     chunk_size: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create local directory if it doesn't exist
@@ -51,6 +68,63 @@ pub fn sync_shows(
         )
     })?;
     // Lock will be held until _lock_file is dropped (end of function)
+
+    // Fetch available shows from remote server
+    println!("Fetching available shows from remote...");
+    let client = Client::new();
+    let shows_url = format!("{}/api/sync/shows", remote_url);
+
+    let shows_list: ShowsList = client
+        .get(&shows_url)
+        .send()
+        .map_err(|e| format!("Failed to fetch shows list from remote: {}", e))?
+        .json()
+        .map_err(|e| format!("Failed to parse shows list response: {}", e))?;
+
+    let available_shows: HashSet<String> = shows_list
+        .shows
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+
+    if available_shows.is_empty() {
+        println!("No shows available on remote server");
+        return Ok(());
+    }
+
+    // Determine which shows to sync
+    let show_names: Vec<String> = match show_names_filter {
+        Some(whitelist) => {
+            // Validate that all whitelisted shows exist on remote
+            let missing_shows: Vec<String> = whitelist
+                .iter()
+                .filter(|name| !available_shows.contains(*name))
+                .cloned()
+                .collect();
+
+            if !missing_shows.is_empty() {
+                return Err(format!(
+                    "The following show(s) in whitelist were not found on remote: {}",
+                    missing_shows.join(", ")
+                )
+                .into());
+            }
+
+            println!("Using whitelist: {} show(s)", whitelist.len());
+            whitelist
+        }
+        None => {
+            // Sync all available shows
+            let all_shows: Vec<String> = available_shows.into_iter().collect();
+            println!("Syncing all available shows: {} show(s)", all_shows.len());
+            all_shows
+        }
+    };
+
+    if show_names.is_empty() {
+        println!("No shows to sync");
+        return Ok(());
+    }
 
     println!("Starting sync of {} show(s)", show_names.len());
 
