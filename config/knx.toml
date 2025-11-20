@@ -1,5 +1,5 @@
-url='https://video1.getstreamhosting.com:8304/stream'
-name='am1430'
+url='https://live.amperwave.net/manifest/audacy-knxamaac-imc'
+name='knx_news'
 
 split_interval = 10  # Split every 10 seconds
 output_dir = 'tmp'  # Directory to save the output files
