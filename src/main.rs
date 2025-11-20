@@ -1331,7 +1331,7 @@ fn write_ogg_stream<W: Write>(
     duration_secs: f64,
     samples_per_packet: u64,
     writer: W,
-) -> Result<(), std::io::Error> {
+) -> Result<W, std::io::Error> {
     let mut stmt = conn
         .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
         .map_err(map_to_io_error)?;
@@ -1358,6 +1358,8 @@ fn write_ogg_stream<W: Write>(
         .map_err(map_to_io_error)?;
 
     let mut granule_pos: u64 = 0;
+    let mut packet_count: u32 = 0;
+    const PACKETS_PER_PAGE: u32 = 50;
 
     while let Some(row) = rows.next().map_err(map_to_io_error)? {
         let id: i64 = row.get(0).map_err(map_to_io_error)?;
@@ -1377,10 +1379,13 @@ fn write_ogg_stream<W: Write>(
             offset += len;
 
             granule_pos += samples_per_packet;
+            packet_count += 1;
 
             let is_last_packet = is_last_segment && offset >= segment.len();
             let end_info = if is_last_packet {
                 ogg::writing::PacketWriteEndInfo::EndStream
+            } else if packet_count % PACKETS_PER_PAGE == 0 {
+                ogg::writing::PacketWriteEndInfo::EndPage
             } else {
                 ogg::writing::PacketWriteEndInfo::NormalPacket
             };
@@ -1391,7 +1396,7 @@ fn write_ogg_stream<W: Write>(
         }
     }
 
-    Ok(())
+    Ok(writer.into_inner())
 }
 
 // Query parameters for audio endpoint
@@ -1466,16 +1471,16 @@ async fn audio_handler(
         )
         .unwrap_or(48_000);
 
-    // Check 6 hour limit
+    // Check 60 minute limit
     let segment_count = query.end_id - query.start_id + 1;
     let estimated_duration = segment_count as f64 * split_interval;
-    const MAX_DURATION_SECS: f64 = 6.0 * 60.0 * 60.0; // 6 hours
+    const MAX_DURATION_SECS: f64 = 60.0 * 60.0; // 60 minutes
 
     if estimated_duration > MAX_DURATION_SECS {
         return (
             StatusCode::BAD_REQUEST,
             format!(
-                "Requested duration {:.0}s exceeds maximum of {:.0}s",
+                "Requested duration {:.0}s exceeds maximum of {:.0}s (60 minutes)",
                 estimated_duration, MAX_DURATION_SECS
             ),
         )
