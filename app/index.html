@@ -6,27 +6,7 @@
     <title>Audio Stream Server</title>
   </head>
   <body>
-    <div id="app">
-      <h1>Audio Stream Server</h1>
-      <div id="loading">Loading segment information...</div>
-      <div id="content" style="display: none;">
-        <div class="url-section">
-          <h2>Available URLs</h2>
-          <div class="url-item">
-            <h3>Audio URL (Ogg/Opus)</h3>
-            <code id="audio-url"></code>
-          </div>
-          <div class="url-item">
-            <h3>MPD URL (DASH Manifest)</h3>
-            <code id="mpd-url"></code>
-          </div>
-        </div>
-        <div class="info-section">
-          <p>Segment Range: <span id="segment-range"></span></p>
-        </div>
-      </div>
-      <div id="error" style="display: none; color: red;"></div>
-    </div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
