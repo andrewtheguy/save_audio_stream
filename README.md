@@ -55,61 +55,94 @@ The binary will be at `target/release/save_audio_stream`.
 
 ## Usage
 
+### Record Command
+
 ```bash
-save_audio_stream -c <CONFIG_FILE> [-d <DURATION>]
+save_audio_stream record -c <CONFIG_FILE> [-p <PORT>]
 ```
 
-### CLI Options
+**CLI Options:**
 
 | Option | Description |
 |--------|-------------|
-| `-c, --config` | Path to config file (required) |
-| `-d, --duration` | Recording duration in seconds (overrides config) |
+| `-c, --config` | Path to multi-session config file (required) |
+| `-p, --port` | Override API server port for all sessions (optional) |
 
-### Config File Format (Required)
+### Config File Format
 
-Most settings are specified in a TOML config file:
+The config file uses TOML format with global settings and an array of recording sessions:
 
 ```toml
+# Global settings (optional)
+output_dir = 'recordings'  # default: 'tmp' (applies to all sessions)
+
+[[sessions]]
 # Required
 url = 'https://stream.example.com/radio'
-name = 'myradio'           # Name prefix for output
+name = 'myradio'
+record_start = '14:00'     # UTC time to start recording (HH:MM)
+record_end = '16:00'       # UTC time to stop recording (HH:MM)
 
 # Optional (with defaults)
 audio_format = 'opus'      # default: 'opus' (options: aac, opus, wav)
 storage_format = 'sqlite'  # default: 'sqlite' (options: file, sqlite)
-duration = 3600            # default: 30 (seconds)
 bitrate = 24               # default: 32 for AAC, 16 for Opus
-output_dir = 'recordings'  # default: 'tmp'
 split_interval = 300       # default: 0 (no splitting, in seconds)
+api_port = 3000            # Optional: start API server on this port
+
+[[sessions]]
+# Add more sessions as needed
+url = 'https://stream2.example.com/radio'
+name = 'myradio2'
+record_start = '18:00'
+record_end = '20:00'
+api_port = 3001            # Different port for second session
 ```
 
 ### Config Options
+
+**Global Options:**
+
+| Option | Description | Default | Required |
+|--------|-------------|---------|----------|
+| `output_dir` | Base output directory for all sessions | tmp | No |
+
+**Session Options:**
 
 | Option | Description | Default | Required |
 |--------|-------------|---------|----------|
 | `url` | URL of the Shoutcast/Icecast stream | - | Yes |
 | `name` | Name prefix for output | - | Yes |
+| `record_start` | Recording start time in UTC (HH:MM) | - | Yes |
+| `record_end` | Recording end time in UTC (HH:MM) | - | Yes |
 | `audio_format` | Audio encoding: `aac`, `opus`, or `wav` | opus | No |
 | `storage_format` | Storage format: `file` or `sqlite` | sqlite | No |
-| `duration` | Recording duration in seconds | 30 | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
-| `output_dir` | Base output directory | tmp | No |
 | `split_interval` | Split files every N seconds (0 = no split) | 0 | No |
+| `api_port` | API server port for sync endpoints | - | No |
+
+**Note:** The `api_port` option starts an HTTP API server alongside recording for synchronization endpoints. Useful for remote access to recorded audio while recording is in progress.
 
 ### Examples
 
-Use a config file with default duration:
+Record multiple sessions from config:
 ```bash
-save_audio_stream -c config/am1430.toml
+save_audio_stream record -c config/sessions.toml
 ```
 
-Override duration from CLI (record 60 seconds):
+Override API ports (3000, 3001 for multiple sessions):
 ```bash
-save_audio_stream -c config/am1430.toml -d 60
+save_audio_stream record -c config/sessions.toml -p 3000
 ```
 
-Record for 1 hour:
+### Other Commands
+
+**Serve recorded audio:**
+```bash
+save_audio_stream serve <database.sqlite> [-p PORT]
+```
+
+**Sync from remote server:**
 ```bash
 save_audio_stream -c config/am1430.toml -d 3600
 ```

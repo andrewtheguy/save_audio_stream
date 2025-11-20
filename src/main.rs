@@ -33,6 +33,10 @@ enum Command {
         /// Path to multi-session config file (TOML format with [[sessions]] array)
         #[arg(short, long)]
         config: PathBuf,
+
+        /// Override API server port for all sessions (overrides config file setting)
+        #[arg(short, long)]
+        port: Option<u16>,
     },
     /// Serve audio from SQLite database via HTTP
     Serve {
@@ -69,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     match args.command {
-        Command::Record { config } => record_multi_session(config),
+        Command::Record { config, port } => record_multi_session(config, port),
         Command::Serve { sqlite_file, port } => serve::serve(sqlite_file, port),
         Command::Sync {
             remote_url,
@@ -80,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn record_multi_session(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
     // Load multi-session config file
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
@@ -105,7 +109,15 @@ fn record_multi_session(config_path: PathBuf) -> Result<(), Box<dyn std::error::
 
     // Spawn a thread for each session
     let mut handles = Vec::new();
-    for session_config in multi_config.sessions {
+    for (session_idx, mut session_config) in multi_config.sessions.into_iter().enumerate() {
+        // Copy global output_dir to session config
+        session_config.output_dir = multi_config.output_dir.clone();
+
+        // Apply port override if provided (increment for each session to avoid conflicts)
+        if let Some(base_port) = port_override {
+            session_config.api_port = Some(base_port + session_idx as u16);
+        }
+
         let session_name = session_config.name.clone();
         let session_name_for_handle = session_name.clone();
 

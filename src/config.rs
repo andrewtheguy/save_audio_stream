@@ -35,6 +35,8 @@ pub struct Schedule {
 pub struct MultiSessionConfig {
     /// Array of recording sessions
     pub sessions: Vec<SessionConfig>,
+    /// Global output directory for all sessions (default: tmp)
+    pub output_dir: Option<String>,
 }
 
 /// Single session configuration
@@ -52,8 +54,11 @@ pub struct SessionConfig {
     pub bitrate: Option<u32>,
     /// Name prefix for output file (required)
     pub name: String,
-    /// Output directory (default: tmp)
-    pub output_dir: Option<String>,
     /// Split interval in seconds (0 = no splitting)
     pub split_interval: Option<u64>,
+    /// API server port for syncing endpoints (optional, can be overridden by CLI)
+    pub api_port: Option<u16>,
+    /// Output directory (populated from global config, not in TOML)
+    #[serde(skip)]
+    pub output_dir: Option<String>,
 }
