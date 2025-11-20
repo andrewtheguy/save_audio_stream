@@ -576,7 +576,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 println!("SQLite database: {}", db_path);
-                println!("Session UUID: {}", db_uuid);
+                println!("Session ID: {}", db_uuid);
             } else {
                 // New database - insert metadata with new uuid
                 let session_uuid: String = format!("db_{}", rand::thread_rng()
@@ -610,7 +610,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 )?;
 
                 println!("SQLite database: {}", db_path);
-                println!("Session UUID: {}", session_uuid);
+                println!("Session ID: {}", session_uuid);
             }
 
             sqlite_conn = Some(conn);
