@@ -1331,7 +1331,7 @@ fn write_ogg_stream<W: Write>(
     duration_secs: f64,
     samples_per_packet: u64,
     writer: W,
-) -> Result<W, std::io::Error> {
+) -> Result<(), std::io::Error> {
     let mut stmt = conn
         .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
         .map_err(map_to_io_error)?;
@@ -1358,8 +1358,6 @@ fn write_ogg_stream<W: Write>(
         .map_err(map_to_io_error)?;
 
     let mut granule_pos: u64 = 0;
-    let mut packet_count: u32 = 0;
-    const PACKETS_PER_PAGE: u32 = 50;
 
     while let Some(row) = rows.next().map_err(map_to_io_error)? {
         let id: i64 = row.get(0).map_err(map_to_io_error)?;
@@ -1379,13 +1377,10 @@ fn write_ogg_stream<W: Write>(
             offset += len;
 
             granule_pos += samples_per_packet;
-            packet_count += 1;
 
             let is_last_packet = is_last_segment && offset >= segment.len();
             let end_info = if is_last_packet {
                 ogg::writing::PacketWriteEndInfo::EndStream
-            } else if packet_count % PACKETS_PER_PAGE == 0 {
-                ogg::writing::PacketWriteEndInfo::EndPage
             } else {
                 ogg::writing::PacketWriteEndInfo::NormalPacket
             };
@@ -1396,7 +1391,7 @@ fn write_ogg_stream<W: Write>(
         }
     }
 
-    Ok(writer.into_inner())
+    Ok(())
 }
 
 // Query parameters for audio endpoint
