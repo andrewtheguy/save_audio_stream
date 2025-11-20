@@ -8,4 +8,7 @@ export default defineConfig({
       input: ["index.html"],
     },
   },
+  server: {
+    port: 21173,
+  },
 });

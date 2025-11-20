@@ -898,7 +898,7 @@ async fn segments_range_handler(
 
 #[cfg(debug_assertions)]
 async fn vite_proxy_handler(uri: Uri) -> Response {
-    const VITE_DEV_SERVER: &str = "http://localhost:5173";
+    const VITE_DEV_SERVER: &str = "http://localhost:21173";
 
     let path_and_query = uri.path_and_query()
         .map(|pq| pq.as_str())
@@ -908,17 +908,27 @@ async fn vite_proxy_handler(uri: Uri) -> Response {
 
     match reqwest::get(&vite_url).await {
         Ok(resp) => {
-            let status = resp.status();
+            let status_code = resp.status().as_u16();
             let headers = resp.headers().clone();
 
             match resp.bytes().await {
                 Ok(body) => {
                     let mut response = Response::new(Body::from(body));
-                    *response.status_mut() = status;
+
+                    if let Ok(status) = StatusCode::from_u16(status_code) {
+                        *response.status_mut() = status;
+                    }
 
                     for (name, value) in headers.iter() {
-                        if name != "transfer-encoding" {
-                            response.headers_mut().insert(name, value.clone());
+                        let name_str = name.as_str();
+                        if name_str != "transfer-encoding" {
+                            if let Ok(value_str) = value.to_str() {
+                                if let Ok(header_value) = HeaderValue::from_str(value_str) {
+                                    if let Ok(header_name) = header::HeaderName::from_bytes(name_str.as_bytes()) {
+                                        response.headers_mut().insert(header_name, header_value);
+                                    }
+                                }
+                            }
                         }
                     }
 
