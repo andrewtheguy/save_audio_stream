@@ -10,6 +10,7 @@ use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder
 use reqwest::blocking::Client;
 use rusqlite::Connection;
 use fs2::FileExt;
+use log::debug;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -773,7 +774,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                                                                     segment_number == 0,
                                                                     &segment_buffer,
                                                                 )?;
-                                                                println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                                debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
                                                             }
                                                             segment_buffer.clear();
                                                             segment_number += 1;
@@ -860,7 +861,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                                                                     segment_number == 0,
                                                                     &segment_buffer,
                                                                 )?;
-                                                                println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                                debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
                                                             }
                                                             segment_buffer.clear();
                                                             segment_number += 1;
@@ -926,8 +927,8 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                                                         segment_number == 0,
                                                         &segment_buffer,
                                                     )?;
-                                                    println!(
-                                                        "\nInserted segment {} ({} bytes)",
+                                                    debug!(
+                                                        "Inserted segment {} ({} bytes)",
                                                         segment_number,
                                                         segment_buffer.len()
                                                     );
@@ -948,8 +949,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                         if packets_decoded % 100 == 0 {
                             let duration_secs = total_input_samples as f64
                                 / (src_sample_rate as f64 * src_channels as f64);
-                            print!("\rDecoded {:.1}s of audio...", duration_secs);
-                            std::io::stdout().flush()?;
+                            debug!("Decoded {:.1}s of audio...", duration_secs);
                         }
                     }
                     Err(symphonia::core::errors::Error::DecodeError(e)) => {
