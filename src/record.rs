@@ -88,8 +88,10 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     })?;
     // Lock will be held until lock_file is dropped (end of function)
 
-    // Calculate duration based on mode
-    let duration = if let Some(schedule) = &config.schedule {
+    // Daily loop for scheduled recording - runs indefinitely for schedules
+    loop {
+        // Calculate duration based on mode
+        let duration = if let Some(schedule) = &config.schedule {
         // Parse schedule times
         let (start_hour, start_min) = parse_time(&schedule.record_start)?;
         let (end_hour, end_min) = parse_time(&schedule.record_end)?;
@@ -1131,6 +1133,27 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         thread::sleep(Duration::from_millis(backoff_ms));
         // Continue to next connection attempt
     } // End of 'connection loop
+
+        // Check if using schedule mode - loop for next day
+        if config.schedule.is_some() {
+            let schedule = config.schedule.as_ref().unwrap();
+            let (start_hour, start_min) = parse_time(&schedule.record_start)?;
+            let start_mins = time_to_minutes(start_hour, start_min);
+
+            let now = chrono::Utc::now();
+            let current_mins = time_to_minutes(now.hour(), now.minute());
+            let wait_secs = seconds_until_start(current_mins, start_mins);
+
+            println!("\nRecording window complete. Next window starts at {} UTC.", schedule.record_start);
+            println!("Waiting {} seconds ({:.1} hours)...", wait_secs, wait_secs as f64 / 3600.0);
+
+            std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+            continue; // Start next day's recording
+        } else {
+            // Duration mode - exit after single recording
+            break;
+        }
+    } // End of daily loop
 
     Ok(())
 }
