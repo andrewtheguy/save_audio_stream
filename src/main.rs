@@ -1,12 +1,10 @@
 use axum::{
-    body::Body,
     extract::{Path, Query, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::get,
     Router,
 };
-use tokio_util::io::ReaderStream;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -1406,9 +1404,10 @@ struct AudioQuery {
     end_id: i64,
 }
 
-// Audio endpoint handler - streaming response
+// Audio endpoint handler with Range request support
 async fn audio_handler(
     State(state): State<StdArc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<AudioQuery>,
 ) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
@@ -1514,56 +1513,106 @@ async fn audio_handler(
         }
     };
 
-    // Write Ogg stream to file
-    if let Err(e) = write_ogg_stream(
+    // Write Ogg stream to file with buffering
+    let buf_writer = std::io::BufWriter::new(file);
+    let mut buf_writer = match write_ogg_stream(
         &conn,
         query.start_id,
         query.end_id,
         sample_rate,
         duration_secs,
         samples_per_packet,
-        file,
+        buf_writer,
     ) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to write audio: {}", e),
-        )
-            .into_response();
-    }
-
-    // Open file for async streaming
-    let file = match tokio::fs::File::open(temp_file.path()).await {
-        Ok(f) => f,
+        Ok(w) => w,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to open temp file: {}", e),
+                format!("Failed to write audio: {}", e),
             )
                 .into_response()
         }
     };
 
-    // Get file size for Content-Length header
-    let file_size = match file.metadata().await {
-        Ok(m) => m.len(),
-        Err(_) => 0,
+    // Flush buffer and sync to disk
+    if let Err(e) = buf_writer.flush() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to flush buffer: {}", e),
+        )
+            .into_response();
+    }
+    let file = buf_writer.into_inner().unwrap();
+    if let Err(e) = file.sync_all() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to sync file: {}", e),
+        )
+            .into_response();
+    }
+    drop(file);
+
+    // Read complete file into memory
+    let data = match std::fs::read(temp_file.path()) {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read temp file: {}", e),
+            )
+                .into_response()
+        }
     };
 
-    // Create stream from file - temp file will be deleted when dropped,
-    // but the open file handle keeps data accessible until stream completes
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
+    let file_size = data.len() as u64;
 
-    let mut response = (StatusCode::OK, body).into_response();
+    // Check for Range header
+    if let Some(range_header) = headers.get(header::RANGE) {
+        if let Ok(range_str) = range_header.to_str() {
+            // Parse "bytes=start-end" format
+            if let Some(range) = range_str.strip_prefix("bytes=") {
+                let parts: Vec<&str> = range.split('-').collect();
+                if parts.len() == 2 {
+                    let start = if parts[0].is_empty() {
+                        // Suffix range: "-500" means last 500 bytes
+                        let suffix_len: u64 = parts[1].parse().unwrap_or(0);
+                        file_size.saturating_sub(suffix_len)
+                    } else {
+                        parts[0].parse().unwrap_or(0)
+                    };
+
+                    let end = if parts[1].is_empty() || parts[0].is_empty() {
+                        file_size - 1
+                    } else {
+                        parts[1].parse().unwrap_or(file_size - 1).min(file_size - 1)
+                    };
+
+                    if start <= end && start < file_size {
+                        let slice = &data[start as usize..=end as usize];
+                        let content_range = format!("bytes {}-{}/{}", start, end, file_size);
+
+                        let mut response = (StatusCode::PARTIAL_CONTENT, slice.to_vec()).into_response();
+                        {
+                            let headers = response.headers_mut();
+                            let _ = headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/ogg"));
+                            let _ = headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+                            if let Ok(val) = HeaderValue::from_str(&content_range) {
+                                let _ = headers.insert(header::CONTENT_RANGE, val);
+                            }
+                        }
+                        return response;
+                    }
+                }
+            }
+        }
+    }
+
+    // Full file response
+    let mut response = (StatusCode::OK, data).into_response();
     {
         let headers = response.headers_mut();
         let _ = headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/ogg"));
         let _ = headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-        if file_size > 0 {
-            if let Ok(val) = HeaderValue::from_str(&file_size.to_string()) {
-                let _ = headers.insert(header::CONTENT_LENGTH, val);
-            }
-        }
     }
 
     response
