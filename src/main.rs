@@ -1,30 +1,30 @@
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
     Router,
 };
-use tower_http::cors::{Any, CorsLayer};
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
-use hound::{WavSpec, WavWriter};
-use rusqlite::Connection;
-use serde::Deserialize;
-use std::path::PathBuf;
-use std::sync::Arc as StdArc;
-use uuid::Uuid;
 use fdk_aac::enc::{
     AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
     Transport,
 };
+use hound::{WavSpec, WavWriter};
 use ogg::writing::PacketWriter;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
 use reqwest::blocking::Client;
+use rusqlite::Connection;
+use serde::Deserialize;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc as StdArc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
@@ -34,6 +34,10 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tower_http::cors::{Any, CorsLayer};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -77,7 +81,11 @@ struct Config {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Download Shoutcast stream and save as AAC, Opus, or WAV")]
+#[command(
+    author,
+    version,
+    about = "Download Shoutcast stream and save as AAC, Opus, or WAV"
+)]
 struct Args {
     #[command(subcommand)]
     command: Command,
@@ -251,12 +259,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Box<dyn std::error::Error>> {
+fn record(
+    config_path: PathBuf,
+    duration_override: Option<u64>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Load config file (required)
-    let config_content = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read config file '{}': {}", config_path.display(), e))?;
-    let config: Config = toml::from_str(&config_content)
-        .map_err(|e| format!("Failed to parse config file '{}': {}", config_path.display(), e))?;
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
+        format!(
+            "Failed to read config file '{}': {}",
+            config_path.display(),
+            e
+        )
+    })?;
+    let config: Config = toml::from_str(&config_content).map_err(|e| {
+        format!(
+            "Failed to parse config file '{}': {}",
+            config_path.display(),
+            e
+        )
+    })?;
 
     // Extract config values with defaults
     let url = config.url;
@@ -465,15 +486,10 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
     let bitrate = bitrate_kbps as i32 * 1000;
 
     match audio_format {
-        AudioFormat::Wav => println!(
-            "Output: {} Hz, mono, lossless WAV",
-            output_sample_rate
-        ),
+        AudioFormat::Wav => println!("Output: {} Hz, mono, lossless WAV", output_sample_rate),
         _ => println!(
             "Output: {} Hz, mono, {} kbps {:?}",
-            output_sample_rate,
-            bitrate_kbps,
-            audio_format
+            output_sample_rate, bitrate_kbps, audio_format
         ),
     }
 
@@ -486,8 +502,7 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
             transport: Transport::Adts,
             audio_object_type: AudioObjectType::Mpeg4LowComplexity,
         };
-        AacEncoder::new(params)
-            .map_err(|e| format!("Failed to create AAC encoder: {:?}", e).into())
+        AacEncoder::new(params).map_err(|e| format!("Failed to create AAC encoder: {:?}", e).into())
     };
 
     // Helper to create Opus encoder
@@ -501,33 +516,37 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
     };
 
     // Helper to create Ogg writer with Opus headers
-    let create_ogg_writer = |filename: &str| -> Result<PacketWriter<File>, Box<dyn std::error::Error>> {
-        let file = File::create(filename)?;
-        let mut writer = PacketWriter::new(file);
+    let create_ogg_writer =
+        |filename: &str| -> Result<PacketWriter<File>, Box<dyn std::error::Error>> {
+            let file = File::create(filename)?;
+            let mut writer = PacketWriter::new(file);
 
-        // Write Opus headers
-        let serial = 1;
-        let id_header = create_opus_id_header(1, src_sample_rate);
-        writer.write_packet(
-            id_header,
-            serial,
-            ogg::writing::PacketWriteEndInfo::EndPage,
-            0,
-        )?;
+            // Write Opus headers
+            let serial = 1;
+            let id_header = create_opus_id_header(1, src_sample_rate);
+            writer.write_packet(
+                id_header,
+                serial,
+                ogg::writing::PacketWriteEndInfo::EndPage,
+                0,
+            )?;
 
-        let comment_header = create_opus_comment_header();
-        writer.write_packet(
-            comment_header,
-            serial,
-            ogg::writing::PacketWriteEndInfo::EndPage,
-            0,
-        )?;
+            let comment_header = create_opus_comment_header();
+            writer.write_packet(
+                comment_header,
+                serial,
+                ogg::writing::PacketWriteEndInfo::EndPage,
+                0,
+            )?;
 
-        Ok(writer)
-    };
+            Ok(writer)
+        };
 
     // Helper to create WAV writer
-    let create_wav_writer = |filename: &str| -> Result<WavWriter<std::io::BufWriter<File>>, Box<dyn std::error::Error>> {
+    let create_wav_writer = |filename: &str| -> Result<
+        WavWriter<std::io::BufWriter<File>>,
+        Box<dyn std::error::Error>,
+    > {
         let spec = WavSpec {
             channels: 1,
             sample_rate: output_sample_rate,
@@ -581,44 +600,66 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
             };
 
             let existing_uuid: Option<String> = conn
-                .query_row("SELECT value FROM metadata WHERE key = 'uuid'", [], |row| row.get(0))
+                .query_row("SELECT value FROM metadata WHERE key = 'uuid'", [], |row| {
+                    row.get(0)
+                })
                 .ok();
             let existing_name: Option<String> = conn
-                .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| row.get(0))
+                .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
+                    row.get(0)
+                })
                 .ok();
             let existing_format: Option<String> = conn
-                .query_row("SELECT value FROM metadata WHERE key = 'audio_format'", [], |row| row.get(0))
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'audio_format'",
+                    [],
+                    |row| row.get(0),
+                )
                 .ok();
             let existing_interval: Option<String> = conn
-                .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| row.get(0))
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'split_interval'",
+                    [],
+                    |row| row.get(0),
+                )
                 .ok();
             let existing_bitrate: Option<String> = conn
-                .query_row("SELECT value FROM metadata WHERE key = 'bitrate'", [], |row| row.get(0))
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'bitrate'",
+                    [],
+                    |row| row.get(0),
+                )
                 .ok();
 
             // Check if this is an existing database
-            let is_existing_db = existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
+            let is_existing_db =
+                existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
 
             if is_existing_db {
                 // Existing database must have all required metadata
                 let db_uuid = existing_uuid.ok_or("Database is missing uuid in metadata")?;
                 let db_name = existing_name.ok_or("Database is missing name in metadata")?;
-                let db_format = existing_format.ok_or("Database is missing audio_format in metadata")?;
-                let db_interval = existing_interval.ok_or("Database is missing split_interval in metadata")?;
-                let db_bitrate = existing_bitrate.ok_or("Database is missing bitrate in metadata")?;
+                let db_format =
+                    existing_format.ok_or("Database is missing audio_format in metadata")?;
+                let db_interval =
+                    existing_interval.ok_or("Database is missing split_interval in metadata")?;
+                let db_bitrate =
+                    existing_bitrate.ok_or("Database is missing bitrate in metadata")?;
 
                 // Validate metadata matches config
                 if db_name != name {
                     return Err(format!(
                         "Config mismatch: database has name '{}' but config specifies '{}'",
                         db_name, name
-                    ).into());
+                    )
+                    .into());
                 }
                 if db_format != audio_format_str {
                     return Err(format!(
                         "Config mismatch: database has audio_format '{}' but config specifies '{}'",
                         db_format, audio_format_str
-                    ).into());
+                    )
+                    .into());
                 }
                 let db_interval_val: u64 = db_interval.parse().unwrap_or(0);
                 if db_interval_val != split_interval {
@@ -640,12 +681,30 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
             } else {
                 // New database - insert metadata with new uuid
                 let session_uuid = Uuid::new_v4().to_string();
-                conn.execute("INSERT INTO metadata (key, value) VALUES ('uuid', ?1)", [&session_uuid])?;
-                conn.execute("INSERT INTO metadata (key, value) VALUES ('name', ?1)", [&name])?;
-                conn.execute("INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)", [audio_format_str])?;
-                conn.execute("INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)", [&split_interval.to_string()])?;
-                conn.execute("INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)", [&bitrate_kbps.to_string()])?;
-                conn.execute("INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)", [&output_sample_rate.to_string()])?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
+                    [&session_uuid],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
+                    [&name],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)",
+                    [audio_format_str],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)",
+                    [&split_interval.to_string()],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)",
+                    [&bitrate_kbps.to_string()],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
+                    [&output_sample_rate.to_string()],
+                )?;
 
                 println!("SQLite database: {}", db_path);
                 println!("Session UUID: {}", session_uuid);
@@ -666,21 +725,19 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
                 }
             }
         }
-        StorageFormat::File => {
-            match audio_format {
-                AudioFormat::Aac => {
-                    aac_encoder = Some(create_aac_encoder()?);
-                    output_file = Some(File::create(&output_filename)?);
-                }
-                AudioFormat::Opus => {
-                    opus_encoder = Some(create_opus_encoder()?);
-                    ogg_writer = Some(create_ogg_writer(&output_filename)?);
-                }
-                AudioFormat::Wav => {
-                    wav_writer = Some(create_wav_writer(&output_filename)?);
-                }
+        StorageFormat::File => match audio_format {
+            AudioFormat::Aac => {
+                aac_encoder = Some(create_aac_encoder()?);
+                output_file = Some(File::create(&output_filename)?);
             }
-        }
+            AudioFormat::Opus => {
+                opus_encoder = Some(create_opus_encoder()?);
+                ogg_writer = Some(create_ogg_writer(&output_filename)?);
+            }
+            AudioFormat::Wav => {
+                wav_writer = Some(create_wav_writer(&output_filename)?);
+            }
+        },
     }
 
     // Splitting state
@@ -695,7 +752,10 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
     let mut files_written: Vec<String> = vec![output_filename.clone()];
 
     // Helper to insert segment into SQLite
-    let insert_segment = |conn: &Connection, timestamp_ms: i64, data: &[u8]| -> Result<(), Box<dyn std::error::Error>> {
+    let insert_segment = |conn: &Connection,
+                          timestamp_ms: i64,
+                          data: &[u8]|
+     -> Result<(), Box<dyn std::error::Error>> {
         conn.execute(
             "INSERT INTO segments (timestamp_ms, audio_data) VALUES (?1, ?2)",
             rusqlite::params![timestamp_ms, data],
@@ -757,7 +817,8 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
                         };
 
                         // Resample to output sample rate
-                        let resampled = resample(&mono_samples, src_sample_rate, output_sample_rate);
+                        let resampled =
+                            resample(&mono_samples, src_sample_rate, output_sample_rate);
                         mono_buffer.extend_from_slice(&resampled);
 
                         // Encode complete frames
@@ -775,34 +836,57 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
                                                 match storage_format {
                                                     StorageFormat::File => {
                                                         if let Some(ref mut file) = output_file {
-                                                            file.write_all(&encode_output[..info.output_size])?;
+                                                            file.write_all(
+                                                                &encode_output[..info.output_size],
+                                                            )?;
                                                         }
                                                     }
                                                     StorageFormat::Sqlite => {
-                                                        segment_buffer.extend_from_slice(&encode_output[..info.output_size]);
+                                                        segment_buffer.extend_from_slice(
+                                                            &encode_output[..info.output_size],
+                                                        );
                                                     }
                                                 }
 
                                                 // Check if we need to split
-                                                if split_interval > 0 && segment_samples >= split_samples {
+                                                if split_interval > 0
+                                                    && segment_samples >= split_samples
+                                                {
                                                     match storage_format {
                                                         StorageFormat::File => {
                                                             segment_number += 1;
                                                             segment_samples = 0;
-                                                            let new_filename = generate_filename(Some(segment_number));
-                                                            println!("\nStarting new segment: {}", new_filename);
-                                                            files_written.push(new_filename.clone());
-                                                            output_file = Some(File::create(&new_filename)?);
+                                                            let new_filename = generate_filename(
+                                                                Some(segment_number),
+                                                            );
+                                                            println!(
+                                                                "\nStarting new segment: {}",
+                                                                new_filename
+                                                            );
+                                                            files_written
+                                                                .push(new_filename.clone());
+                                                            output_file =
+                                                                Some(File::create(&new_filename)?);
                                                         }
                                                         StorageFormat::Sqlite => {
                                                             if let Some(ref conn) = sqlite_conn {
-                                                                let timestamp_ms = base_timestamp_ms + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
-                                                                insert_segment(conn, timestamp_ms, &segment_buffer)?;
+                                                                let timestamp_ms = base_timestamp_ms
+                                                                    + (segment_start_samples
+                                                                        as i64
+                                                                        * 1000
+                                                                        / output_sample_rate
+                                                                            as i64);
+                                                                insert_segment(
+                                                                    conn,
+                                                                    timestamp_ms,
+                                                                    &segment_buffer,
+                                                                )?;
                                                                 println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
                                                             }
                                                             segment_buffer.clear();
                                                             segment_number += 1;
-                                                            segment_start_samples = total_output_samples;
+                                                            segment_start_samples =
+                                                                total_output_samples;
                                                             segment_samples = 0;
                                                         }
                                                     }
@@ -825,7 +909,9 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
                                                     StorageFormat::File => {
                                                         if let Some(ref mut writer) = ogg_writer {
                                                             // Check if this is the last packet before split
-                                                            let is_end_of_segment = split_interval > 0 && segment_samples >= split_samples;
+                                                            let is_end_of_segment = split_interval
+                                                                > 0
+                                                                && segment_samples >= split_samples;
                                                             let end_info = if is_end_of_segment {
                                                                 ogg::writing::PacketWriteEndInfo::EndStream
                                                             } else {
@@ -841,31 +927,55 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
                                                     }
                                                     StorageFormat::Sqlite => {
                                                         // Store raw Opus packets with length prefix
-                                                        segment_buffer.extend_from_slice(&(len as u16).to_le_bytes());
-                                                        segment_buffer.extend_from_slice(&encode_output[..len]);
+                                                        segment_buffer.extend_from_slice(
+                                                            &(len as u16).to_le_bytes(),
+                                                        );
+                                                        segment_buffer.extend_from_slice(
+                                                            &encode_output[..len],
+                                                        );
                                                     }
                                                 }
 
                                                 // Check if we need to split
-                                                if split_interval > 0 && segment_samples >= split_samples {
+                                                if split_interval > 0
+                                                    && segment_samples >= split_samples
+                                                {
                                                     match storage_format {
                                                         StorageFormat::File => {
                                                             segment_number += 1;
                                                             segment_samples = 0;
-                                                            let new_filename = generate_filename(Some(segment_number));
-                                                            println!("\nStarting new segment: {}", new_filename);
-                                                            files_written.push(new_filename.clone());
-                                                            ogg_writer = Some(create_ogg_writer(&new_filename)?);
+                                                            let new_filename = generate_filename(
+                                                                Some(segment_number),
+                                                            );
+                                                            println!(
+                                                                "\nStarting new segment: {}",
+                                                                new_filename
+                                                            );
+                                                            files_written
+                                                                .push(new_filename.clone());
+                                                            ogg_writer = Some(create_ogg_writer(
+                                                                &new_filename,
+                                                            )?);
                                                         }
                                                         StorageFormat::Sqlite => {
                                                             if let Some(ref conn) = sqlite_conn {
-                                                                let timestamp_ms = base_timestamp_ms + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
-                                                                insert_segment(conn, timestamp_ms, &segment_buffer)?;
+                                                                let timestamp_ms = base_timestamp_ms
+                                                                    + (segment_start_samples
+                                                                        as i64
+                                                                        * 1000
+                                                                        / output_sample_rate
+                                                                            as i64);
+                                                                insert_segment(
+                                                                    conn,
+                                                                    timestamp_ms,
+                                                                    &segment_buffer,
+                                                                )?;
                                                                 println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
                                                             }
                                                             segment_buffer.clear();
                                                             segment_number += 1;
-                                                            segment_start_samples = total_output_samples;
+                                                            segment_start_samples =
+                                                                total_output_samples;
                                                             segment_samples = 0;
                                                         }
                                                     }
@@ -892,7 +1002,8 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
                                         StorageFormat::Sqlite => {
                                             // Store raw PCM samples as bytes
                                             for sample in &frame {
-                                                segment_buffer.extend_from_slice(&sample.to_le_bytes());
+                                                segment_buffer
+                                                    .extend_from_slice(&sample.to_le_bytes());
                                             }
                                         }
                                     }
@@ -907,16 +1018,31 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
                                                 }
                                                 segment_number += 1;
                                                 segment_samples = 0;
-                                                let new_filename = generate_filename(Some(segment_number));
-                                                println!("\nStarting new segment: {}", new_filename);
+                                                let new_filename =
+                                                    generate_filename(Some(segment_number));
+                                                println!(
+                                                    "\nStarting new segment: {}",
+                                                    new_filename
+                                                );
                                                 files_written.push(new_filename.clone());
-                                                wav_writer = Some(create_wav_writer(&new_filename)?);
+                                                wav_writer =
+                                                    Some(create_wav_writer(&new_filename)?);
                                             }
                                             StorageFormat::Sqlite => {
                                                 if let Some(ref conn) = sqlite_conn {
-                                                    let timestamp_ms = base_timestamp_ms + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
-                                                    insert_segment(conn, timestamp_ms, &segment_buffer)?;
-                                                    println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                    let timestamp_ms = base_timestamp_ms
+                                                        + (segment_start_samples as i64 * 1000
+                                                            / output_sample_rate as i64);
+                                                    insert_segment(
+                                                        conn,
+                                                        timestamp_ms,
+                                                        &segment_buffer,
+                                                    )?;
+                                                    println!(
+                                                        "\nInserted segment {} ({} bytes)",
+                                                        segment_number,
+                                                        segment_buffer.len()
+                                                    );
                                                 }
                                                 segment_buffer.clear();
                                                 segment_number += 1;
@@ -979,7 +1105,8 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
                                 }
                             }
                             StorageFormat::Sqlite => {
-                                segment_buffer.extend_from_slice(&encode_output[..info.output_size]);
+                                segment_buffer
+                                    .extend_from_slice(&encode_output[..info.output_size]);
                             }
                         }
                     }
@@ -1042,9 +1169,14 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
             // Insert final segment if there's any buffered data
             if !segment_buffer.is_empty() {
                 if let Some(ref conn) = sqlite_conn {
-                    let timestamp_ms = base_timestamp_ms + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
+                    let timestamp_ms = base_timestamp_ms
+                        + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
                     insert_segment(conn, timestamp_ms, &segment_buffer)?;
-                    println!("\nInserted final segment {} ({} bytes)", segment_number, segment_buffer.len());
+                    println!(
+                        "\nInserted final segment {} ({} bytes)",
+                        segment_number,
+                        segment_buffer.len()
+                    );
                 }
             }
         }
@@ -1059,8 +1191,7 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
         return Err("No audio samples decoded".into());
     }
 
-    let duration_secs =
-        total_input_samples as f64 / (src_sample_rate as f64 * src_channels as f64);
+    let duration_secs = total_input_samples as f64 / (src_sample_rate as f64 * src_channels as f64);
     println!(
         "Decoded {} samples from {} packets",
         total_input_samples, packets_decoded
@@ -1071,7 +1202,9 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
             if files_written.len() > 1 {
                 println!(
                     "Successfully saved {} files ({:.1} seconds of audio, {} bytes downloaded):",
-                    files_written.len(), duration_secs, bytes_downloaded
+                    files_written.len(),
+                    duration_secs,
+                    bytes_downloaded
                 );
                 for file in &files_written {
                     println!("  - {}", file);
@@ -1107,11 +1240,19 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
 
     // Check audio format
     let audio_format: String = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'audio_format'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'audio_format'",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|_| "Database missing audio_format metadata")?;
 
     if audio_format != "opus" {
-        return Err(format!("Only Opus format is supported for serving, found: {}", audio_format).into());
+        return Err(format!(
+            "Only Opus format is supported for serving, found: {}",
+            audio_format
+        )
+        .into());
     }
 
     let db_path = sqlite_file.to_string_lossy().to_string();
@@ -1141,9 +1282,11 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
             .layer(cors)
             .with_state(app_state);
 
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
+            .await
             .map_err(|e| format!("Failed to bind to port {}: {}", port, e))?;
-        axum::serve(listener, app).await
+        axum::serve(listener, app)
+            .await
             .map_err(|e| format!("Server error: {}", e))?;
 
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -1153,6 +1296,129 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
 // State for axum handlers
 struct AppState {
     db_path: String,
+}
+
+fn map_to_io_error<E: std::fmt::Display + Send + Sync + 'static>(err: E) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+}
+
+struct ChannelWriter {
+    sender: mpsc::Sender<Result<Bytes, std::io::Error>>,
+    buffer: Vec<u8>,
+}
+
+impl ChannelWriter {
+    fn new(sender: mpsc::Sender<Result<Bytes, std::io::Error>>) -> Self {
+        Self {
+            sender,
+            buffer: Vec::with_capacity(8192),
+        }
+    }
+
+    fn flush_buffer(&mut self) -> std::io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        let data = std::mem::take(&mut self.buffer);
+        self.sender
+            .blocking_send(Ok(Bytes::from(data)))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
+        Ok(())
+    }
+}
+
+impl Write for ChannelWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        if self.buffer.len() >= 8192 {
+            self.flush_buffer()?;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flush_buffer()
+    }
+}
+
+fn stream_ogg_from_db(
+    db_path: String,
+    start_id: i64,
+    end_id: i64,
+    sample_rate: u32,
+    sender: mpsc::Sender<Result<Bytes, std::io::Error>>,
+) -> Result<(), std::io::Error> {
+    let conn = Connection::open(db_path).map_err(map_to_io_error)?;
+    let mut stmt = conn
+        .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
+        .map_err(map_to_io_error)?;
+    let mut rows = stmt.query([start_id, end_id]).map_err(map_to_io_error)?;
+
+    let mut channel_writer = ChannelWriter::new(sender);
+    let mut writer = PacketWriter::new(&mut channel_writer);
+
+    writer
+        .write_packet(
+            create_opus_id_header(1, sample_rate),
+            1,
+            ogg::writing::PacketWriteEndInfo::EndPage,
+            0,
+        )
+        .map_err(map_to_io_error)?;
+
+    writer
+        .write_packet(
+            create_opus_comment_header(),
+            1,
+            ogg::writing::PacketWriteEndInfo::EndPage,
+            0,
+        )
+        .map_err(map_to_io_error)?;
+
+    let mut granule_pos: u64 = 0;
+    let mut packet_count: u32 = 0;
+    const PACKETS_PER_PAGE: u32 = 50;
+    let samples_per_packet = (sample_rate / 50) as u64;
+
+    while let Some(row) = rows.next().map_err(map_to_io_error)? {
+        let id: i64 = row.get(0).map_err(map_to_io_error)?;
+        let segment: Vec<u8> = row.get(1).map_err(map_to_io_error)?;
+        let is_last_segment = id == end_id;
+        let mut offset = 0;
+
+        while offset + 2 <= segment.len() {
+            let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
+            offset += 2;
+
+            if offset + len > segment.len() {
+                break;
+            }
+
+            let packet = &segment[offset..offset + len];
+            offset += len;
+
+            granule_pos += samples_per_packet;
+            packet_count += 1;
+
+            let is_last_packet = is_last_segment && offset >= segment.len();
+            let end_info = if is_last_packet {
+                ogg::writing::PacketWriteEndInfo::EndStream
+            } else if packet_count % PACKETS_PER_PAGE == 0 {
+                ogg::writing::PacketWriteEndInfo::EndPage
+            } else {
+                ogg::writing::PacketWriteEndInfo::NormalPacket
+            };
+
+            writer
+                .write_packet(packet.to_vec(), 1, end_info, granule_pos)
+                .map_err(map_to_io_error)?;
+        }
+    }
+
+    drop(writer);
+    channel_writer.flush_buffer()?;
+    Ok(())
 }
 
 // Query parameters for audio endpoint
@@ -1169,7 +1435,13 @@ async fn audio_handler(
 ) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
     };
 
     // Get max id
@@ -1183,23 +1455,43 @@ async fn audio_handler(
         return (
             StatusCode::BAD_REQUEST,
             format!("end_id {} exceeds max id {}", query.end_id, max_id),
-        ).into_response();
+        )
+            .into_response();
     }
 
     if query.start_id > query.end_id {
         return (
             StatusCode::BAD_REQUEST,
-            format!("start_id {} cannot be greater than end_id {}", query.start_id, query.end_id),
-        ).into_response();
+            format!(
+                "start_id {} cannot be greater than end_id {}",
+                query.start_id, query.end_id
+            ),
+        )
+            .into_response();
     }
 
     // Get split_interval to calculate duration limit
     let split_interval: f64 = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| {
-            let val: String = row.get(0)?;
-            Ok(val.parse().unwrap_or(1.0))
-        })
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'split_interval'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(1.0))
+            },
+        )
         .unwrap_or(1.0);
+
+    let sample_rate: u32 = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'sample_rate'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(48_000))
+            },
+        )
+        .unwrap_or(48_000);
 
     // Check 60 minute limit
     let segment_count = query.end_id - query.start_id + 1;
@@ -1209,123 +1501,37 @@ async fn audio_handler(
     if estimated_duration > MAX_DURATION_SECS {
         return (
             StatusCode::BAD_REQUEST,
-            format!("Requested duration {:.0}s exceeds maximum of {:.0}s (60 minutes)",
-                    estimated_duration, MAX_DURATION_SECS),
-        ).into_response();
+            format!(
+                "Requested duration {:.0}s exceeds maximum of {:.0}s (60 minutes)",
+                estimated_duration, MAX_DURATION_SECS
+            ),
+        )
+            .into_response();
     }
 
-    // Query segments
-    let mut stmt = match conn.prepare("SELECT audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
-    };
+    drop(conn);
 
-    let segments: Vec<Vec<u8>> = match stmt.query_map([query.start_id, query.end_id], |row| row.get(0)) {
-        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Fetch error: {}", e)).into_response(),
-    };
+    let db_path = state.db_path.clone();
+    let start_id = query.start_id;
+    let end_id = query.end_id;
+    let (tx, rx) = mpsc::channel(8);
 
-    if segments.is_empty() {
-        return (StatusCode::NOT_FOUND, "No segments found in range").into_response();
-    }
-
-    // First pass: count total samples to calculate duration
-    let mut total_samples: u64 = 0;
-    for segment in &segments {
-        let mut offset = 0;
-        while offset + 2 <= segment.len() {
-            let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
-            offset += 2;
-            if offset + len > segment.len() {
-                break;
-            }
-            offset += len;
-            total_samples += 960;
+    tokio::task::spawn_blocking(move || {
+        let error_sender = tx.clone();
+        if let Err(e) = stream_ogg_from_db(db_path, start_id, end_id, sample_rate, tx) {
+            let _ = error_sender.blocking_send(Err(e));
         }
-    }
-    let duration_secs = total_samples as f64 / 48000.0;
+    });
 
-    // Build Ogg container with Opus data
-    let mut ogg_data = Vec::new();
-    let mut granule_pos: u64 = 0;
-    {
-        let mut writer = PacketWriter::new(&mut ogg_data);
-
-        // Write OpusHead header
-        let mut opus_head = Vec::new();
-        opus_head.extend_from_slice(b"OpusHead");
-        opus_head.push(1);
-        opus_head.push(1);
-        opus_head.extend_from_slice(&0u16.to_le_bytes());
-        opus_head.extend_from_slice(&48000u32.to_le_bytes());
-        opus_head.extend_from_slice(&0i16.to_le_bytes());
-        opus_head.push(0);
-
-        if let Err(e) = writer.write_packet(opus_head, 1, ogg::writing::PacketWriteEndInfo::EndPage, 0) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("OpusHead write error: {}", e)).into_response();
-        }
-
-        // Write OpusTags header with duration
-        let mut opus_tags = Vec::new();
-        opus_tags.extend_from_slice(b"OpusTags");
-        let vendor = b"save_audio_stream";
-        opus_tags.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
-        opus_tags.extend_from_slice(vendor);
-        let duration_comment = format!("DURATION={:.3}", duration_secs);
-        opus_tags.extend_from_slice(&1u32.to_le_bytes());
-        opus_tags.extend_from_slice(&(duration_comment.len() as u32).to_le_bytes());
-        opus_tags.extend_from_slice(duration_comment.as_bytes());
-
-        if let Err(e) = writer.write_packet(opus_tags, 1, ogg::writing::PacketWriteEndInfo::EndPage, 0) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("OpusTags write error: {}", e)).into_response();
-        }
-
-        // Write audio data packets
-        // End page every 50 packets (1 second at 20ms per packet) for smooth timestamp updates
-        let total_segments = segments.len();
-        let mut packet_count: u32 = 0;
-        const PACKETS_PER_PAGE: u32 = 50; // 1 second of audio
-
-        for (i, segment) in segments.iter().enumerate() {
-            let mut offset = 0;
-            while offset + 2 <= segment.len() {
-                let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
-                offset += 2;
-
-                if offset + len > segment.len() {
-                    break;
-                }
-
-                let packet = &segment[offset..offset + len];
-                offset += len;
-                granule_pos += 960;
-                packet_count += 1;
-
-                let is_last = i == total_segments - 1 && offset >= segment.len();
-                let end_info = if is_last {
-                    ogg::writing::PacketWriteEndInfo::EndStream
-                } else if packet_count % PACKETS_PER_PAGE == 0 {
-                    ogg::writing::PacketWriteEndInfo::EndPage
-                } else {
-                    ogg::writing::PacketWriteEndInfo::NormalPacket
-                };
-
-                if let Err(e) = writer.write_packet(packet.to_vec(), 1, end_info, granule_pos) {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Ogg write error: {}", e)).into_response();
-                }
-            }
-        }
-    }
+    let body_stream = ReceiverStream::new(rx);
+    let body = Body::from_stream(body_stream);
 
     (
         StatusCode::OK,
-        [
-            ("content-type", "audio/ogg"),
-            ("content-length", &ogg_data.len().to_string()),
-            ("accept-ranges", "bytes"),
-        ],
-        ogg_data,
-    ).into_response()
+        [("content-type", "audio/ogg"), ("accept-ranges", "bytes")],
+        body,
+    )
+        .into_response()
 }
 
 // EBML/WebM writing helpers
@@ -1414,7 +1620,13 @@ async fn mpd_handler(
 ) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
     };
 
     // Validate end_id
@@ -1424,7 +1636,11 @@ async fn mpd_handler(
     };
 
     if query.end_id > max_id {
-        return (StatusCode::BAD_REQUEST, format!("end_id {} exceeds max id {}", query.end_id, max_id)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("end_id {} exceeds max id {}", query.end_id, max_id),
+        )
+            .into_response();
     }
 
     if query.start_id > query.end_id {
@@ -1433,26 +1649,38 @@ async fn mpd_handler(
 
     // Get split_interval from metadata (in seconds)
     let split_interval: f64 = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| {
-            let val: String = row.get(0)?;
-            Ok(val.parse().unwrap_or(1.0))
-        })
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'split_interval'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(1.0))
+            },
+        )
         .unwrap_or(1.0);
 
     // Get sample_rate from metadata
     let sample_rate: u32 = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| {
-            let val: String = row.get(0)?;
-            Ok(val.parse().unwrap_or(48000))
-        })
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'sample_rate'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(48000))
+            },
+        )
         .unwrap_or(48000);
 
     // Get bitrate from metadata (in kbps, convert to bps for bandwidth)
     let bitrate_kbps: u32 = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'bitrate'", [], |row| {
-            let val: String = row.get(0)?;
-            Ok(val.parse().unwrap_or(16))
-        })
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'bitrate'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(16))
+            },
+        )
         .unwrap_or(16);
     let bandwidth = bitrate_kbps * 1000;
 
@@ -1503,24 +1731,33 @@ async fn mpd_handler(
         StatusCode::OK,
         [("content-type", "application/dash+xml")],
         mpd,
-    ).into_response()
+    )
+        .into_response()
 }
 
 // Initialization segment handler - returns WebM header without media data
-async fn init_handler(
-    State(state): State<StdArc<AppState>>,
-) -> impl IntoResponse {
+async fn init_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
     };
 
     // Get sample_rate from metadata
     let sample_rate: f64 = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| {
-            let val: String = row.get(0)?;
-            Ok(val.parse().unwrap_or(48000.0))
-        })
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'sample_rate'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(48000.0))
+            },
+        )
         .unwrap_or(48000.0);
 
     // Build WebM initialization segment
@@ -1528,13 +1765,13 @@ async fn init_handler(
 
     // EBML Header
     let mut ebml_header = Vec::new();
-    write_ebml_uint(&mut ebml_header, 0x4286, 1);      // EBMLVersion
-    write_ebml_uint(&mut ebml_header, 0x42F7, 1);      // EBMLReadVersion
-    write_ebml_uint(&mut ebml_header, 0x42F2, 4);      // EBMLMaxIDLength
-    write_ebml_uint(&mut ebml_header, 0x42F3, 8);      // EBMLMaxSizeLength
+    write_ebml_uint(&mut ebml_header, 0x4286, 1); // EBMLVersion
+    write_ebml_uint(&mut ebml_header, 0x42F7, 1); // EBMLReadVersion
+    write_ebml_uint(&mut ebml_header, 0x42F2, 4); // EBMLMaxIDLength
+    write_ebml_uint(&mut ebml_header, 0x42F3, 8); // EBMLMaxSizeLength
     write_ebml_string(&mut ebml_header, 0x4282, "webm"); // DocType
-    write_ebml_uint(&mut ebml_header, 0x4287, 4);      // DocTypeVersion
-    write_ebml_uint(&mut ebml_header, 0x4285, 2);      // DocTypeReadVersion
+    write_ebml_uint(&mut ebml_header, 0x4287, 4); // DocTypeVersion
+    write_ebml_uint(&mut ebml_header, 0x4285, 2); // DocTypeReadVersion
 
     write_ebml_id(&mut webm, 0x1A45DFA3); // EBML
     write_ebml_size(&mut webm, ebml_header.len() as u64);
@@ -1545,7 +1782,7 @@ async fn init_handler(
 
     // Info
     let mut info = Vec::new();
-    write_ebml_uint(&mut info, 0x2AD7B1, 1_000_000);   // TimecodeScale (1ms)
+    write_ebml_uint(&mut info, 0x2AD7B1, 1_000_000); // TimecodeScale (1ms)
     write_ebml_string(&mut info, 0x4D80, "save_audio_stream"); // MuxingApp
     write_ebml_string(&mut info, 0x5741, "save_audio_stream"); // WritingApp
 
@@ -1556,26 +1793,26 @@ async fn init_handler(
     // Tracks
     let mut tracks = Vec::new();
     let mut track_entry = Vec::new();
-    write_ebml_uint(&mut track_entry, 0xD7, 1);        // TrackNumber
-    write_ebml_uint(&mut track_entry, 0x73C5, 1);      // TrackUID
-    write_ebml_uint(&mut track_entry, 0x83, 2);        // TrackType (audio)
+    write_ebml_uint(&mut track_entry, 0xD7, 1); // TrackNumber
+    write_ebml_uint(&mut track_entry, 0x73C5, 1); // TrackUID
+    write_ebml_uint(&mut track_entry, 0x83, 2); // TrackType (audio)
     write_ebml_string(&mut track_entry, 0x86, "A_OPUS"); // CodecID
 
     // CodecPrivate - OpusHead
     let mut opus_head = Vec::new();
     opus_head.extend_from_slice(b"OpusHead");
-    opus_head.push(1);                                  // Version
-    opus_head.push(1);                                  // Channels
-    opus_head.extend_from_slice(&0u16.to_le_bytes());   // Pre-skip
+    opus_head.push(1); // Version
+    opus_head.push(1); // Channels
+    opus_head.extend_from_slice(&0u16.to_le_bytes()); // Pre-skip
     opus_head.extend_from_slice(&(sample_rate as u32).to_le_bytes()); // Sample rate
-    opus_head.extend_from_slice(&0i16.to_le_bytes());   // Output gain
-    opus_head.push(0);                                  // Channel mapping
+    opus_head.extend_from_slice(&0i16.to_le_bytes()); // Output gain
+    opus_head.push(0); // Channel mapping
     write_ebml_binary(&mut track_entry, 0x63A2, &opus_head); // CodecPrivate
 
     // Audio settings
     let mut audio = Vec::new();
-    write_ebml_float(&mut audio, 0xB5, sample_rate);   // SamplingFrequency
-    write_ebml_uint(&mut audio, 0x9F, 1);              // Channels
+    write_ebml_float(&mut audio, 0xB5, sample_rate); // SamplingFrequency
+    write_ebml_uint(&mut audio, 0x9F, 1); // Channels
 
     write_ebml_id(&mut track_entry, 0xE1); // Audio
     write_ebml_size(&mut track_entry, audio.len() as u64);
@@ -1591,15 +1828,11 @@ async fn init_handler(
 
     // Write Segment with unknown size (for streaming)
     write_ebml_id(&mut webm, 0x18538067); // Segment
-    // Use unknown size marker for streaming
+                                          // Use unknown size marker for streaming
     webm.extend_from_slice(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
     webm.extend_from_slice(&segment_content);
 
-    (
-        StatusCode::OK,
-        [("content-type", "video/webm")],
-        webm,
-    ).into_response()
+    (StatusCode::OK, [("content-type", "video/webm")], webm).into_response()
 }
 
 // Segment handler - returns Cluster data only (media segment for DASH)
@@ -1609,7 +1842,13 @@ async fn segment_handler(
 ) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
     };
 
     // Get the segment
@@ -1619,15 +1858,21 @@ async fn segment_handler(
         |row| row.get(0),
     ) {
         Ok(data) => data,
-        Err(_) => return (StatusCode::NOT_FOUND, format!("Segment {} not found", id)).into_response(),
+        Err(_) => {
+            return (StatusCode::NOT_FOUND, format!("Segment {} not found", id)).into_response()
+        }
     };
 
     // Get split_interval and calculate timecode
     let split_interval: u64 = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| {
-            let val: String = row.get(0)?;
-            Ok(val.parse().unwrap_or(1))
-        })
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'split_interval'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(1))
+            },
+        )
         .unwrap_or(1);
 
     // Get the first segment ID to calculate relative position
@@ -1673,9 +1918,5 @@ async fn segment_handler(
     write_ebml_size(&mut webm, cluster_content.len() as u64);
     webm.extend_from_slice(&cluster_content);
 
-    (
-        StatusCode::OK,
-        [("content-type", "video/webm")],
-        webm,
-    ).into_response()
+    (StatusCode::OK, [("content-type", "video/webm")], webm).into_response()
 }

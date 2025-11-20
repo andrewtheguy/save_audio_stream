@@ -9,7 +9,9 @@ use fdk_aac::enc::{
 use hound::{WavReader, WavSpec, WavWriter};
 use ogg::reading::PacketReader;
 use ogg::writing::PacketWriter;
-use opus::{Application, Bitrate as OpusBitrate, Channels, Decoder as OpusDecoder, Encoder as OpusEncoder};
+use opus::{
+    Application, Bitrate as OpusBitrate, Channels, Decoder as OpusDecoder, Encoder as OpusEncoder,
+};
 
 /// Generate a test sine wave at the given sample rate
 fn generate_sine_wave(sample_rate: u32, duration_secs: f32, frequency: f32) -> Vec<i16> {
@@ -66,8 +68,8 @@ fn encode_aac_split(
         audio_object_type: AudioObjectType::Mpeg4LowComplexity,
     };
 
-    let encoder = AacEncoder::new(params)
-        .map_err(|e| format!("Failed to create AAC encoder: {:?}", e))?;
+    let encoder =
+        AacEncoder::new(params).map_err(|e| format!("Failed to create AAC encoder: {:?}", e))?;
     let mut encode_buffer = vec![0u8; 8192];
     let mut files_written = Vec::new();
     let mut segment_number = 0;
@@ -136,29 +138,30 @@ fn encode_opus_split(
     let mut granule_pos: u64 = 0;
 
     // Helper to create a new Ogg file with Opus headers
-    let create_ogg_file = |filename: &str| -> Result<PacketWriter<File>, Box<dyn std::error::Error>> {
-        let file = File::create(filename)?;
-        let mut writer = PacketWriter::new(file);
+    let create_ogg_file =
+        |filename: &str| -> Result<PacketWriter<File>, Box<dyn std::error::Error>> {
+            let file = File::create(filename)?;
+            let mut writer = PacketWriter::new(file);
 
-        let serial = 1;
-        let id_header = create_opus_id_header(1, sample_rate);
-        writer.write_packet(
-            id_header,
-            serial,
-            ogg::writing::PacketWriteEndInfo::EndPage,
-            0,
-        )?;
+            let serial = 1;
+            let id_header = create_opus_id_header(1, sample_rate);
+            writer.write_packet(
+                id_header,
+                serial,
+                ogg::writing::PacketWriteEndInfo::EndPage,
+                0,
+            )?;
 
-        let comment_header = create_opus_comment_header();
-        writer.write_packet(
-            comment_header,
-            serial,
-            ogg::writing::PacketWriteEndInfo::EndPage,
-            0,
-        )?;
+            let comment_header = create_opus_comment_header();
+            writer.write_packet(
+                comment_header,
+                serial,
+                ogg::writing::PacketWriteEndInfo::EndPage,
+                0,
+            )?;
 
-        Ok(writer)
-    };
+            Ok(writer)
+        };
 
     // Create first file
     let mut filename = format!("{}/test_{:03}.opus", output_dir, segment_number);
@@ -168,7 +171,11 @@ fn encode_opus_split(
     // Collect all frames first
     let num_complete_frames = samples.len() / frame_size;
     let has_remainder = samples.len() % frame_size > 0;
-    let total_frames = if has_remainder { num_complete_frames + 1 } else { num_complete_frames };
+    let total_frames = if has_remainder {
+        num_complete_frames + 1
+    } else {
+        num_complete_frames
+    };
 
     // Process samples in frames
     let mut pos = 0;
@@ -184,19 +191,15 @@ fn encode_opus_split(
                 segment_samples += frame_size;
 
                 // Check if this is the last packet before split or the final packet
-                let is_end_of_segment = split_interval_samples > 0 && segment_samples >= split_interval_samples;
+                let is_end_of_segment =
+                    split_interval_samples > 0 && segment_samples >= split_interval_samples;
                 let end_info = if is_end_of_segment || is_last_frame {
                     ogg::writing::PacketWriteEndInfo::EndStream
                 } else {
                     ogg::writing::PacketWriteEndInfo::NormalPacket
                 };
 
-                ogg_writer.write_packet(
-                    encode_buffer[..len].to_vec(),
-                    1,
-                    end_info,
-                    granule_pos,
-                )?;
+                ogg_writer.write_packet(encode_buffer[..len].to_vec(), 1, end_info, granule_pos)?;
 
                 // Check if we need to split (only if not the last frame)
                 if is_end_of_segment && !is_last_frame {
@@ -364,7 +367,11 @@ fn test_aac_gapless_split() {
     let files = encode_aac_split(&samples, test_dir, split_interval).unwrap();
 
     // Should have multiple files
-    assert!(files.len() >= 4, "Expected at least 4 files for 5 seconds with 1s splits, got {}", files.len());
+    assert!(
+        files.len() >= 4,
+        "Expected at least 4 files for 5 seconds with 1s splits, got {}",
+        files.len()
+    );
 
     // Decode all files
     let decoded = decode_aac_files(&files).unwrap();
@@ -381,11 +388,12 @@ fn test_aac_gapless_split() {
 
     // Allow for AAC encoder/decoder delay (usually 1-2 frames)
     // and padding due to frame alignment
-    let tolerance = frame_size * 10;  // AAC has significant priming delay
+    let tolerance = frame_size * 10; // AAC has significant priming delay
     assert!(
-        decoded.len() >= expected / 2,  // At least half the expected samples
+        decoded.len() >= expected / 2, // At least half the expected samples
         "Sample count too low: expected at least {}, got {}",
-        expected / 2, decoded.len()
+        expected / 2,
+        decoded.len()
     );
 
     // Note: AAC has encoder priming delay that causes gaps between split files.
@@ -432,7 +440,11 @@ fn test_opus_gapless_split() {
     let files = encode_opus_split(&samples, test_dir, split_interval).unwrap();
 
     // Should have 5 files (one per second)
-    assert!(files.len() >= 4, "Expected at least 4 files for 5 seconds with 1s splits, got {}", files.len());
+    assert!(
+        files.len() >= 4,
+        "Expected at least 4 files for 5 seconds with 1s splits, got {}",
+        files.len()
+    );
 
     // Decode all files
     let decoded = decode_opus_files(&files).unwrap();
@@ -452,7 +464,9 @@ fn test_opus_gapless_split() {
     assert!(
         decoded.len() >= expected - tolerance && decoded.len() <= expected + tolerance,
         "Sample count mismatch: expected {} +/- {}, got {}",
-        expected, tolerance, decoded.len()
+        expected,
+        tolerance,
+        decoded.len()
     );
 
     // Verify no large gaps by checking sample continuity
@@ -466,7 +480,11 @@ fn test_opus_gapless_split() {
 
     // Max difference for 440Hz at 48kHz should be around 2π * 440/48000 * 16000 ≈ 920
     println!("  Max sample diff: {}", max_diff);
-    assert!(max_diff < 3000, "Detected possible gap: max diff = {}", max_diff);
+    assert!(
+        max_diff < 3000,
+        "Detected possible gap: max diff = {}",
+        max_diff
+    );
 
     // Cleanup
     for file in files {
@@ -491,7 +509,12 @@ fn test_opus_granule_position_continuity() {
     // Encode with splitting
     let files = encode_opus_split(&samples, test_dir, split_interval).unwrap();
 
-    println!("Created {} files for {} seconds with {}s splits", files.len(), duration, 1);
+    println!(
+        "Created {} files for {} seconds with {}s splits",
+        files.len(),
+        duration,
+        1
+    );
 
     // Verify granule positions are continuous across files
     let mut prev_total_granules: u64 = 0;
@@ -522,7 +545,9 @@ fn test_opus_granule_position_continuity() {
         assert!(
             file_granules > prev_total_granules || file_idx == 0,
             "Granule position should increase: file {} has {} but prev was {}",
-            file_idx, file_granules, prev_total_granules
+            file_idx,
+            file_granules,
+            prev_total_granules
         );
 
         prev_total_granules = file_granules;
@@ -534,7 +559,8 @@ fn test_opus_granule_position_continuity() {
     assert!(
         (prev_total_granules as i64 - expected_final as i64).abs() < tolerance as i64,
         "Final granule position mismatch: expected ~{}, got {}",
-        expected_final, prev_total_granules
+        expected_final,
+        prev_total_granules
     );
 
     // Cleanup
@@ -558,7 +584,12 @@ fn test_no_split_single_file() {
     let files = encode_opus_split(&samples, test_dir, 0).unwrap();
 
     // Should have exactly 1 file
-    assert_eq!(files.len(), 1, "Expected 1 file without splitting, got {}", files.len());
+    assert_eq!(
+        files.len(),
+        1,
+        "Expected 1 file without splitting, got {}",
+        files.len()
+    );
 
     // Decode and verify sample count
     let decoded = decode_opus_files(&files).unwrap();
@@ -574,7 +605,9 @@ fn test_no_split_single_file() {
     assert!(
         decoded.len() >= expected - tolerance && decoded.len() <= expected + tolerance,
         "Sample count mismatch: expected {} +/- {}, got {}",
-        expected, tolerance, decoded.len()
+        expected,
+        tolerance,
+        decoded.len()
     );
 
     // Cleanup
@@ -676,7 +709,11 @@ fn test_wav_gapless_split_exact_match() {
     let files = encode_wav_split(&samples, test_dir, sample_rate, split_interval).unwrap();
 
     println!("  Files created: {}", files.len());
-    assert!(files.len() >= 4, "Expected at least 4 files for 5 seconds with 1s splits, got {}", files.len());
+    assert!(
+        files.len() >= 4,
+        "Expected at least 4 files for 5 seconds with 1s splits, got {}",
+        files.len()
+    );
 
     // Decode all files
     let decoded = decode_wav_files(&files).unwrap();
@@ -685,9 +722,11 @@ fn test_wav_gapless_split_exact_match() {
 
     // WAV is lossless - samples should match exactly
     assert_eq!(
-        samples.len(), decoded.len(),
+        samples.len(),
+        decoded.len(),
         "Sample count mismatch: input {} != output {}",
-        samples.len(), decoded.len()
+        samples.len(),
+        decoded.len()
     );
 
     // Compare every sample
@@ -705,15 +744,19 @@ fn test_wav_gapless_split_exact_match() {
     if mismatches > 0 {
         println!("  ERROR: {} sample mismatches found!", mismatches);
         if let Some(idx) = first_mismatch_idx {
-            println!("  First mismatch at index {}: input {} != output {}",
-                     idx, samples[idx], decoded[idx]);
+            println!(
+                "  First mismatch at index {}: input {} != output {}",
+                idx, samples[idx], decoded[idx]
+            );
         }
     }
 
     assert_eq!(
-        mismatches, 0,
+        mismatches,
+        0,
         "WAV split files are not gapless: {} mismatches out of {} samples",
-        mismatches, samples.len()
+        mismatches,
+        samples.len()
     );
 
     println!("  SUCCESS: All {} samples match exactly!", samples.len());
@@ -736,10 +779,10 @@ fn test_wav_various_split_intervals() {
 
     // Test various split intervals
     let intervals = vec![
-        (sample_rate as usize / 2, "0.5s"),  // 0.5 seconds
-        (sample_rate as usize, "1s"),        // 1 second
-        (sample_rate as usize * 2, "2s"),    // 2 seconds
-        (sample_rate as usize * 3, "3s"),    // 3 seconds
+        (sample_rate as usize / 2, "0.5s"), // 0.5 seconds
+        (sample_rate as usize, "1s"),       // 1 second
+        (sample_rate as usize * 2, "2s"),   // 2 seconds
+        (sample_rate as usize * 3, "3s"),   // 3 seconds
     ];
 
     for (interval, label) in intervals {
@@ -754,12 +797,16 @@ fn test_wav_various_split_intervals() {
 
         // Verify exact match
         assert_eq!(
-            samples.len(), decoded.len(),
+            samples.len(),
+            decoded.len(),
             "Interval {}: sample count mismatch {} != {}",
-            label, samples.len(), decoded.len()
+            label,
+            samples.len(),
+            decoded.len()
         );
 
-        let mismatches: usize = samples.iter()
+        let mismatches: usize = samples
+            .iter()
             .zip(decoded.iter())
             .filter(|(a, b)| a != b)
             .count();
@@ -770,8 +817,12 @@ fn test_wav_various_split_intervals() {
             label, mismatches
         );
 
-        println!("Interval {} ({} files): OK - {} samples match exactly",
-                 label, files.len(), samples.len());
+        println!(
+            "Interval {} ({} files): OK - {} samples match exactly",
+            label,
+            files.len(),
+            samples.len()
+        );
 
         // Cleanup
         for file in files {
@@ -792,11 +843,14 @@ fn test_wav_edge_cases() {
 
     // Test 1: Very short audio (less than split interval)
     let short_samples = generate_sine_wave(sample_rate, 0.5, 440.0);
-    let files = encode_wav_split(&short_samples, test_dir, sample_rate, sample_rate as usize).unwrap();
+    let files =
+        encode_wav_split(&short_samples, test_dir, sample_rate, sample_rate as usize).unwrap();
     let decoded = decode_wav_files(&files).unwrap();
     assert_eq!(files.len(), 1, "Short audio should produce 1 file");
     assert_eq!(short_samples, decoded, "Short audio samples should match");
-    for f in files { fs::remove_file(f).ok(); }
+    for f in files {
+        fs::remove_file(f).ok();
+    }
     println!("Edge case 1 (short audio): OK");
 
     // Test 2: Audio exactly at split boundary
@@ -805,17 +859,27 @@ fn test_wav_edge_cases() {
     let files = encode_wav_split(&boundary_samples, test_dir, sample_rate, split_interval).unwrap();
     let decoded = decode_wav_files(&files).unwrap();
     assert_eq!(boundary_samples, decoded, "Boundary samples should match");
-    for f in files { fs::remove_file(f).ok(); }
+    for f in files {
+        fs::remove_file(f).ok();
+    }
     println!("Edge case 2 (exact boundary): OK");
 
     // Test 3: Prime number of samples (no clean division)
     let prime_count = 44117; // Prime number
     let mut prime_samples = generate_sine_wave(sample_rate, 1.0, 440.0);
     prime_samples.truncate(prime_count);
-    let files = encode_wav_split(&prime_samples, test_dir, sample_rate, sample_rate as usize / 4).unwrap();
+    let files = encode_wav_split(
+        &prime_samples,
+        test_dir,
+        sample_rate,
+        sample_rate as usize / 4,
+    )
+    .unwrap();
     let decoded = decode_wav_files(&files).unwrap();
     assert_eq!(prime_samples, decoded, "Prime count samples should match");
-    for f in files { fs::remove_file(f).ok(); }
+    for f in files {
+        fs::remove_file(f).ok();
+    }
     println!("Edge case 3 (prime sample count): OK");
 
     fs::remove_dir(test_dir).ok();
