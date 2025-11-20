@@ -31,6 +31,10 @@ use crate::schedule::{
 };
 use crate::streaming::StreamingSource;
 
+// Retention period for recorded segments (in hours)
+// For testing: set to 1 (1 hour), 24 (1 day), or 168 (1 week)
+const RETENTION_HOURS: i64 = 168; // ~1 week
+
 /// Calculate backoff delay based on elapsed failure duration
 fn get_backoff_ms(elapsed_secs: u64) -> u64 {
     match elapsed_secs {
@@ -40,6 +44,69 @@ fn get_backoff_ms(elapsed_secs: u64) -> u64 {
         120..=179 => 4000, // 4s
         _ => 5000,         // 5s
     }
+}
+
+/// Clean up old segments from database, keeping data starting from a natural boundary
+///
+/// For testing, pass a specific retention_hours value and optionally a fixed reference_time.
+pub fn cleanup_old_segments_with_retention(
+    conn: &Connection,
+    retention_hours: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    cleanup_old_segments_with_params(conn, retention_hours, None)
+}
+
+/// Clean up old segments with explicit reference time (for testing)
+pub fn cleanup_old_segments_with_params(
+    conn: &Connection,
+    retention_hours: i64,
+    reference_time: Option<DateTime<Utc>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Calculate cutoff timestamp (reference_time or current time - retention_hours)
+    let now = reference_time.unwrap_or_else(|| Utc::now());
+    let cutoff = now - chrono::Duration::try_hours(retention_hours).expect("Valid hours");
+    let cutoff_ms = cutoff.timestamp_millis();
+
+    println!(
+        "Checking for segments older than {} hours (cutoff: {})",
+        retention_hours,
+        cutoff.format("%Y-%m-%d %H:%M:%S UTC")
+    );
+
+    // Find the last boundary segment BEFORE the cutoff
+    // This ensures we keep complete sessions and don't break playback continuity
+    let last_keeper_boundary: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(id) FROM segments
+             WHERE is_timestamp_from_source = 1
+             AND timestamp_ms < ?1",
+            [cutoff_ms],
+            |row| row.get(0),
+        )
+        .ok();
+
+    // If we found a boundary to keep, delete everything before it
+    if let Some(boundary_id) = last_keeper_boundary {
+        let deleted = conn.execute("DELETE FROM segments WHERE id < ?1", [boundary_id])?;
+
+        if deleted > 0 {
+            println!(
+                "Cleaned up {} old segments (keeping boundary at id={})",
+                deleted, boundary_id
+            );
+        } else {
+            println!("No old segments to clean up");
+        }
+    } else {
+        println!("No old segments to clean up (no boundaries found before cutoff)");
+    }
+
+    Ok(())
+}
+
+/// Clean up old segments using the default RETENTION_HOURS constant
+fn cleanup_old_segments(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    cleanup_old_segments_with_retention(conn, RETENTION_HOURS)
 }
 
 pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -133,6 +200,9 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Retry configuration
     const MAX_RETRY_DURATION: Duration = Duration::from_secs(5 * 60); // 5 minutes
     let mut retry_start: Option<Instant> = None;
+
+    // SQLite connection - persists across retries within the same recording day
+    let mut sqlite_conn: Option<Connection> = None;
 
     // Create HTTP client with connection timeout
     let client = Client::builder()
@@ -447,7 +517,6 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
     let mut wav_writer: Option<WavWriter<std::io::BufWriter<File>>> = None;
 
     // SQLite storage setup
-    let mut sqlite_conn: Option<Connection> = None;
     let mut segment_buffer: Vec<u8> = Vec::new();
     let base_timestamp_ms = timestamp.timestamp_millis();
 
@@ -472,6 +541,13 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                     is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
                     audio_data BLOB NOT NULL
                 )",
+                [],
+            )?;
+
+            // Create indexes for efficient cleanup queries
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_segments_boundary
+                 ON segments(is_timestamp_from_source, timestamp_ms)",
                 [],
             )?;
 
@@ -1173,6 +1249,16 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         let wait_secs = seconds_until_start(current_mins, start_mins);
 
         println!("\nRecording window complete. Next window starts at {} UTC.", config.schedule.record_start);
+
+        // Run cleanup of old segments for SQLite storage
+        if storage_format == StorageFormat::Sqlite {
+            if let Some(ref conn) = sqlite_conn {
+                if let Err(e) = cleanup_old_segments(conn) {
+                    eprintln!("Warning: Failed to clean up old segments: {}", e);
+                }
+            }
+        }
+
         println!("Waiting {} seconds ({:.1} hours)...", wait_secs, wait_secs as f64 / 3600.0);
 
         std::thread::sleep(std::time::Duration::from_secs(wait_secs));

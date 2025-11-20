@@ -168,6 +168,24 @@ When resuming a sync, the following metadata fields are validated to ensure comp
 - Metadata mismatch causes immediate exit with details
 - No retry logic - user must re-run the command to resume
 
-## Future Enhancements
+### Automatic Cleanup
 
-**Not implemented**: For recording mode, delete records older than a week except the last one defined by natural boundary to prevent unbound database growth on remote server where space is limited.
+Recording mode automatically cleans up old segments to prevent unbound database growth:
+
+- **Retention Period**: Configurable via `RETENTION_HOURS` constant in `src/record.rs` (default: 168 hours / ~1 week)
+- **Boundary Preservation**: Always keeps complete sessions by deleting only before natural boundaries (segments with `is_timestamp_from_source = 1`)
+- **Timing**: Runs once per day after each recording window completes
+- **Safety**: Non-destructive - if cleanup fails, recording continues normally with a warning
+
+**How it works:**
+1. Calculates cutoff timestamp (current time - RETENTION_HOURS)
+2. Finds the last boundary segment before cutoff
+3. Deletes all segments with id < boundary_id
+4. Logs the number of segments deleted
+
+This ensures:
+- At least ~1 week of data is always retained
+- Complete sessions are preserved (no mid-session cuts)
+- Disk space is managed automatically on remote servers with limited storage
+
+**For testing:** Set `RETENTION_HOURS` to smaller values (e.g., 1 hour, 24 hours) in the code constant.
