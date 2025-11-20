@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use fdk_aac::enc::{
@@ -60,13 +60,24 @@ enum StorageFormat {
     Sqlite,
 }
 
+/// Schedule configuration for recording during specific hours
+#[derive(Debug, Deserialize)]
+struct Schedule {
+    /// Start recording at this time (HH:MM in UTC)
+    record_start: String,
+    /// Stop recording at this time (HH:MM in UTC)
+    record_end: String,
+}
+
 /// Configuration file structure
 #[derive(Debug, Deserialize)]
 struct Config {
     /// URL of the Shoutcast/Icecast stream (required)
     url: String,
-    /// Duration in seconds to record (default: 30)
+    /// Duration in seconds to record (mutually exclusive with schedule)
     duration: Option<u64>,
+    /// Schedule for recording during specific hours (mutually exclusive with duration)
+    schedule: Option<Schedule>,
     /// Audio format: aac, opus, or wav (default: opus)
     audio_format: Option<AudioFormat>,
     /// Storage format: file or sqlite (default: sqlite)
@@ -99,10 +110,6 @@ enum Command {
         /// Path to config file (TOML format)
         #[arg(short, long)]
         config: PathBuf,
-
-        /// Duration in seconds to record (overrides config file)
-        #[arg(short, long)]
-        duration: Option<u64>,
     },
     /// Serve audio from SQLite database via HTTP
     Serve {
@@ -274,19 +281,74 @@ fn resample(samples: &[i16], src_rate: u32, target_rate: u32) -> Vec<i16> {
     resampled
 }
 
+/// Parse a time string in "HH:MM" format and return (hour, minute)
+fn parse_time(time_str: &str) -> Result<(u32, u32), String> {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid time format '{}', expected HH:MM", time_str));
+    }
+    let hour: u32 = parts[0]
+        .parse()
+        .map_err(|_| format!("Invalid hour in '{}'", time_str))?;
+    let minute: u32 = parts[1]
+        .parse()
+        .map_err(|_| format!("Invalid minute in '{}'", time_str))?;
+    if hour >= 24 || minute >= 60 {
+        return Err(format!("Time '{}' out of range", time_str));
+    }
+    Ok((hour, minute))
+}
+
+/// Convert time to minutes since midnight
+fn time_to_minutes(hour: u32, minute: u32) -> u32 {
+    hour * 60 + minute
+}
+
+/// Check if current time (in minutes since midnight) is in the active recording window
+/// Handles overnight windows (e.g., 14:00 to 07:00)
+fn is_in_active_window(current_mins: u32, start_mins: u32, end_mins: u32) -> bool {
+    if start_mins <= end_mins {
+        // Same day window (e.g., 09:00 to 17:00)
+        current_mins >= start_mins && current_mins < end_mins
+    } else {
+        // Overnight window (e.g., 14:00 to 07:00)
+        current_mins >= start_mins || current_mins < end_mins
+    }
+}
+
+/// Calculate seconds until the end time from current time
+/// Handles overnight windows
+fn seconds_until_end(current_mins: u32, end_mins: u32) -> u64 {
+    let minutes_until = if current_mins < end_mins {
+        end_mins - current_mins
+    } else {
+        // End is tomorrow
+        (24 * 60 - current_mins) + end_mins
+    };
+    minutes_until as u64 * 60
+}
+
+/// Calculate seconds until the start time from current time
+fn seconds_until_start(current_mins: u32, start_mins: u32) -> u64 {
+    let minutes_until = if current_mins < start_mins {
+        start_mins - current_mins
+    } else {
+        // Start is tomorrow
+        (24 * 60 - current_mins) + start_mins
+    };
+    minutes_until as u64 * 60
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     match args.command {
-        Command::Record { config, duration } => record(config, duration),
+        Command::Record { config } => record(config),
         Command::Serve { sqlite_file, port } => serve(sqlite_file, port),
     }
 }
 
-fn record(
-    config_path: PathBuf,
-    duration_override: Option<u64>,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // Load config file (required)
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
@@ -303,18 +365,75 @@ fn record(
         )
     })?;
 
+    // Validate that only one of duration or schedule is specified
+    if config.duration.is_some() && config.schedule.is_some() {
+        return Err("Cannot specify both 'duration' and 'schedule' in config file".into());
+    }
+
     // Extract config values with defaults
-    let url = config.url;
-    let duration = duration_override.or(config.duration).unwrap_or(30);
+    let url = config.url.clone();
     let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
     let storage_format = config.storage_format.unwrap_or(StorageFormat::Sqlite);
     let bitrate = config.bitrate;
-    let name = config.name;
-    let output_dir = config.output_dir.unwrap_or_else(|| "tmp".to_string());
+    let name = config.name.clone();
+    let output_dir = config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
     let split_interval = config.split_interval.unwrap_or(0);
 
+    // Calculate duration based on mode
+    let duration = if let Some(schedule) = &config.schedule {
+        // Parse schedule times
+        let (start_hour, start_min) = parse_time(&schedule.record_start)?;
+        let (end_hour, end_min) = parse_time(&schedule.record_end)?;
+        let start_mins = time_to_minutes(start_hour, start_min);
+        let end_mins = time_to_minutes(end_hour, end_min);
+
+        // Get current UTC time
+        let now = chrono::Utc::now();
+        let current_hour = now.hour();
+        let current_min = now.minute();
+        let current_mins = time_to_minutes(current_hour, current_min);
+
+        // Check if we're in the active window
+        if !is_in_active_window(current_mins, start_mins, end_mins) {
+            // Wait until start time
+            let wait_secs = seconds_until_start(current_mins, start_mins);
+            println!(
+                "Current time is outside recording window ({} to {} UTC)",
+                schedule.record_start, schedule.record_end
+            );
+            println!(
+                "Waiting {} seconds ({:.1} hours) until {} UTC...",
+                wait_secs,
+                wait_secs as f64 / 3600.0,
+                schedule.record_start
+            );
+            std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+
+            // Recalculate current time after waiting
+            let now = chrono::Utc::now();
+            let current_hour = now.hour();
+            let current_min = now.minute();
+            let current_mins = time_to_minutes(current_hour, current_min);
+            seconds_until_end(current_mins, end_mins)
+        } else {
+            seconds_until_end(current_mins, end_mins)
+        }
+    } else if let Some(dur) = config.duration {
+        dur
+    } else {
+        return Err("Must specify either 'duration' or 'schedule' in config file".into());
+    };
+
     println!("Connecting to: {}", url);
-    println!("Recording duration: {} seconds", duration);
+    if config.schedule.is_some() {
+        let schedule = config.schedule.as_ref().unwrap();
+        println!(
+            "Recording until {} UTC ({} seconds)",
+            schedule.record_end, duration
+        );
+    } else {
+        println!("Recording duration: {} seconds", duration);
+    }
 
     // Create HTTP client and make request
     let client = Client::builder()

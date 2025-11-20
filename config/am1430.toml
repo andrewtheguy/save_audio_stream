@@ -6,3 +6,9 @@ output_dir = 'tmp'  # Directory to save the output files
 
 audio_format = 'opus'      # default
 storage_format = 'sqlite'   # default
+
+# Schedule: record every day from 14:00 UTC to 07:00 UTC (next day)
+# This excludes 07:00 to 14:00 UTC
+[schedule]
+record_start = "14:00"
+record_end = "07:00"
