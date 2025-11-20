@@ -123,6 +123,22 @@ fn sync_single_show(
             )
             .unwrap_or(0);
 
+        // Ensure last_boundary_end_id exists (for older databases that don't have it)
+        let has_boundary_end: bool = conn
+            .query_row(
+                "SELECT 1 FROM metadata WHERE key = 'last_boundary_end_id'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
+        if !has_boundary_end {
+            conn.execute(
+                "INSERT INTO metadata (key, value) VALUES ('last_boundary_end_id', '0')",
+                [],
+            )?;
+        }
+
         println!("  Resuming from segment {}", last_synced_id + 1);
         last_synced_id + 1
     } else {
@@ -188,6 +204,10 @@ fn sync_single_show(
             "INSERT INTO metadata (key, value) VALUES ('last_synced_id', '0')",
             [],
         )?;
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('last_boundary_end_id', '0')",
+            [],
+        )?;
 
         println!("  Initialized with source_session_id={}", metadata.uuid);
         metadata.min_id
@@ -224,24 +244,46 @@ fn sync_single_show(
             return Err(format!("No segments returned for range {}-{}", current_id, end_id).into());
         }
 
-        // Insert segments into local database
+        // Insert segments into local database (all operations in one transaction)
         let tx = conn.transaction()?;
+        let mut last_boundary_end_id: Option<i64> = None;
         {
+            let mut prev_id: Option<i64> = None;
             for segment in &segments {
+                // Check if current segment is a boundary (new session start)
+                // If so, previous segment is the end of a complete session
+                if segment.is_timestamp_from_source == 1 {
+                    if let Some(prev) = prev_id {
+                        last_boundary_end_id = Some(prev);
+                    }
+                }
+
                 tx.execute(
                     "INSERT INTO segments (id, timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3, ?4)",
                     rusqlite::params![segment.id, segment.timestamp_ms, segment.is_timestamp_from_source, &segment.audio_data],
+                )?;
+
+                prev_id = Some(segment.id);
+            }
+
+            // Update last_synced_id (in same transaction)
+            let last_id = segments.last().unwrap().id;
+            tx.execute(
+                "UPDATE metadata SET value = ?1 WHERE key = 'last_synced_id'",
+                [last_id.to_string()],
+            )?;
+
+            // Update last_boundary_end_id if we found a new boundary in this batch (in same transaction)
+            if let Some(boundary_end) = last_boundary_end_id {
+                tx.execute(
+                    "UPDATE metadata SET value = ?1 WHERE key = 'last_boundary_end_id'",
+                    [boundary_end.to_string()],
                 )?;
             }
         }
         tx.commit()?;
 
-        // Update last_synced_id
         let last_id = segments.last().unwrap().id;
-        conn.execute(
-            "UPDATE metadata SET value = ?1 WHERE key = 'last_synced_id'",
-            [last_id.to_string()],
-        )?;
 
         println!(
             "  Synced segments {} to {} ({}/{} segments, {:.1}% complete)",
