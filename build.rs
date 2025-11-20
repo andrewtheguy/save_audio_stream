@@ -3,8 +3,11 @@ use std::process::Command;
 fn main() {
     let profile = std::env::var("PROFILE").unwrap_or_default();
 
-    // Only build frontend for release builds
-    if profile == "release" {
+    // Check if web-frontend feature is enabled
+    let has_web_frontend = std::env::var("CARGO_FEATURE_WEB_FRONTEND").is_ok();
+
+    // Only build frontend for release builds with web-frontend feature
+    if profile == "release" && has_web_frontend {
         println!("cargo:warning=Building frontend assets for release...");
 
         // Check if npm is available

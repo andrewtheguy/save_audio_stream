@@ -51,7 +51,7 @@ jobs:
       - name: Build
         env:
           VCPKG_ROOT: C:\vcpkg
-        run: cargo build --release
+        run: cargo build --release --no-default-features
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

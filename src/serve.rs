@@ -29,7 +29,7 @@ use uuid::Uuid;
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
 use crate::webm::{write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string, write_ebml_uint};
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 #[derive(rust_embed::RustEmbed)]
 #[folder = "app/dist/"]
 struct Asset;
@@ -1241,7 +1241,7 @@ async fn vite_node_modules_handler(Path(path): Path<String>) -> Response {
     proxy_to_vite(&format!("/node_modules/{}", path)).await
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 async fn index_handler_release() -> Response {
     match Asset::get("index.html") {
         Some(content) => {
@@ -1258,7 +1258,12 @@ async fn index_handler_release() -> Response {
     }
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
+async fn index_handler_release() -> Response {
+    (StatusCode::NOT_FOUND, "Web frontend not available in this build").into_response()
+}
+
+#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 async fn assets_handler_release(Path(path): Path<String>) -> Response {
     let file_path = format!("assets/{}", path);
 
@@ -1279,6 +1284,11 @@ async fn assets_handler_release(Path(path): Path<String>) -> Response {
             (StatusCode::NOT_FOUND, "Asset not found").into_response()
         }
     }
+}
+
+#[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
+async fn assets_handler_release(Path(_path): Path<String>) -> Response {
+    (StatusCode::NOT_FOUND, "Web frontend not available in this build").into_response()
 }
 
 // Sync API Handlers

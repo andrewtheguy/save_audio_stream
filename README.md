@@ -54,6 +54,28 @@ cargo build --release
 
 The binary will be at `target/release/save_audio_stream`.
 
+#### Web Frontend Feature Flag
+
+The project includes a `web-frontend` feature flag that controls whether the web UI is built and embedded into the binary:
+
+- **Default**: Web frontend is **enabled** (requires Node.js and npm)
+- **Disabled**: Build without web frontend (no npm required)
+
+**Build without web frontend:**
+```bash
+cargo build --release --no-default-features
+```
+
+This is useful for:
+- CI/CD environments without Node.js/npm
+- Headless server deployments
+- Reducing binary size when web UI is not needed
+
+When built without the web frontend:
+- All API endpoints remain fully functional
+- Web UI routes (`/`, `/assets/*`) return 404 with message "Web frontend not available in this build"
+- The server can still serve audio and handle sync operations
+
 ## Usage
 
 ### Record Command
@@ -388,13 +410,18 @@ In release mode:
 - No separate Vite server needed
 - Single binary deployment
 
+**Note:** If the `web-frontend` feature is disabled (`--no-default-features`), the frontend build is skipped and web UI routes will return 404.
+
 ### Build Process
 
 The `build.rs` script automatically:
-1. Detects release builds (`cargo build --release`)
-2. Runs `npm install` in the `app/` directory
-3. Runs `npm run build` to compile frontend assets to `app/dist/`
-4. Embeds assets into the binary at compile time
+1. Detects release builds with `web-frontend` feature enabled
+2. Checks for npm availability
+3. Runs `npm install` in the `app/` directory
+4. Runs `npm run build` to compile frontend assets to `app/dist/`
+5. Embeds assets into the binary at compile time via `rust-embed`
+
+If npm is not available or the `web-frontend` feature is disabled, the frontend build is skipped.
 
 ### Example Usage
 

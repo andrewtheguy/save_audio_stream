@@ -3,6 +3,10 @@ name = "save_audio_stream"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["web-frontend"]
+web-frontend = ["dep:rust-embed", "dep:mime_guess"]
+
 [dependencies]
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 symphonia = { version = "0.5", features = ["mp3", "aac"] }
@@ -31,5 +35,5 @@ env_logger = "0.11"
 rand = "0.8"
 serde_json = "1"
 serde_bytes = "0.11"
-rust-embed = "8"
-mime_guess = "2"
+rust-embed = { version = "8", optional = true }
+mime_guess = { version = "2", optional = true }
