@@ -110,10 +110,10 @@ record_end = '20:00'
 config_type = 'sync'
 remote_url = 'http://remote:3000'  # URL of remote recording server
 local_dir = './synced'              # Local directory for synced databases
-shows = ['show1', 'show2']          # Show names to sync
 
 # Optional
-chunk_size = 100  # default: 100 (batch size for fetching segments)
+shows = ['show1', 'show2']  # Show names to sync (omit to sync all shows from remote)
+chunk_size = 100            # default: 100 (batch size for fetching segments)
 ```
 
 ### Config Options
@@ -157,12 +157,12 @@ chunk_size = 100  # default: 100 (batch size for fetching segments)
 | `config_type` | Must be `'sync'` for sync configurations |
 | `remote_url` | URL of remote recording server (e.g., http://remote:3000) |
 | `local_dir` | Local directory for synced databases |
-| `shows` | Array of show names to sync |
 
 **Optional:**
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `shows` | Array of show names to sync (whitelist) | All shows from remote |
 | `chunk_size` | Batch size for fetching segments | 100 |
 
 ### Examples
@@ -239,9 +239,19 @@ When using `split_interval`, files are numbered sequentially:
 
 | Format | Sample Rate | Channels | Default Bitrate | Notes |
 |--------|-------------|----------|-----------------|-------|
-| AAC-LC | 16 kHz | Mono | 32 kbps | Good for speech |
+| AAC-LC | 16 kHz | Mono | 32 kbps | **⚠️ Experimental** - See warning below |
 | Opus | 48 kHz | Mono | 16 kbps | Best quality/size ratio |
 | WAV | Source rate | Mono | N/A | Lossless, large files |
+
+**⚠️ AAC Encoding Warning:**
+
+AAC encoding support is **experimental** and has known limitations:
+- **Not gapless**: AAC files may not provide seamless playback when concatenated
+- **Stability issues**: The underlying `fdk-aac` library binding may have stability issues
+- **Encoder priming delay**: AAC has inherent encoder padding that affects split files
+- **Future migration**: May switch to FFmpeg-based encoding in future versions for better stability
+
+**Recommendation**: Use **Opus** for production workloads. It provides better quality at lower bitrates and guaranteed gapless playback.
 
 ## Gapless Playback
 
@@ -249,7 +259,7 @@ Split files are designed for **gapless playback** when concatenated:
 
 - **WAV**: Sample-perfect splitting - concatenated files are bit-identical to unsplit recording
 - **Opus**: Continuous granule positions across files for seamless playback
-- **AAC**: Files split at frame boundaries (note: AAC has inherent encoder priming delay)
+- **AAC**: ⚠️ Not guaranteed gapless - AAC has inherent encoder priming delay and the encoding library has stability issues (see warning above)
 
 ### Verifying Gapless Splits
 
@@ -286,6 +296,15 @@ The application supports one-way synchronization from a remote recording server 
 
 Create a sync config file (e.g., `config/sync.toml`):
 
+**Sync all shows from remote (recommended):**
+```toml
+config_type = 'sync'
+remote_url = 'http://remote:3000'
+local_dir = './synced'
+# shows parameter is omitted - will sync all available shows
+```
+
+**Or sync specific shows only (whitelist):**
 ```toml
 config_type = 'sync'
 remote_url = 'http://remote:3000'

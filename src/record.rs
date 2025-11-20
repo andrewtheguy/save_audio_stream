@@ -446,6 +446,11 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Helper to create AAC encoder
+    // ⚠️ EXPERIMENTAL: AAC encoding has known limitations:
+    // - The fdk-aac library binding may have stability issues
+    // - AAC has inherent encoder priming delay that affects gapless playback
+    // - May be replaced with FFmpeg-based encoding in the future for better stability
+    // - Recommendation: Use Opus for production workloads
     let create_aac_encoder = || -> Result<AacEncoder, Box<dyn std::error::Error>> {
         let params = EncoderParams {
             bit_rate: AacBitRate::Cbr(bitrate as u32),

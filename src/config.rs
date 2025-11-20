@@ -14,8 +14,18 @@ pub enum ConfigType {
 #[serde(rename_all = "lowercase")]
 pub enum AudioFormat {
     /// AAC-LC format (16kHz mono, 32kbps)
+    ///
+    /// ⚠️ EXPERIMENTAL: AAC encoding has known limitations:
+    /// - May not provide gapless playback when splitting files
+    /// - The fdk-aac library binding has stability issues
+    /// - May be replaced with FFmpeg-based encoding in the future
+    ///
+    /// Recommendation: Use Opus for production workloads
     Aac,
     /// Opus format (48kHz mono, 16kbps)
+    ///
+    /// Recommended for production use - provides best quality at low bitrates
+    /// with guaranteed gapless playback support
     Opus,
     /// WAV format (lossless, preserves original sample rate)
     Wav,
