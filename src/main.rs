@@ -102,22 +102,9 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
 
     // Determine output directory and API port
     let output_dir = multi_config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
-    let api_port = port_override.or(multi_config.api_port);
+    let api_port = port_override.unwrap_or(multi_config.api_port);
 
-    // Start single API server if api_port is specified (before spawning recording threads)
-    if let Some(port) = api_port {
-        let output_dir_path = PathBuf::from(output_dir.clone());
-        thread::spawn(move || {
-            println!("Starting API server on port {}", port);
-            if let Err(e) = serve::serve_for_sync(output_dir_path, port) {
-                eprintln!("API server error: {}", e);
-            }
-        });
-        // Give the server a moment to start
-        thread::sleep(std::time::Duration::from_millis(500));
-    }
-
-    // Spawn a thread for each session
+    // Spawn recording session threads first (they run in background)
     let mut handles = Vec::new();
     for (_session_idx, mut session_config) in multi_config.sessions.into_iter().enumerate() {
         // Copy global output_dir to session config
@@ -166,11 +153,16 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
         handles.push((session_name, handle));
     }
 
-    // Wait for all sessions (they run indefinitely)
-    for (session_name, handle) in handles {
-        if let Err(e) = handle.join() {
-            eprintln!("[{}] Thread panicked: {:?}", session_name, e);
-        }
+    // Run API server in main thread (blocking)
+    // This allows future API-based control of the program
+    let output_dir_path = PathBuf::from(output_dir);
+    println!("Starting API server on port {} (main thread)", api_port);
+
+    // API server runs in main thread - if it fails, program exits
+    if let Err(e) = serve::serve_for_sync(output_dir_path, api_port) {
+        eprintln!("API server failed: {}", e);
+        eprintln!("Aborting program due to API server failure");
+        std::process::abort();
     }
 
     Ok(())

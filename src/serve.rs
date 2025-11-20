@@ -102,8 +102,8 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
 
         let api_routes = Router::new()
             .route("/api/sync/shows", get(sync_shows_list_handler))
-            .route("/api/sync/shows/:show_name/metadata", get(sync_show_metadata_handler))
-            .route("/api/sync/shows/:show_name/segments", get(sync_show_segments_handler));
+            .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
+            .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
 
         let app = api_routes
             .layer(cors)
@@ -229,8 +229,8 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
             .route("/api/segments/range", get(segments_range_handler))
             .route("/api/sessions", get(sessions_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
-            .route("/api/sync/shows/:show_name/metadata", get(sync_show_metadata_handler))
-            .route("/api/sync/shows/:show_name/segments", get(sync_show_segments_handler));
+            .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
+            .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
 
         #[cfg(debug_assertions)]
         let app = api_routes

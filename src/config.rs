@@ -39,6 +39,10 @@ pub struct Schedule {
     pub record_end: String,
 }
 
+fn default_api_port() -> u16 {
+    3000
+}
+
 /// Multi-session recording configuration file structure
 #[derive(Debug, Deserialize)]
 pub struct MultiSessionConfig {
@@ -48,8 +52,9 @@ pub struct MultiSessionConfig {
     pub sessions: Vec<SessionConfig>,
     /// Global output directory for all sessions (default: tmp)
     pub output_dir: Option<String>,
-    /// Global API server port for all sessions (optional)
-    pub api_port: Option<u16>,
+    /// Global API server port for all sessions (default: 3000)
+    #[serde(default = "default_api_port")]
+    pub api_port: u16,
 }
 
 /// Sync configuration file structure

@@ -78,9 +78,9 @@ The config file uses TOML format. All config files must specify a `config_type` 
 # Required
 config_type = 'record'
 
-# Global settings (optional)
+# Global settings
 output_dir = 'recordings'  # default: 'tmp' (applies to all sessions)
-api_port = 3000            # Optional: start single API server for all sessions
+api_port = 3000            # default: 3000 (API server for all sessions)
 
 [[sessions]]
 # Required
@@ -131,7 +131,7 @@ chunk_size = 100  # default: 100 (batch size for fetching segments)
 | Option | Description | Default |
 |--------|-------------|---------|
 | `output_dir` | Base output directory for all sessions | tmp |
-| `api_port` | Port for single API server serving all sessions | - |
+| `api_port` | Port for API server serving all sessions | 3000 |
 
 **Session Options:**
 
@@ -146,7 +146,7 @@ chunk_size = 100  # default: 100 (batch size for fetching segments)
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
 | `split_interval` | Split files every N seconds (0 = no split) | 0 | No |
 
-**Note:** The `api_port` global option starts a single HTTP API server for all recording sessions. This server provides synchronization endpoints for all shows being recorded. Useful for remote access and syncing databases while recording is in progress.
+**Note:** The API server always runs in the main thread on the configured `api_port` (default: 3000). It provides synchronization endpoints for all shows being recorded, enabling remote access and database syncing while recording is in progress. The API server is required for sync functionality.
 
 #### Sync Config Options
 
