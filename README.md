@@ -193,6 +193,112 @@ The tests verify:
 - `audio/mpeg` / `audio/mp3` (MP3)
 - `audio/aac` / `audio/aacp` / `audio/x-aac` (AAC)
 
+## HTTP Server
+
+The tool includes an HTTP server to stream recorded audio from SQLite databases.
+
+### Commands
+
+```bash
+# Record audio to SQLite database
+save_audio_stream record -c config.toml
+
+# Serve audio via HTTP
+save_audio_stream serve <database.sqlite> [-p PORT]
+```
+
+### Server Features
+
+- **Web UI**: Browse and access recorded audio segments
+- **Audio Streaming**: Serve audio in Ogg/Opus format with Range request support
+- **DASH Streaming**: Dynamic Adaptive Streaming over HTTP with MPD manifests
+- **WebM Segments**: Individual audio segments for player compatibility
+- **REST API**: Query segment ranges and metadata
+
+### Available Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | Web UI with dynamic segment URLs |
+| `GET /audio?start_id=N&end_id=N` | Ogg/Opus audio stream |
+| `GET /audio/session/{id}` | Cached audio session with Range support |
+| `GET /manifest.mpd?start_id=N&end_id=N` | DASH MPD manifest |
+| `GET /init.webm` | WebM initialization segment |
+| `GET /segment/{id}` | Individual WebM audio segment |
+| `GET /api/segments/range` | JSON with min/max segment IDs |
+
+### Development Workflow
+
+The server has two modes with different asset serving strategies:
+
+#### Debug Mode (Development)
+
+Run the Vite dev server and Axum server in separate terminals:
+
+```bash
+# Terminal 1: Start Vite dev server on port 21173
+cd app && npm run dev
+
+# Terminal 2: Run the Axum server
+cargo run -- serve database.sqlite -p 3000
+```
+
+Visit `http://localhost:3000` to access the web UI. The Axum server proxies frontend requests to Vite, enabling Hot Module Replacement (HMR) for live updates during development.
+
+**Prerequisites for development:**
+```bash
+cd app
+npm install
+```
+
+#### Release Mode (Production)
+
+Build and run the production server with embedded assets:
+
+```bash
+# Build release binary (automatically builds and embeds frontend)
+cargo build --release
+
+# Run the server
+./target/release/save_audio_stream serve database.sqlite -p 3000
+```
+
+In release mode:
+- Frontend assets are automatically built via `npm run build` during cargo build
+- Assets are embedded into the binary using `rust-embed`
+- No separate Vite server needed
+- Single binary deployment
+
+### Build Process
+
+The `build.rs` script automatically:
+1. Detects release builds (`cargo build --release`)
+2. Runs `npm install` in the `app/` directory
+3. Runs `npm run build` to compile frontend assets to `app/dist/`
+4. Embeds assets into the binary at compile time
+
+### Example Usage
+
+**Start server on default port (3000):**
+```bash
+save_audio_stream serve ./tmp/myradio.sqlite
+```
+
+**Start server on custom port:**
+```bash
+save_audio_stream serve ./tmp/myradio.sqlite -p 8080
+```
+
+**Access the web UI:**
+```
+http://localhost:3000
+```
+
+The web UI displays:
+- Audio URL: `/audio?start_id={min}&end_id={max}`
+- MPD URL: `/manifest.mpd?start_id={min}&end_id={max}`
+- Current segment range from the database
+
 ## License
 
 MIT
