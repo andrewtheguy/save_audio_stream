@@ -261,7 +261,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if storage_format == StorageFormat::File {
         println!("Output file: {}", output_filename);
     }
-    println!("Audio format: {:?}", audio_format);
+    println!("Output audio format: {:?}", audio_format);
     if split_interval > 0 {
         println!("Split interval: {} seconds", split_interval);
     }
@@ -278,7 +278,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    println!("Detected codec: {}", codec_hint);
+    println!("Detected source codec: {}", codec_hint);
 
     // Create channel for streaming data
     let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(100);
