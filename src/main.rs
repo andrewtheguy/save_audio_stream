@@ -217,12 +217,10 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
         recording_handles.push((session_name, handle));
     }
 
-    // Wait for API server thread (blocking) - if it fails, program exits
-    if let Err(e) = api_handle.join() {
-        eprintln!("API server thread panicked: {:?}", e);
-        eprintln!("Aborting program due to API server failure");
-        std::process::abort();
-    }
+    // Wait for API server thread (blocking) - if it fails, return error
+    api_handle.join().map_err(|e| {
+        format!("API server thread panicked: {:?}", e)
+    })?;
 
     Ok(())
 }
