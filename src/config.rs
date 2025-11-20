@@ -1,6 +1,15 @@
 use clap::ValueEnum;
 use serde::Deserialize;
 
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigType {
+    /// Recording configuration
+    Record,
+    /// Syncing configuration
+    Sync,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AudioFormat {
@@ -30,11 +39,37 @@ pub struct Schedule {
     pub record_end: String,
 }
 
-/// Multi-session configuration file structure
+fn default_api_port() -> u16 {
+    3000
+}
+
+/// Multi-session recording configuration file structure
 #[derive(Debug, Deserialize)]
 pub struct MultiSessionConfig {
+    /// Configuration type (must be "record")
+    pub config_type: ConfigType,
     /// Array of recording sessions
     pub sessions: Vec<SessionConfig>,
+    /// Global output directory for all sessions (default: tmp)
+    pub output_dir: Option<String>,
+    /// Global API server port for all sessions (default: 3000)
+    #[serde(default = "default_api_port")]
+    pub api_port: u16,
+}
+
+/// Sync configuration file structure
+#[derive(Debug, Deserialize)]
+pub struct SyncConfig {
+    /// Configuration type (must be "sync")
+    pub config_type: ConfigType,
+    /// URL of remote recording server (e.g., http://remote:3000)
+    pub remote_url: String,
+    /// Local base directory for synced databases
+    pub local_dir: String,
+    /// Show names to sync
+    pub shows: Vec<String>,
+    /// Chunk size for batch fetching (default: 100)
+    pub chunk_size: Option<u64>,
 }
 
 /// Single session configuration
@@ -52,8 +87,9 @@ pub struct SessionConfig {
     pub bitrate: Option<u32>,
     /// Name prefix for output file (required)
     pub name: String,
-    /// Output directory (default: tmp)
-    pub output_dir: Option<String>,
     /// Split interval in seconds (0 = no splitting)
     pub split_interval: Option<u64>,
+    /// Output directory (populated from global config, not in TOML)
+    #[serde(skip)]
+    pub output_dir: Option<String>,
 }

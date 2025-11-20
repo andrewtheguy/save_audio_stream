@@ -55,63 +55,138 @@ The binary will be at `target/release/save_audio_stream`.
 
 ## Usage
 
+### Record Command
+
 ```bash
-save_audio_stream -c <CONFIG_FILE> [-d <DURATION>]
+save_audio_stream record -c <CONFIG_FILE> [-p <PORT>]
 ```
 
-### CLI Options
+**CLI Options:**
 
 | Option | Description |
 |--------|-------------|
-| `-c, --config` | Path to config file (required) |
-| `-d, --duration` | Recording duration in seconds (overrides config) |
+| `-c, --config` | Path to multi-session config file (required) |
+| `-p, --port` | Override global API server port (optional) |
 
-### Config File Format (Required)
+### Config File Format
 
-Most settings are specified in a TOML config file:
+The config file uses TOML format. All config files must specify a `config_type` to indicate whether they're for recording or syncing.
+
+#### Recording Config
 
 ```toml
 # Required
+config_type = 'record'
+
+# Global settings
+output_dir = 'recordings'  # default: 'tmp' (applies to all sessions)
+api_port = 3000            # default: 3000 (API server for all sessions)
+
+[[sessions]]
+# Required
 url = 'https://stream.example.com/radio'
-name = 'myradio'           # Name prefix for output
+name = 'myradio'
+record_start = '14:00'     # UTC time to start recording (HH:MM)
+record_end = '16:00'       # UTC time to stop recording (HH:MM)
 
 # Optional (with defaults)
 audio_format = 'opus'      # default: 'opus' (options: aac, opus, wav)
 storage_format = 'sqlite'  # default: 'sqlite' (options: file, sqlite)
-duration = 3600            # default: 30 (seconds)
 bitrate = 24               # default: 32 for AAC, 16 for Opus
-output_dir = 'recordings'  # default: 'tmp'
 split_interval = 300       # default: 0 (no splitting, in seconds)
+
+[[sessions]]
+# Add more sessions as needed
+url = 'https://stream2.example.com/radio'
+name = 'myradio2'
+record_start = '18:00'
+record_end = '20:00'
+```
+
+#### Sync Config
+
+```toml
+# Required
+config_type = 'sync'
+remote_url = 'http://remote:3000'  # URL of remote recording server
+local_dir = './synced'              # Local directory for synced databases
+shows = ['show1', 'show2']          # Show names to sync
+
+# Optional
+chunk_size = 100  # default: 100 (batch size for fetching segments)
 ```
 
 ### Config Options
+
+#### Recording Config Options
+
+**Required:**
+
+| Option | Description |
+|--------|-------------|
+| `config_type` | Must be `'record'` for recording configurations |
+
+**Global Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `output_dir` | Base output directory for all sessions | tmp |
+| `api_port` | Port for API server serving all sessions | 3000 |
+
+**Session Options:**
 
 | Option | Description | Default | Required |
 |--------|-------------|---------|----------|
 | `url` | URL of the Shoutcast/Icecast stream | - | Yes |
 | `name` | Name prefix for output | - | Yes |
+| `record_start` | Recording start time in UTC (HH:MM) | - | Yes |
+| `record_end` | Recording end time in UTC (HH:MM) | - | Yes |
 | `audio_format` | Audio encoding: `aac`, `opus`, or `wav` | opus | No |
 | `storage_format` | Storage format: `file` or `sqlite` | sqlite | No |
-| `duration` | Recording duration in seconds | 30 | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
-| `output_dir` | Base output directory | tmp | No |
 | `split_interval` | Split files every N seconds (0 = no split) | 0 | No |
+
+**Note:** The API server always runs in the main thread on the configured `api_port` (default: 3000). It provides synchronization endpoints for all shows being recorded, enabling remote access and database syncing while recording is in progress. The API server is required for sync functionality.
+
+#### Sync Config Options
+
+**Required:**
+
+| Option | Description |
+|--------|-------------|
+| `config_type` | Must be `'sync'` for sync configurations |
+| `remote_url` | URL of remote recording server (e.g., http://remote:3000) |
+| `local_dir` | Local directory for synced databases |
+| `shows` | Array of show names to sync |
+
+**Optional:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `chunk_size` | Batch size for fetching segments | 100 |
 
 ### Examples
 
-Use a config file with default duration:
+Record multiple sessions from config:
 ```bash
-save_audio_stream -c config/am1430.toml
+save_audio_stream record -c config/sessions.toml
 ```
 
-Override duration from CLI (record 60 seconds):
+Override global API server port:
 ```bash
-save_audio_stream -c config/am1430.toml -d 60
+save_audio_stream record -c config/sessions.toml -p 3000
 ```
 
-Record for 1 hour:
+### Other Commands
+
+**Serve recorded audio:**
 ```bash
-save_audio_stream -c config/am1430.toml -d 3600
+save_audio_stream serve <database.sqlite> [-p PORT]
+```
+
+**Sync from remote server:**
+```bash
+save_audio_stream sync -c config/sync.toml
 ```
 
 ## Output
@@ -202,6 +277,35 @@ The application uses `is_timestamp_from_source` flag in the database to track re
 - Natural boundaries when connections drop and reconnect or at schedule breaks
 - Database can accumulate multiple sessions over time
 - API can list individual sessions with accurate start times
+
+## Database Synchronization
+
+The application supports one-way synchronization from a remote recording server to local databases for asynchronous replication.
+
+### Quick Start
+
+Create a sync config file (e.g., `config/sync.toml`):
+
+```toml
+config_type = 'sync'
+remote_url = 'http://remote:3000'
+local_dir = './synced'
+shows = ['myradio']  # or ['show1', 'show2'] for multiple shows
+```
+
+Run the sync command:
+
+```bash
+save_audio_stream sync -c config/sync.toml
+```
+
+**Key Features:**
+- Resumable sync with automatic checkpoint tracking
+- Database protection with `is_recipient` flag prevents recording to sync targets
+- Sequential processing with fail-fast error handling
+- REST API endpoints for show listing and segment fetching
+
+📖 **For detailed documentation, see [docs/syncing_design.md](docs/syncing_design.md)**
 
 ## Supported Input Formats
 

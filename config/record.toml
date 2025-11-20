@@ -1,8 +1,11 @@
+config_type = 'record'  # Indicates this is a recording configuration
+output_dir = './tmp/recorded'  # Directory to save the output files
+api_port = 17000   # Port for the optional API server
+
 [[sessions]]
 url = 'https://video1.getstreamhosting.com:8304/stream'
 name = 'am1430'
 split_interval = 10  # Split every 10 seconds
-output_dir = 'tmp'  # Directory to save the output files
 audio_format = 'opus'      # default
 storage_format = 'sqlite'   # default
 
@@ -16,7 +19,6 @@ record_end = "07:00"
 url = 'https://live.amperwave.net/manifest/audacy-knxamaac-imc'
 name = 'knx_news'
 split_interval = 10  # Split every 10 seconds
-output_dir = 'tmp'  # Directory to save the output files
 audio_format = 'opus'      # default
 storage_format = 'sqlite'   # default
 
