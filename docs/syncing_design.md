@@ -16,7 +16,7 @@ The application supports one-way synchronization from a remote recording server 
 
 ## Rationale
 
-Currently I have stable internet on remote recording server, but it doesn't have a stable connection for postgresql, so I need to record locally and sync asynchronously.
+Ideally the sender in recording mode should submit the recording data to a central server or database such as postgres, but currently the remote recording server I have with stable connection doesn't have enough space for database, so I need to record locally to sqlite and sync asynchronously.
 
 ## Architecture
 
