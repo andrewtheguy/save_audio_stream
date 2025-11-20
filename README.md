@@ -188,6 +188,21 @@ The tests verify:
 - Opus files: Continuous granule positions and sample count verification
 - Edge cases: Various split intervals, boundary conditions, prime sample counts
 
+## Recording Session Boundaries
+
+The application uses `is_timestamp_from_source` flag in the database to track recording session boundaries:
+
+- Each HTTP connection starts a new recording session
+- The first segment of each connection has `is_timestamp_from_source = 1`
+- This segment gets its timestamp from the HTTP Date header (accurate wall-clock time)
+- Subsequent segments have calculated timestamps
+
+**Benefits:**
+- Accurate detection of contiguous segments from the same recording session
+- Natural boundaries when connections drop and reconnect or at schedule breaks
+- Database can accumulate multiple sessions over time
+- API can list individual sessions with accurate start times
+
 ## Supported Input Formats
 
 - `audio/mpeg` / `audio/mp3` (MP3)

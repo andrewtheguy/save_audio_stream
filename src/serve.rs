@@ -60,6 +60,23 @@ pub fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::
 
     let conn = Connection::open(&sqlite_file)?;
 
+    // Check version first
+    let db_version: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Database is missing version in metadata")?;
+
+    if db_version != "1" {
+        return Err(format!(
+            "Unsupported database version: '{}'. This application only supports version '1'",
+            db_version
+        )
+        .into());
+    }
+
     // Check audio format
     let audio_format: String = conn
         .query_row(
@@ -971,6 +988,16 @@ async fn sessions_handler(
             },
         )
         .unwrap_or(10.0);
+
+    // Session Boundary Detection using is_timestamp_from_source
+    //
+    // The is_timestamp_from_source flag (set to 1) marks the first segment of each
+    // HTTP connection. Each connection gets its timestamp from the HTTP Date header,
+    // creating natural boundaries between recording sessions.
+    //
+    // This enables accurate detection of which segments are contiguous (from the same
+    // connection) vs. which come from different recording attempts after reconnection
+    // or schedule breaks.
 
     // Get all boundary segments (is_timestamp_from_source = 1)
     let mut stmt = match conn.prepare(

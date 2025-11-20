@@ -14,7 +14,6 @@ use log::debug;
 use rand::Rng;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -26,7 +25,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use crate::audio::{create_opus_comment_header, create_opus_id_header, resample};
-use crate::config::{AudioFormat, Config, StorageFormat};
+use crate::config::{AudioFormat, SessionConfig, StorageFormat};
 use crate::schedule::{
     is_in_active_window, parse_time, seconds_until_end, seconds_until_start, time_to_minutes,
 };
@@ -43,22 +42,24 @@ fn get_backoff_ms(elapsed_secs: u64) -> u64 {
     }
 }
 
-pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    // Load config file (required)
-    let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
-        format!(
-            "Failed to read config file '{}': {}",
-            config_path.display(),
-            e
-        )
-    })?;
-    let config: Config = toml::from_str(&config_content).map_err(|e| {
-        format!(
-            "Failed to parse config file '{}': {}",
-            config_path.display(),
-            e
-        )
-    })?;
+pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
+    // Setup per-session file logging
+    let output_dir = config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
+    let log_path = format!("{}/{}.log", output_dir, config.name);
+
+    // Create output directory for log file
+    std::fs::create_dir_all(&output_dir).ok();
+
+    // Setup file logger for this session
+    let _log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("Failed to open log file '{}': {}", log_path, e))?;
+
+    // Note: Separate log files are created per session
+    // TODO: Implement proper file-based logging redirection for this thread
+    println!("Session '{}' logging to: {}", config.name, log_path);
 
     // Extract config values with defaults
     let url = config.url.clone();
@@ -512,12 +513,28 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                     |row| row.get(0),
                 )
                 .ok();
+            let existing_version: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
 
             // Check if this is an existing database
             let is_existing_db =
                 existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
 
             if is_existing_db {
+                // Validate version first
+                let db_version = existing_version.ok_or("Database is missing version in metadata")?;
+                if db_version != "1" {
+                    return Err(format!(
+                        "Unsupported database version: '{}'. This application only supports version '1'",
+                        db_version
+                    ).into());
+                }
+
                 // Existing database must have all required metadata
                 let db_uuid = existing_uuid.ok_or("Database is missing uuid in metadata")?;
                 let db_name = existing_name.ok_or("Database is missing name in metadata")?;
@@ -567,6 +584,10 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                     .take(12)
                     .map(char::from)
                     .collect::<String>());
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('version', '1')",
+                    [],
+                )?;
                 conn.execute(
                     "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
                     [&session_uuid],

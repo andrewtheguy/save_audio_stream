@@ -1,1 +1,1 @@
-no backward compatibility.
+since the proejct is still not finalized yet, no backward compatibility or migration path is needed for any updates to reduce unnecessary complexity.
