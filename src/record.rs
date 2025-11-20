@@ -14,7 +14,6 @@ use log::debug;
 use rand::Rng;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -26,7 +25,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use crate::audio::{create_opus_comment_header, create_opus_id_header, resample};
-use crate::config::{AudioFormat, Config, StorageFormat};
+use crate::config::{AudioFormat, SessionConfig, StorageFormat};
 use crate::schedule::{
     is_in_active_window, parse_time, seconds_until_end, seconds_until_start, time_to_minutes,
 };
@@ -43,22 +42,24 @@ fn get_backoff_ms(elapsed_secs: u64) -> u64 {
     }
 }
 
-pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    // Load config file (required)
-    let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
-        format!(
-            "Failed to read config file '{}': {}",
-            config_path.display(),
-            e
-        )
-    })?;
-    let config: Config = toml::from_str(&config_content).map_err(|e| {
-        format!(
-            "Failed to parse config file '{}': {}",
-            config_path.display(),
-            e
-        )
-    })?;
+pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
+    // Setup per-session file logging
+    let output_dir = config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
+    let log_path = format!("{}/{}.log", output_dir, config.name);
+
+    // Create output directory for log file
+    std::fs::create_dir_all(&output_dir).ok();
+
+    // Setup file logger for this session
+    let _log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("Failed to open log file '{}': {}", log_path, e))?;
+
+    // Note: Separate log files are created per session
+    // TODO: Implement proper file-based logging redirection for this thread
+    println!("Session '{}' logging to: {}", config.name, log_path);
 
     // Extract config values with defaults
     let url = config.url.clone();

@@ -22,7 +22,7 @@ pub enum StorageFormat {
 }
 
 /// Schedule configuration for recording during specific hours
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Schedule {
     /// Start recording at this time (HH:MM in UTC)
     pub record_start: String,
@@ -30,9 +30,16 @@ pub struct Schedule {
     pub record_end: String,
 }
 
-/// Configuration file structure
+/// Multi-session configuration file structure
 #[derive(Debug, Deserialize)]
-pub struct Config {
+pub struct MultiSessionConfig {
+    /// Array of recording sessions
+    pub sessions: Vec<SessionConfig>,
+}
+
+/// Single session configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionConfig {
     /// URL of the Shoutcast/Icecast stream (required)
     pub url: String,
     /// Schedule for recording during specific hours (required)
