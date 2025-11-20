@@ -1,10 +1,15 @@
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Redirect},
     routing::get,
     Router,
 };
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tokio::io::AsyncReadExt;
+use tokio_util::io::ReaderStream;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -1286,7 +1291,37 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let app_state = StdArc::new(AppState { db_path });
+        let app_state = StdArc::new(AppState {
+            db_path,
+            sessions: Mutex::new(HashMap::new()),
+        });
+
+        // Spawn cleanup task for expired sessions
+        let cleanup_state = app_state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await; // Run every hour
+
+                let expired: Vec<(String, PathBuf)> = {
+                    let sessions = cleanup_state.sessions.lock().unwrap();
+                    let now = Instant::now();
+                    sessions
+                        .iter()
+                        .filter(|(_, session)| now > session.expires_at)
+                        .map(|(id, session)| (id.clone(), session.temp_path.clone()))
+                        .collect()
+                };
+
+                if !expired.is_empty() {
+                    let mut sessions = cleanup_state.sessions.lock().unwrap();
+                    for (id, path) in expired {
+                        sessions.remove(&id);
+                        let _ = std::fs::remove_file(&path);
+                        println!("Cleaned up expired session: {}", id);
+                    }
+                }
+            }
+        });
 
         let cors = CorsLayer::new()
             .allow_origin(Any)
@@ -1295,6 +1330,7 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
 
         let app = Router::new()
             .route("/audio", get(audio_handler))
+            .route("/audio/session/:id", get(session_handler))
             .route("/manifest.mpd", get(mpd_handler))
             .route("/init.webm", get(init_handler))
             .route("/segment/:id", get(segment_handler))
@@ -1313,8 +1349,15 @@ fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Erro
 }
 
 // State for axum handlers
+struct AudioSession {
+    temp_path: PathBuf,
+    file_size: u64,
+    expires_at: Instant,
+}
+
 struct AppState {
     db_path: String,
+    sessions: Mutex<HashMap<String, AudioSession>>,
 }
 
 fn map_to_io_error<E: std::fmt::Display + Send + Sync + 'static>(err: E) -> std::io::Error {
@@ -1404,10 +1447,9 @@ struct AudioQuery {
     end_id: i64,
 }
 
-// Audio endpoint handler with Range request support
+// Audio endpoint handler - creates session and redirects
 async fn audio_handler(
     State(state): State<StdArc<AppState>>,
-    headers: HeaderMap,
     Query(query): Query<AudioQuery>,
 ) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
@@ -1552,29 +1594,69 @@ async fn audio_handler(
     }
     drop(file);
 
-    // Read complete file into memory
-    let data = match std::fs::read(temp_file.path()) {
-        Ok(d) => d,
+    // Get file size
+    let file_size = match std::fs::metadata(temp_file.path()) {
+        Ok(m) => m.len(),
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to read temp file: {}", e),
+                format!("Failed to get file size: {}", e),
             )
                 .into_response()
         }
     };
 
-    let file_size = data.len() as u64;
+    // Create session and persist temp file
+    let session_id = Uuid::new_v4().to_string();
+    let temp_path = temp_file.into_temp_path();
+    let persisted_path = temp_path.keep().unwrap();
+
+    let session = AudioSession {
+        temp_path: persisted_path.clone(),
+        file_size,
+        expires_at: Instant::now() + std::time::Duration::from_secs(24 * 60 * 60), // 24 hours
+    };
+
+    // Store session
+    {
+        let mut sessions = state.sessions.lock().unwrap();
+        sessions.insert(session_id.clone(), session);
+    }
+
+    // Redirect to session endpoint
+    Redirect::temporary(&format!("/audio/session/{}", session_id)).into_response()
+}
+
+// Session handler - serves cached audio file with Range support
+async fn session_handler(
+    State(state): State<StdArc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    // Look up session
+    let (temp_path, file_size) = {
+        let sessions = state.sessions.lock().unwrap();
+        match sessions.get(&session_id) {
+            Some(session) => {
+                // Check expiration
+                if Instant::now() > session.expires_at {
+                    return (StatusCode::GONE, "Session expired").into_response();
+                }
+                (session.temp_path.clone(), session.file_size)
+            }
+            None => {
+                return (StatusCode::NOT_FOUND, "Session not found").into_response();
+            }
+        }
+    };
 
     // Check for Range header
     if let Some(range_header) = headers.get(header::RANGE) {
         if let Ok(range_str) = range_header.to_str() {
-            // Parse "bytes=start-end" format
             if let Some(range) = range_str.strip_prefix("bytes=") {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start = if parts[0].is_empty() {
-                        // Suffix range: "-500" means last 500 bytes
                         let suffix_len: u64 = parts[1].parse().unwrap_or(0);
                         file_size.saturating_sub(suffix_len)
                     } else {
@@ -1588,16 +1670,45 @@ async fn audio_handler(
                     };
 
                     if start <= end && start < file_size {
-                        let slice = &data[start as usize..=end as usize];
+                        // Open file and seek to start position
+                        let mut file = match tokio::fs::File::open(&temp_path).await {
+                            Ok(f) => f,
+                            Err(e) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("Failed to open file: {}", e),
+                                )
+                                    .into_response()
+                            }
+                        };
+
+                        use tokio::io::AsyncSeekExt;
+                        if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Failed to seek: {}", e),
+                            )
+                                .into_response();
+                        }
+
+                        // Create limited reader for the range
+                        let length = end - start + 1;
+                        let limited = file.take(length);
+                        let stream = ReaderStream::new(limited);
+                        let body = Body::from_stream(stream);
+
                         let content_range = format!("bytes {}-{}/{}", start, end, file_size);
 
-                        let mut response = (StatusCode::PARTIAL_CONTENT, slice.to_vec()).into_response();
+                        let mut response = (StatusCode::PARTIAL_CONTENT, body).into_response();
                         {
                             let headers = response.headers_mut();
                             let _ = headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/ogg"));
                             let _ = headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
                             if let Ok(val) = HeaderValue::from_str(&content_range) {
                                 let _ = headers.insert(header::CONTENT_RANGE, val);
+                            }
+                            if let Ok(val) = HeaderValue::from_str(&length.to_string()) {
+                                let _ = headers.insert(header::CONTENT_LENGTH, val);
                             }
                         }
                         return response;
@@ -1607,12 +1718,29 @@ async fn audio_handler(
         }
     }
 
-    // Full file response
-    let mut response = (StatusCode::OK, data).into_response();
+    // Full file response with streaming
+    let file = match tokio::fs::File::open(&temp_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to open file: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    let mut response = (StatusCode::OK, body).into_response();
     {
         let headers = response.headers_mut();
         let _ = headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/ogg"));
         let _ = headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+        if let Ok(val) = HeaderValue::from_str(&file_size.to_string()) {
+            let _ = headers.insert(header::CONTENT_LENGTH, val);
+        }
     }
 
     response
