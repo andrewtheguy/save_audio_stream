@@ -989,6 +989,16 @@ async fn sessions_handler(
         )
         .unwrap_or(10.0);
 
+    // Session Boundary Detection using is_timestamp_from_source
+    //
+    // The is_timestamp_from_source flag (set to 1) marks the first segment of each
+    // HTTP connection. Each connection gets its timestamp from the HTTP Date header,
+    // creating natural boundaries between recording sessions.
+    //
+    // This enables accurate detection of which segments are contiguous (from the same
+    // connection) vs. which come from different recording attempts after reconnection
+    // or schedule breaks.
+
     // Get all boundary segments (is_timestamp_from_source = 1)
     let mut stmt = match conn.prepare(
         "SELECT id, timestamp_ms FROM segments WHERE is_timestamp_from_source = 1 ORDER BY id"
