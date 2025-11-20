@@ -1,6 +1,8 @@
+use fs2::FileExt;
 use reqwest::blocking::Client;
 use rusqlite::Connection;
 use serde::Deserialize;
+use std::fs::File;
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +29,7 @@ struct SegmentData {
     audio_data: Vec<u8>,
 }
 
+
 /// Main entry point for syncing multiple shows
 pub fn sync_shows(
     remote_url: String,
@@ -36,6 +39,18 @@ pub fn sync_shows(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create local directory if it doesn't exist
     std::fs::create_dir_all(&local_dir)?;
+
+    // Acquire exclusive lock to prevent multiple sync instances
+    let lock_path = local_dir.join(".sync.lock");
+    let _lock_file = File::create(&lock_path)
+        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path.display(), e))?;
+    _lock_file.try_lock_exclusive().map_err(|_| {
+        format!(
+            "Another sync is already running. Lock file: {}",
+            lock_path.display()
+        )
+    })?;
+    // Lock will be held until _lock_file is dropped (end of function)
 
     println!("Starting sync of {} show(s)", show_names.len());
 
