@@ -520,6 +520,13 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                     |row| row.get(0),
                 )
                 .ok();
+            let existing_is_recipient: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'is_recipient'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
 
             // Check if this is an existing database
             let is_existing_db =
@@ -533,6 +540,13 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                         "Unsupported database version: '{}'. This application only supports version '1'",
                         db_version
                     ).into());
+                }
+
+                // Check if this is a recipient database (sync target)
+                if let Some(is_recipient) = existing_is_recipient {
+                    if is_recipient == "true" {
+                        return Err("Cannot record to a recipient database. This database is configured for syncing only.".into());
+                    }
                 }
 
                 // Existing database must have all required metadata
@@ -611,6 +625,10 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                 conn.execute(
                     "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
                     [&output_sample_rate.to_string()],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'false')",
+                    [],
                 )?;
 
                 println!("SQLite database: {}", db_path);

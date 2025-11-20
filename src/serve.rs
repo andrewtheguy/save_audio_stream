@@ -8,16 +8,10 @@ use axum::{
 };
 
 #[cfg(not(debug_assertions))]
-use axum::{
-    http::Uri,
-    response::Response,
-};
+use axum::response::Response;
 
 #[cfg(debug_assertions)]
-use axum::{
-    http::Uri,
-    response::Response,
-};
+use axum::response::Response;
 use ogg::writing::PacketWriter;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -49,6 +43,7 @@ struct AudioSession {
 
 struct AppState {
     db_path: String,
+    output_dir: String,
     sessions: Mutex<HashMap<String, AudioSession>>,
 }
 
@@ -95,19 +90,29 @@ pub fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::
     }
 
     let db_path = sqlite_file.to_string_lossy().to_string();
+
+    // Extract output_dir from database path (parent directory)
+    let output_dir = sqlite_file
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "tmp".to_string());
+
     println!("Starting server for: {}", db_path);
+    println!("Output directory: {}", output_dir);
     println!("Listening on: http://0.0.0.0:{}", port);
     println!("Endpoints:");
     println!("  GET /audio?start_id=<N>&end_id=<N>  - Ogg/Opus stream");
     println!("  GET /manifest.mpd?start_id=<N>&end_id=<N>  - DASH MPD");
     println!("  GET /init.webm  - WebM initialization segment");
     println!("  GET /segment/:id  - WebM audio segment");
+    println!("  GET /api/sync/shows  - List available shows for syncing");
 
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let app_state = StdArc::new(AppState {
             db_path,
+            output_dir,
             sessions: Mutex::new(HashMap::new()),
         });
 
@@ -150,7 +155,10 @@ pub fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::
             .route("/init.webm", get(init_handler))
             .route("/segment/{id}", get(segment_handler))
             .route("/api/segments/range", get(segments_range_handler))
-            .route("/api/sessions", get(sessions_handler));
+            .route("/api/sessions", get(sessions_handler))
+            .route("/api/sync/shows", get(sync_shows_list_handler))
+            .route("/api/sync/shows/:show_name/metadata", get(sync_show_metadata_handler))
+            .route("/api/sync/shows/:show_name/segments", get(sync_show_segments_handler));
 
         #[cfg(debug_assertions)]
         let app = api_routes
@@ -1197,4 +1205,437 @@ async fn assets_handler_release(Path(path): Path<String>) -> Response {
             (StatusCode::NOT_FOUND, "Asset not found").into_response()
         }
     }
+}
+
+// Sync API Handlers
+
+#[derive(Serialize)]
+struct ShowInfo {
+    name: String,
+    database_file: String,
+    min_id: i64,
+    max_id: i64,
+}
+
+#[derive(Serialize)]
+struct ShowsList {
+    shows: Vec<ShowInfo>,
+}
+
+async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
+    // Scan output directory for .sqlite files
+    let output_dir = &state.output_dir;
+    let dir_path = std::path::Path::new(output_dir);
+
+    if !dir_path.exists() || !dir_path.is_dir() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": "Output directory not found"})),
+        )
+            .into_response();
+    }
+
+    let mut shows = Vec::new();
+
+    // Read directory entries
+    let entries = match std::fs::read_dir(dir_path) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to read directory: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        // Check if it's a .sqlite file
+        if let Some(extension) = path.extension() {
+            if extension != "sqlite" {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
+        // Open database and check if it's a recording database (not recipient)
+        let conn = match Connection::open(&path) {
+            Ok(conn) => conn,
+            Err(_) => continue,
+        };
+
+        // Check is_recipient flag
+        let is_recipient: Option<String> = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'is_recipient'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(is_recipient) = is_recipient {
+            if is_recipient == "true" {
+                continue; // Skip recipient databases
+            }
+        }
+
+        // Get name from metadata
+        let name: Option<String> = conn
+            .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
+                row.get(0)
+            })
+            .ok();
+
+        let name = match name {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Get min/max segment IDs
+        let (min_id, max_id): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT MIN(id), MAX(id) FROM segments",
+                [],
+                |row| Ok((row.get(0).ok(), row.get(1).ok())),
+            )
+            .unwrap_or((None, None));
+
+        if let (Some(min_id), Some(max_id)) = (min_id, max_id) {
+            shows.push(ShowInfo {
+                name,
+                database_file: path.file_name().unwrap().to_string_lossy().to_string(),
+                min_id,
+                max_id,
+            });
+        }
+    }
+
+    (StatusCode::OK, axum::Json(ShowsList { shows })).into_response()
+}
+
+#[derive(Serialize)]
+struct ShowMetadata {
+    uuid: String,
+    name: String,
+    audio_format: String,
+    split_interval: String,
+    bitrate: String,
+    sample_rate: String,
+    version: String,
+    is_recipient: bool,
+    min_id: i64,
+    max_id: i64,
+}
+
+async fn sync_show_metadata_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(show_name): Path<String>,
+) -> impl IntoResponse {
+    // Construct database path
+    let db_path = format!("{}/{}.sqlite", state.output_dir, show_name);
+    let path = std::path::Path::new(&db_path);
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
+        )
+            .into_response();
+    }
+
+    // Open database
+    let conn = match Connection::open(path) {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Check is_recipient flag - reject if true
+    let is_recipient: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'is_recipient'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(is_recipient) = &is_recipient {
+        if is_recipient == "true" {
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error": "Cannot sync from a recipient database"})),
+            )
+                .into_response();
+        }
+    }
+
+    // Fetch all required metadata
+    let uuid: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'uuid'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "Missing uuid metadata"})),
+            )
+                .into_response();
+        }
+    };
+
+    let name: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'name'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "Missing name metadata"})),
+            )
+                .into_response();
+        }
+    };
+
+    let audio_format: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'audio_format'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "Missing audio_format metadata"})),
+            )
+                .into_response();
+        }
+    };
+
+    let split_interval: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'split_interval'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "Missing split_interval metadata"})),
+            )
+                .into_response();
+        }
+    };
+
+    let bitrate: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'bitrate'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "Missing bitrate metadata"})),
+            )
+                .into_response();
+        }
+    };
+
+    let sample_rate: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'sample_rate'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "Missing sample_rate metadata"})),
+            )
+                .into_response();
+        }
+    };
+
+    let version: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'version'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "Missing version metadata"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Get min/max segment IDs
+    let (min_id, max_id): (i64, i64) = match conn.query_row(
+        "SELECT MIN(id), MAX(id) FROM segments",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "No segments found"})),
+            )
+                .into_response();
+        }
+    };
+
+    let metadata = ShowMetadata {
+        uuid,
+        name,
+        audio_format,
+        split_interval,
+        bitrate,
+        sample_rate,
+        version,
+        is_recipient: is_recipient.map(|v| v == "true").unwrap_or(false),
+        min_id,
+        max_id,
+    };
+
+    (StatusCode::OK, axum::Json(metadata)).into_response()
+}
+
+#[derive(Deserialize)]
+struct SyncSegmentsQuery {
+    start_id: i64,
+    end_id: i64,
+    limit: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct SegmentData {
+    id: i64,
+    timestamp_ms: i64,
+    is_timestamp_from_source: i32,
+    #[serde(with = "serde_bytes")]
+    audio_data: Vec<u8>,
+}
+
+async fn sync_show_segments_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(show_name): Path<String>,
+    Query(query): Query<SyncSegmentsQuery>,
+) -> impl IntoResponse {
+    // Construct database path
+    let db_path = format!("{}/{}.sqlite", state.output_dir, show_name);
+    let path = std::path::Path::new(&db_path);
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
+        )
+            .into_response();
+    }
+
+    // Open database
+    let conn = match Connection::open(path) {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Check is_recipient flag - reject if true
+    let is_recipient: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'is_recipient'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(is_recipient) = is_recipient {
+        if is_recipient == "true" {
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error": "Cannot sync from a recipient database"})),
+            )
+                .into_response();
+        }
+    }
+
+    // Fetch segments
+    let limit = query.limit.unwrap_or(100);
+    let mut stmt = match conn.prepare(
+        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to prepare query: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let segments_iter = match stmt.query_map(
+        rusqlite::params![query.start_id, query.end_id, limit],
+        |row| {
+            Ok(SegmentData {
+                id: row.get(0)?,
+                timestamp_ms: row.get(1)?,
+                is_timestamp_from_source: row.get(2)?,
+                audio_data: row.get(3)?,
+            })
+        },
+    ) {
+        Ok(iter) => iter,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to query segments: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut segments = Vec::new();
+    for segment in segments_iter {
+        match segment {
+            Ok(seg) => segments.push(seg),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Failed to fetch segment: {}", e)})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    (StatusCode::OK, axum::Json(segments)).into_response()
 }

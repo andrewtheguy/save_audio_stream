@@ -4,6 +4,7 @@ mod record;
 mod schedule;
 mod serve;
 mod streaming;
+mod sync;
 mod webm;
 
 use chrono::Timelike;
@@ -42,6 +43,24 @@ enum Command {
         #[arg(short, long, default_value = "3000")]
         port: u16,
     },
+    /// Sync show(s) from remote recording server to local database
+    Sync {
+        /// URL of remote recording server (e.g., http://remote:3000)
+        #[arg(short, long)]
+        remote_url: String,
+
+        /// Local base directory for synced databases
+        #[arg(short, long)]
+        local_dir: PathBuf,
+
+        /// Show names to sync (can specify multiple)
+        #[arg(short = 'n', long = "show", num_args = 1..)]
+        shows: Vec<String>,
+
+        /// Chunk size for batch fetching (default: 100)
+        #[arg(short = 's', long, default_value = "100")]
+        chunk_size: u64,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,6 +71,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
         Command::Record { config } => record_multi_session(config),
         Command::Serve { sqlite_file, port } => serve::serve(sqlite_file, port),
+        Command::Sync {
+            remote_url,
+            local_dir,
+            shows,
+            chunk_size,
+        } => sync::sync_shows(remote_url, local_dir, shows, chunk_size),
     }
 }
 
