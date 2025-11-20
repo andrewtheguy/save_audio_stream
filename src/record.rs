@@ -668,7 +668,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Decode and encode in real-time
-    println!("Decoding and encoding to {:?}...", audio_format);
+    println!("Reencoding to {:?}...", audio_format);
     let mut total_input_samples = 0usize;
     let mut packets_decoded = 0usize;
     let mut total_output_samples: u64 = 0;
