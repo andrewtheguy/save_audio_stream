@@ -10,6 +10,7 @@ mod webm;
 use chrono::Timelike;
 use clap::{Parser, Subcommand};
 use config::{ConfigType, MultiSessionConfig, SyncConfig};
+use reqwest::blocking::Client;
 use schedule::{parse_time, seconds_until_start, time_to_minutes};
 use std::path::PathBuf;
 use std::thread;
@@ -98,14 +99,77 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
         return Err("No sessions defined in config file".into());
     }
 
-    println!("Starting {} recording session(s)", multi_config.sessions.len());
-
     // Determine output directory and API port
     let output_dir = multi_config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
     let api_port = port_override.unwrap_or(multi_config.api_port);
 
-    // Spawn recording session threads first (they run in background)
-    let mut handles = Vec::new();
+    // Create output directory if it doesn't exist
+    let output_dir_path = PathBuf::from(output_dir.clone());
+    std::fs::create_dir_all(&output_dir_path)?;
+    println!("Output directory: {}", output_dir_path.display());
+
+    // Start API server first in a separate thread
+    println!("Starting API server on port {}", api_port);
+
+    let api_handle = thread::spawn(move || {
+        if let Err(e) = serve::serve_for_sync(output_dir_path, api_port) {
+            eprintln!("API server failed: {}", e);
+            std::process::exit(1);
+        }
+    });
+
+    // Give the API server a moment to start up
+    println!("Waiting for API server to start...");
+    thread::sleep(Duration::from_secs(2));
+
+    // Check if API server thread is still running (didn't panic/exit immediately)
+    if api_handle.is_finished() {
+        return Err("API server failed to start".into());
+    }
+
+    // Perform healthcheck to verify API server is responding
+    println!("Performing API server healthcheck...");
+    let healthcheck_url = format!("http://localhost:{}/health", api_port);
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let mut healthcheck_passed = false;
+    for attempt in 1..=5 {
+        match client.get(&healthcheck_url).send() {
+            Ok(response) if response.status().is_success() => {
+                println!("API server healthcheck passed (attempt {})", attempt);
+                healthcheck_passed = true;
+                break;
+            }
+            Ok(response) => {
+                eprintln!("API server healthcheck failed with status {} (attempt {})", response.status(), attempt);
+            }
+            Err(e) => {
+                eprintln!("API server healthcheck failed: {} (attempt {})", e, attempt);
+            }
+        }
+
+        // Check if server thread crashed
+        if api_handle.is_finished() {
+            return Err("API server thread terminated during healthcheck".into());
+        }
+
+        if attempt < 5 {
+            thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+    if !healthcheck_passed {
+        return Err("API server healthcheck failed after 5 attempts".into());
+    }
+
+    println!("API server is healthy and ready");
+    println!("Starting {} recording session(s)", multi_config.sessions.len());
+
+    // Now spawn recording session threads (they run in background with supervision)
+    let mut recording_handles = Vec::new();
     for (_session_idx, mut session_config) in multi_config.sessions.into_iter().enumerate() {
         // Copy global output_dir to session config
         session_config.output_dir = Some(output_dir.clone());
@@ -150,17 +214,12 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
             }
         });
 
-        handles.push((session_name, handle));
+        recording_handles.push((session_name, handle));
     }
 
-    // Run API server in main thread (blocking)
-    // This allows future API-based control of the program
-    let output_dir_path = PathBuf::from(output_dir);
-    println!("Starting API server on port {} (main thread)", api_port);
-
-    // API server runs in main thread - if it fails, program exits
-    if let Err(e) = serve::serve_for_sync(output_dir_path, api_port) {
-        eprintln!("API server failed: {}", e);
+    // Wait for API server thread (blocking) - if it fails, program exits
+    if let Err(e) = api_handle.join() {
+        eprintln!("API server thread panicked: {:?}", e);
         eprintln!("Aborting program due to API server failure");
         std::process::abort();
     }

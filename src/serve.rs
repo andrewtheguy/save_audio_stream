@@ -55,6 +55,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
     println!("Output directory: {}", output_dir_str);
     println!("Listening on: http://0.0.0.0:{}", port);
     println!("Endpoints:");
+    println!("  GET /health  - Health check");
     println!("  GET /api/sync/shows  - List available shows");
     println!("  GET /api/sync/shows/:name/metadata  - Show metadata");
     println!("  GET /api/sync/shows/:name/segments  - Show segments");
@@ -101,6 +102,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
             .allow_headers(Any);
 
         let api_routes = Router::new()
+            .route("/health", get(health_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
             .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
@@ -1287,6 +1289,11 @@ struct ShowInfo {
     database_file: String,
     min_id: i64,
     max_id: i64,
+}
+
+// Health check endpoint - returns 200 OK if server is running
+async fn health_handler() -> impl IntoResponse {
+    (StatusCode::OK, "OK")
 }
 
 #[derive(Serialize)]
