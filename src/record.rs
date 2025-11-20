@@ -60,11 +60,6 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
 
-    // Validate that only one of duration or schedule is specified
-    if config.duration.is_some() && config.schedule.is_some() {
-        return Err("Cannot specify both 'duration' and 'schedule' in config file".into());
-    }
-
     // Extract config values with defaults
     let url = config.url.clone();
     let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
@@ -88,13 +83,11 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     })?;
     // Lock will be held until lock_file is dropped (end of function)
 
-    // Daily loop for scheduled recording - runs indefinitely for schedules
+    // Daily loop for scheduled recording - runs indefinitely
     loop {
-        // Calculate duration based on mode
-        let duration = if let Some(schedule) = &config.schedule {
         // Parse schedule times
-        let (start_hour, start_min) = parse_time(&schedule.record_start)?;
-        let (end_hour, end_min) = parse_time(&schedule.record_end)?;
+        let (start_hour, start_min) = parse_time(&config.schedule.record_start)?;
+        let (end_hour, end_min) = parse_time(&config.schedule.record_end)?;
         let start_mins = time_to_minutes(start_hour, start_min);
         let end_mins = time_to_minutes(end_hour, end_min);
 
@@ -105,18 +98,18 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         let current_mins = time_to_minutes(current_hour, current_min);
 
         // Check if we're in the active window
-        if !is_in_active_window(current_mins, start_mins, end_mins) {
+        let duration = if !is_in_active_window(current_mins, start_mins, end_mins) {
             // Wait until start time
             let wait_secs = seconds_until_start(current_mins, start_mins);
             println!(
                 "Current time is outside recording window ({} to {} UTC)",
-                schedule.record_start, schedule.record_end
+                config.schedule.record_start, config.schedule.record_end
             );
             println!(
                 "Waiting {} seconds ({:.1} hours) until {} UTC...",
                 wait_secs,
                 wait_secs as f64 / 3600.0,
-                schedule.record_start
+                config.schedule.record_start
             );
             std::thread::sleep(std::time::Duration::from_secs(wait_secs));
 
@@ -128,23 +121,13 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             seconds_until_end(current_mins, end_mins)
         } else {
             seconds_until_end(current_mins, end_mins)
-        }
-    } else if let Some(dur) = config.duration {
-        dur
-    } else {
-        return Err("Must specify either 'duration' or 'schedule' in config file".into());
-    };
+        };
 
     println!("Connecting to: {}", url);
-    if config.schedule.is_some() {
-        let schedule = config.schedule.as_ref().unwrap();
-        println!(
-            "Recording until {} UTC ({} seconds)",
-            schedule.record_end, duration
-        );
-    } else {
-        println!("Recording duration: {} seconds", duration);
-    }
+    println!(
+        "Recording until {} UTC ({} seconds)",
+        config.schedule.record_end, duration
+    );
 
     // Retry configuration
     const MAX_RETRY_DURATION: Duration = Duration::from_secs(5 * 60); // 5 minutes
@@ -1142,26 +1125,18 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         // Continue to next connection attempt
     } // End of 'connection loop
 
-        // Check if using schedule mode - loop for next day
-        if config.schedule.is_some() {
-            let schedule = config.schedule.as_ref().unwrap();
-            let (start_hour, start_min) = parse_time(&schedule.record_start)?;
-            let start_mins = time_to_minutes(start_hour, start_min);
+        // Loop for next day's recording window
+        let (start_hour, start_min) = parse_time(&config.schedule.record_start)?;
+        let start_mins = time_to_minutes(start_hour, start_min);
 
-            let now = chrono::Utc::now();
-            let current_mins = time_to_minutes(now.hour(), now.minute());
-            let wait_secs = seconds_until_start(current_mins, start_mins);
+        let now = chrono::Utc::now();
+        let current_mins = time_to_minutes(now.hour(), now.minute());
+        let wait_secs = seconds_until_start(current_mins, start_mins);
 
-            println!("\nRecording window complete. Next window starts at {} UTC.", schedule.record_start);
-            println!("Waiting {} seconds ({:.1} hours)...", wait_secs, wait_secs as f64 / 3600.0);
+        println!("\nRecording window complete. Next window starts at {} UTC.", config.schedule.record_start);
+        println!("Waiting {} seconds ({:.1} hours)...", wait_secs, wait_secs as f64 / 3600.0);
 
-            std::thread::sleep(std::time::Duration::from_secs(wait_secs));
-            continue; // Start next day's recording
-        } else {
-            // Duration mode - exit after single recording
-            break;
-        }
-    } // End of daily loop
-
-    Ok(())
+        std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+        // Continue to next day's recording
+    } // End of daily loop - runs indefinitely
 }

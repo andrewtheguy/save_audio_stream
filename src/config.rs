@@ -35,10 +35,8 @@ pub struct Schedule {
 pub struct Config {
     /// URL of the Shoutcast/Icecast stream (required)
     pub url: String,
-    /// Duration in seconds to record (mutually exclusive with schedule)
-    pub duration: Option<u64>,
-    /// Schedule for recording during specific hours (mutually exclusive with duration)
-    pub schedule: Option<Schedule>,
+    /// Schedule for recording during specific hours (required)
+    pub schedule: Schedule,
     /// Audio format: aac, opus, or wav (default: opus)
     pub audio_format: Option<AudioFormat>,
     /// Storage format: file or sqlite (default: sqlite)
