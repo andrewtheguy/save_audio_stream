@@ -203,6 +203,28 @@ The application uses `is_timestamp_from_source` flag in the database to track re
 - Database can accumulate multiple sessions over time
 - API can list individual sessions with accurate start times
 
+## Database Synchronization
+
+The application supports one-way synchronization from a remote recording server to local databases for asynchronous replication.
+
+### Quick Start
+
+```bash
+# Sync a single show from remote server
+save_audio_stream sync -r http://remote:3000 -l ./synced -n myradio
+
+# Sync multiple shows
+save_audio_stream sync -r http://remote:3000 -l ./synced -n show1 -n show2
+```
+
+**Key Features:**
+- Resumable sync with automatic checkpoint tracking
+- Database protection with `is_recipient` flag prevents recording to sync targets
+- Sequential processing with fail-fast error handling
+- REST API endpoints for show listing and segment fetching
+
+📖 **For detailed documentation, see [docs/syncing_design.md](docs/syncing_design.md)**
+
 ## Supported Input Formats
 
 - `audio/mpeg` / `audio/mp3` (MP3)
