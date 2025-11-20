@@ -645,8 +645,8 @@ async fn mpd_handler(
     <AdaptationSet mimeType="audio/webm" codecs="opus" lang="en">
       <SegmentTemplate
         initialization="init.webm"
-        media="segment/$Number$"
-        startNumber="{}"
+        media="segment/$Number$?base={}"
+        startNumber="1"
         timescale="1000">
         <SegmentTimeline>
           <S d="{}" r="{}"/>
@@ -775,10 +775,24 @@ async fn init_handler(State(state): State<StdArc<AppState>>) -> impl IntoRespons
 }
 
 // Segment handler
+#[derive(Deserialize)]
+struct SegmentQuery {
+    #[serde(default)]
+    base: Option<i64>,
+}
+
 async fn segment_handler(
     State(state): State<StdArc<AppState>>,
     Path(id): Path<i64>,
+    Query(query): Query<SegmentQuery>,
 ) -> impl IntoResponse {
+    // Calculate actual segment ID
+    let actual_id = if let Some(base) = query.base {
+        base + (id - 1)
+    } else {
+        id
+    };
+
     let conn = match Connection::open(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
@@ -793,12 +807,12 @@ async fn segment_handler(
     // Get the segment
     let segment: Vec<u8> = match conn.query_row(
         "SELECT audio_data FROM segments WHERE id = ?1",
-        [id],
+        [actual_id],
         |row| row.get(0),
     ) {
         Ok(data) => data,
         Err(_) => {
-            return (StatusCode::NOT_FOUND, format!("Segment {} not found", id)).into_response()
+            return (StatusCode::NOT_FOUND, format!("Segment {} not found", actual_id)).into_response()
         }
     };
 
@@ -814,12 +828,16 @@ async fn segment_handler(
         )
         .unwrap_or(1);
 
-    // Get the first segment ID
-    let first_id: i64 = conn
-        .query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
-        .unwrap_or(1);
+    // Calculate timecode relative to the base (session start)
+    // If base is provided, use it; otherwise use global minimum
+    let base_id = if let Some(base) = query.base {
+        base
+    } else {
+        conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
+            .unwrap_or(1)
+    };
 
-    let relative_pos = (id - first_id) as u64;
+    let relative_pos = (actual_id - base_id) as u64;
     let timecode_ms = relative_pos * split_interval * 1000;
 
     // Build Cluster
