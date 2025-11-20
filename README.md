@@ -66,7 +66,7 @@ save_audio_stream record -c <CONFIG_FILE> [-p <PORT>]
 | Option | Description |
 |--------|-------------|
 | `-c, --config` | Path to multi-session config file (required) |
-| `-p, --port` | Override API server port for all sessions (optional) |
+| `-p, --port` | Override global API server port (optional) |
 
 ### Config File Format
 
@@ -80,6 +80,7 @@ config_type = 'record'
 
 # Global settings (optional)
 output_dir = 'recordings'  # default: 'tmp' (applies to all sessions)
+api_port = 3000            # Optional: start single API server for all sessions
 
 [[sessions]]
 # Required
@@ -93,7 +94,6 @@ audio_format = 'opus'      # default: 'opus' (options: aac, opus, wav)
 storage_format = 'sqlite'  # default: 'sqlite' (options: file, sqlite)
 bitrate = 24               # default: 32 for AAC, 16 for Opus
 split_interval = 300       # default: 0 (no splitting, in seconds)
-api_port = 3000            # Optional: start API server on this port
 
 [[sessions]]
 # Add more sessions as needed
@@ -101,7 +101,6 @@ url = 'https://stream2.example.com/radio'
 name = 'myradio2'
 record_start = '18:00'
 record_end = '20:00'
-api_port = 3001            # Different port for second session
 ```
 
 #### Sync Config
@@ -132,6 +131,7 @@ chunk_size = 100  # default: 100 (batch size for fetching segments)
 | Option | Description | Default |
 |--------|-------------|---------|
 | `output_dir` | Base output directory for all sessions | tmp |
+| `api_port` | Port for single API server serving all sessions | - |
 
 **Session Options:**
 
@@ -145,9 +145,8 @@ chunk_size = 100  # default: 100 (batch size for fetching segments)
 | `storage_format` | Storage format: `file` or `sqlite` | sqlite | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
 | `split_interval` | Split files every N seconds (0 = no split) | 0 | No |
-| `api_port` | API server port for sync endpoints | - | No |
 
-**Note:** The `api_port` option starts an HTTP API server alongside recording for synchronization endpoints. Useful for remote access to recorded audio while recording is in progress.
+**Note:** The `api_port` global option starts a single HTTP API server for all recording sessions. This server provides synchronization endpoints for all shows being recorded. Useful for remote access and syncing databases while recording is in progress.
 
 #### Sync Config Options
 
@@ -173,7 +172,7 @@ Record multiple sessions from config:
 save_audio_stream record -c config/sessions.toml
 ```
 
-Override API ports (3000, 3001 for multiple sessions):
+Override global API server port:
 ```bash
 save_audio_stream record -c config/sessions.toml -p 3000
 ```

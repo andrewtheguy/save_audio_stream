@@ -48,6 +48,8 @@ pub struct MultiSessionConfig {
     pub sessions: Vec<SessionConfig>,
     /// Global output directory for all sessions (default: tmp)
     pub output_dir: Option<String>,
+    /// Global API server port for all sessions (optional)
+    pub api_port: Option<u16>,
 }
 
 /// Sync configuration file structure
@@ -82,8 +84,6 @@ pub struct SessionConfig {
     pub name: String,
     /// Split interval in seconds (0 = no splitting)
     pub split_interval: Option<u64>,
-    /// API server port for syncing endpoints (optional, can be overridden by CLI)
-    pub api_port: Option<u16>,
     /// Output directory (populated from global config, not in TOML)
     #[serde(skip)]
     pub output_dir: Option<String>,

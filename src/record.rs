@@ -14,7 +14,6 @@ use log::debug;
 use rand::Rng;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -204,9 +203,6 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     // SQLite connection - persists across retries within the same recording day
     let mut sqlite_conn: Option<Connection> = None;
-
-    // Track whether API server has been started (for SQLite with api_port)
-    let api_server_started = Arc::new(AtomicBool::new(false));
 
     // Create HTTP client with connection timeout
     let client = Client::builder()
@@ -716,22 +712,6 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             sqlite_conn = Some(conn);
-
-            // Start API server if api_port is configured (only once)
-            if let Some(port) = config.api_port {
-                if !api_server_started.load(Ordering::SeqCst) {
-                    api_server_started.store(true, Ordering::SeqCst);
-                    let db_path_for_serve = PathBuf::from(db_path.clone());
-                    let session_name_for_serve = name.clone();
-
-                    thread::spawn(move || {
-                        println!("[{}] Starting API server on port {}", session_name_for_serve, port);
-                        if let Err(e) = crate::serve::serve(db_path_for_serve, port) {
-                            eprintln!("[{}] API server error: {}", session_name_for_serve, e);
-                        }
-                    });
-                }
-            }
 
             // Still need encoders for SQLite storage
             match audio_format {

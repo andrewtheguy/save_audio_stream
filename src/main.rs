@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.command {
         Command::Record { config, port } => record_multi_session(config, port),
-        Command::Serve { sqlite_file, port } => serve::serve(sqlite_file, port),
+        Command::Serve { sqlite_file, port } => serve::serve_audio(sqlite_file, port),
         Command::Sync { config } => sync_from_config(config),
     }
 }
@@ -100,16 +100,28 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
 
     println!("Starting {} recording session(s)", multi_config.sessions.len());
 
+    // Determine output directory and API port
+    let output_dir = multi_config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
+    let api_port = port_override.or(multi_config.api_port);
+
+    // Start single API server if api_port is specified (before spawning recording threads)
+    if let Some(port) = api_port {
+        let output_dir_path = PathBuf::from(output_dir.clone());
+        thread::spawn(move || {
+            println!("Starting API server on port {}", port);
+            if let Err(e) = serve::serve_for_sync(output_dir_path, port) {
+                eprintln!("API server error: {}", e);
+            }
+        });
+        // Give the server a moment to start
+        thread::sleep(std::time::Duration::from_millis(500));
+    }
+
     // Spawn a thread for each session
     let mut handles = Vec::new();
-    for (session_idx, mut session_config) in multi_config.sessions.into_iter().enumerate() {
+    for (_session_idx, mut session_config) in multi_config.sessions.into_iter().enumerate() {
         // Copy global output_dir to session config
-        session_config.output_dir = multi_config.output_dir.clone();
-
-        // Apply port override if provided (increment for each session to avoid conflicts)
-        if let Some(base_port) = port_override {
-            session_config.api_port = Some(base_port + session_idx as u16);
-        }
+        session_config.output_dir = Some(output_dir.clone());
 
         let session_name = session_config.name.clone();
         let session_name_for_handle = session_name.clone();

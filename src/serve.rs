@@ -47,7 +47,79 @@ struct AppState {
     sessions: Mutex<HashMap<String, AudioSession>>,
 }
 
-pub fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+/// Serve multiple databases from a directory (for sync endpoints during recording)
+pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let output_dir_str = output_dir.to_string_lossy().to_string();
+
+    println!("Starting multi-show API server");
+    println!("Output directory: {}", output_dir_str);
+    println!("Listening on: http://0.0.0.0:{}", port);
+    println!("Endpoints:");
+    println!("  GET /api/sync/shows  - List available shows");
+    println!("  GET /api/sync/shows/:name/metadata  - Show metadata");
+    println!("  GET /api/sync/shows/:name/segments  - Show segments");
+
+    // Create tokio runtime and run server
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let app_state = StdArc::new(AppState {
+            db_path: String::new(), // Not used for multi-show serving
+            output_dir: output_dir_str,
+            sessions: Mutex::new(HashMap::new()),
+        });
+
+        // Spawn cleanup task for expired sessions
+        let cleanup_state = app_state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
+
+                let expired: Vec<(String, PathBuf)> = {
+                    let sessions = cleanup_state.sessions.lock().unwrap();
+                    let now = Instant::now();
+                    sessions
+                        .iter()
+                        .filter(|(_, session)| now > session.expires_at)
+                        .map(|(id, session)| (id.clone(), session.temp_path.clone()))
+                        .collect()
+                };
+
+                if !expired.is_empty() {
+                    let mut sessions = cleanup_state.sessions.lock().unwrap();
+                    for (id, path) in expired {
+                        sessions.remove(&id);
+                        let _ = std::fs::remove_file(&path);
+                        println!("Cleaned up expired session: {}", id);
+                    }
+                }
+            }
+        });
+
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
+
+        let api_routes = Router::new()
+            .route("/api/sync/shows", get(sync_shows_list_handler))
+            .route("/api/sync/shows/:show_name/metadata", get(sync_show_metadata_handler))
+            .route("/api/sync/shows/:show_name/segments", get(sync_show_segments_handler));
+
+        let app = api_routes
+            .layer(cors)
+            .with_state(app_state);
+
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
+            .await
+            .unwrap();
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    Ok(())
+}
+
+/// Serve a single database file (for serve command)
+pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Error>> {
     // Verify database exists and is Opus format
     if !sqlite_file.exists() {
         return Err(format!("Database file not found: {}", sqlite_file.display()).into());
