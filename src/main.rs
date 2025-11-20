@@ -219,6 +219,29 @@ fn create_opus_comment_header() -> Vec<u8> {
     header
 }
 
+fn create_opus_comment_header_with_duration(duration_secs: Option<f64>) -> Vec<u8> {
+    let mut header = Vec::new();
+    header.extend_from_slice(b"OpusTags");
+
+    let vendor = b"save_audio_stream";
+    header.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+    header.extend_from_slice(vendor);
+
+    match duration_secs {
+        Some(dur) => {
+            let duration_comment = format!("DURATION={:.3}", dur);
+            header.extend_from_slice(&1u32.to_le_bytes());
+            header.extend_from_slice(&(duration_comment.len() as u32).to_le_bytes());
+            header.extend_from_slice(duration_comment.as_bytes());
+        }
+        None => {
+            header.extend_from_slice(&0u32.to_le_bytes());
+        }
+    }
+
+    header
+}
+
 /// Resample audio from source sample rate to target rate
 fn resample(samples: &[i16], src_rate: u32, target_rate: u32) -> Vec<i16> {
     if src_rate == target_rate {
@@ -1350,6 +1373,31 @@ fn stream_ogg_from_db(
     sender: mpsc::Sender<Result<Bytes, std::io::Error>>,
 ) -> Result<(), std::io::Error> {
     let conn = Connection::open(db_path).map_err(map_to_io_error)?;
+
+    // First pass: count samples to include duration in OpusTags without buffering everything
+    let samples_per_packet = (sample_rate / 50) as u64;
+    let mut duration_samples: u64 = 0;
+    {
+        let mut stmt = conn
+            .prepare("SELECT audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
+            .map_err(map_to_io_error)?;
+        let mut rows = stmt.query([start_id, end_id]).map_err(map_to_io_error)?;
+        while let Some(row) = rows.next().map_err(map_to_io_error)? {
+            let segment: Vec<u8> = row.get(0).map_err(map_to_io_error)?;
+            let mut offset = 0;
+            while offset + 2 <= segment.len() {
+                let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
+                offset += 2;
+                if offset + len > segment.len() {
+                    break;
+                }
+                offset += len;
+                duration_samples += samples_per_packet;
+            }
+        }
+    }
+    let duration_secs = duration_samples as f64 / sample_rate as f64;
+
     let mut stmt = conn
         .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
         .map_err(map_to_io_error)?;
@@ -1369,7 +1417,7 @@ fn stream_ogg_from_db(
 
     writer
         .write_packet(
-            create_opus_comment_header(),
+            create_opus_comment_header_with_duration(Some(duration_secs)),
             1,
             ogg::writing::PacketWriteEndInfo::EndPage,
             0,
