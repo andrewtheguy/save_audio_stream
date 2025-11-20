@@ -1423,12 +1423,14 @@ async fn mpd_handler(
         })
         .unwrap_or(48000);
 
-    // Calculate total duration
-    let segment_count = (query.end_id - query.start_id + 1) as f64;
-    let total_duration = segment_count * split_interval;
+    // Calculate total duration and segment repeat count
+    let segment_count = (query.end_id - query.start_id + 1) as u32;
+    let total_duration = segment_count as f64 * split_interval;
 
     // Duration in milliseconds for timescale=1000
     let duration_ms = (split_interval * 1000.0) as u32;
+    // DASH SegmentTimeline uses repeat count (r) = total segments - 1
+    let repeat_count = segment_count.saturating_sub(1);
 
     // Build DASH MPD
     let mpd = format!(
@@ -1444,8 +1446,11 @@ async fn mpd_handler(
         initialization="init.webm"
         media="segment/$Number$"
         startNumber="{}"
-        duration="{}"
-        timescale="1000"/>
+        timescale="1000">
+        <SegmentTimeline>
+          <S d="{}" r="{}"/>
+        </SegmentTimeline>
+      </SegmentTemplate>
       <Representation id="audio" bandwidth="128000" audioSamplingRate="{}">
         <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
       </Representation>
@@ -1456,6 +1461,7 @@ async fn mpd_handler(
         total_duration,
         query.start_id,
         duration_ms,
+        repeat_count,
         sample_rate
     );
 
