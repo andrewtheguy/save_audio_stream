@@ -428,6 +428,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 "CREATE TABLE IF NOT EXISTS segments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp_ms INTEGER NOT NULL,
+                    is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
                     audio_data BLOB NOT NULL
                 )",
                 [],
@@ -595,11 +596,12 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // Helper to insert segment into SQLite
     let insert_segment = |conn: &Connection,
                           timestamp_ms: i64,
+                          is_from_source: bool,
                           data: &[u8]|
      -> Result<(), Box<dyn std::error::Error>> {
         conn.execute(
-            "INSERT INTO segments (timestamp_ms, audio_data) VALUES (?1, ?2)",
-            rusqlite::params![timestamp_ms, data],
+            "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3)",
+            rusqlite::params![timestamp_ms, is_from_source as i32, data],
         )?;
         Ok(())
     };
@@ -716,6 +718,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                                                                 insert_segment(
                                                                     conn,
                                                                     timestamp_ms,
+                                                                    segment_number == 0,
                                                                     &segment_buffer,
                                                                 )?;
                                                                 println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
@@ -802,6 +805,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                                                                 insert_segment(
                                                                     conn,
                                                                     timestamp_ms,
+                                                                    segment_number == 0,
                                                                     &segment_buffer,
                                                                 )?;
                                                                 println!("\nInserted segment {} ({} bytes)", segment_number, segment_buffer.len());
@@ -867,6 +871,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                                                     insert_segment(
                                                         conn,
                                                         timestamp_ms,
+                                                        segment_number == 0,
                                                         &segment_buffer,
                                                     )?;
                                                     println!(
@@ -998,7 +1003,7 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref conn) = sqlite_conn {
                     let timestamp_ms = base_timestamp_ms
                         + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
-                    insert_segment(conn, timestamp_ms, &segment_buffer)?;
+                    insert_segment(conn, timestamp_ms, segment_number == 0, &segment_buffer)?;
                     println!(
                         "\nInserted final segment {} ({} bytes)",
                         segment_number,
