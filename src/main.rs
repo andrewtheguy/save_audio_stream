@@ -1602,16 +1602,16 @@ async fn audio_handler(
         )
         .unwrap_or(48_000);
 
-    // Check 6 hour limit
+    // Check 60 minute limit
     let segment_count = query.end_id - query.start_id + 1;
     let estimated_duration = segment_count as f64 * split_interval;
-    const MAX_DURATION_SECS: f64 = 6.0 * 60.0 * 60.0; // 6 hours
+    const MAX_DURATION_SECS: f64 = 60.0 * 60.0; // 60 minutes
 
     if estimated_duration > MAX_DURATION_SECS {
         return (
             StatusCode::BAD_REQUEST,
             format!(
-                "Requested duration {:.0}s exceeds maximum of {:.0}s",
+                "Requested duration {:.0}s exceeds maximum of {:.0}s (60 minutes)",
                 estimated_duration, MAX_DURATION_SECS
             ),
         )
