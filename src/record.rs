@@ -9,6 +9,7 @@ use ogg::writing::PacketWriter;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
 use reqwest::blocking::Client;
 use rusqlite::Connection;
+use fs2::FileExt;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -61,6 +62,20 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let name = config.name.clone();
     let output_dir = config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
     let split_interval = config.split_interval.unwrap_or(0);
+
+    // Acquire exclusive lock to prevent multiple instances
+    std::fs::create_dir_all(&output_dir)
+        .map_err(|e| format!("Failed to create output directory '{}': {}", output_dir, e))?;
+    let lock_path = format!("{}/{}.lock", output_dir, name);
+    let _lock_file = File::create(&lock_path)
+        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path, e))?;
+    _lock_file.try_lock_exclusive().map_err(|_| {
+        format!(
+            "Another instance is already recording '{}'. Lock file: {}",
+            name, lock_path
+        )
+    })?;
+    // Lock will be held until lock_file is dropped (end of function)
 
     // Calculate duration based on mode
     let duration = if let Some(schedule) = &config.schedule {
