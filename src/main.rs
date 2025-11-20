@@ -592,45 +592,51 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
             let existing_interval: Option<String> = conn
                 .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| row.get(0))
                 .ok();
+            let existing_bitrate: Option<String> = conn
+                .query_row("SELECT value FROM metadata WHERE key = 'bitrate'", [], |row| row.get(0))
+                .ok();
 
             // Check if this is an existing database
             let is_existing_db = existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
 
             if is_existing_db {
-                // Existing database must have uuid
-                if existing_uuid.is_none() {
-                    return Err("Database is missing uuid in metadata".into());
-                }
+                // Existing database must have all required metadata
+                let db_uuid = existing_uuid.ok_or("Database is missing uuid in metadata")?;
+                let db_name = existing_name.ok_or("Database is missing name in metadata")?;
+                let db_format = existing_format.ok_or("Database is missing audio_format in metadata")?;
+                let db_interval = existing_interval.ok_or("Database is missing split_interval in metadata")?;
+                let db_bitrate = existing_bitrate.ok_or("Database is missing bitrate in metadata")?;
 
                 // Validate metadata matches config
-                if let Some(ref db_name) = existing_name {
-                    if db_name != &name {
-                        return Err(format!(
-                            "Config mismatch: database has name '{}' but config specifies '{}'",
-                            db_name, name
-                        ).into());
-                    }
+                if db_name != name {
+                    return Err(format!(
+                        "Config mismatch: database has name '{}' but config specifies '{}'",
+                        db_name, name
+                    ).into());
                 }
-                if let Some(ref db_format) = existing_format {
-                    if db_format != audio_format_str {
-                        return Err(format!(
-                            "Config mismatch: database has audio_format '{}' but config specifies '{}'",
-                            db_format, audio_format_str
-                        ).into());
-                    }
+                if db_format != audio_format_str {
+                    return Err(format!(
+                        "Config mismatch: database has audio_format '{}' but config specifies '{}'",
+                        db_format, audio_format_str
+                    ).into());
                 }
-                if let Some(ref db_interval) = existing_interval {
-                    let db_interval_val: u64 = db_interval.parse().unwrap_or(0);
-                    if db_interval_val != split_interval {
-                        return Err(format!(
-                            "Config mismatch: database has split_interval '{}' but config specifies '{}'",
-                            db_interval_val, split_interval
-                        ).into());
-                    }
+                let db_interval_val: u64 = db_interval.parse().unwrap_or(0);
+                if db_interval_val != split_interval {
+                    return Err(format!(
+                        "Config mismatch: database has split_interval '{}' but config specifies '{}'",
+                        db_interval_val, split_interval
+                    ).into());
+                }
+                let db_bitrate_val: u32 = db_bitrate.parse().unwrap_or(0);
+                if db_bitrate_val != bitrate_kbps {
+                    return Err(format!(
+                        "Config mismatch: database has bitrate '{}' kbps but config specifies '{}' kbps",
+                        db_bitrate_val, bitrate_kbps
+                    ).into());
                 }
 
                 println!("SQLite database: {}", db_path);
-                println!("Session UUID: {}", existing_uuid.unwrap());
+                println!("Session UUID: {}", db_uuid);
             } else {
                 // New database - insert metadata with new uuid
                 let session_uuid = Uuid::new_v4().to_string();
@@ -638,6 +644,8 @@ fn record(config_path: PathBuf, duration_override: Option<u64>) -> Result<(), Bo
                 conn.execute("INSERT INTO metadata (key, value) VALUES ('name', ?1)", [&name])?;
                 conn.execute("INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)", [audio_format_str])?;
                 conn.execute("INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)", [&split_interval.to_string()])?;
+                conn.execute("INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)", [&bitrate_kbps.to_string()])?;
+                conn.execute("INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)", [&output_sample_rate.to_string()])?;
 
                 println!("SQLite database: {}", db_path);
                 println!("Session UUID: {}", session_uuid);
@@ -1423,6 +1431,15 @@ async fn mpd_handler(
         })
         .unwrap_or(48000);
 
+    // Get bitrate from metadata (in kbps, convert to bps for bandwidth)
+    let bitrate_kbps: u32 = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'bitrate'", [], |row| {
+            let val: String = row.get(0)?;
+            Ok(val.parse().unwrap_or(16))
+        })
+        .unwrap_or(16);
+    let bandwidth = bitrate_kbps * 1000;
+
     // Calculate total duration and segment repeat count
     let segment_count = (query.end_id - query.start_id + 1) as u32;
     let total_duration = segment_count as f64 * split_interval;
@@ -1451,7 +1468,7 @@ async fn mpd_handler(
           <S d="{}" r="{}"/>
         </SegmentTimeline>
       </SegmentTemplate>
-      <Representation id="audio" bandwidth="128000" audioSamplingRate="{}">
+      <Representation id="audio" bandwidth="{}" audioSamplingRate="{}">
         <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
       </Representation>
     </AdaptationSet>
@@ -1462,6 +1479,7 @@ async fn mpd_handler(
         query.start_id,
         duration_ms,
         repeat_count,
+        bandwidth,
         sample_rate
     );
 
