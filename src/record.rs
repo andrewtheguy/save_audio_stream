@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
@@ -31,6 +31,17 @@ use crate::schedule::{
     is_in_active_window, parse_time, seconds_until_end, seconds_until_start, time_to_minutes,
 };
 use crate::streaming::StreamingSource;
+
+/// Calculate backoff delay based on elapsed failure duration
+fn get_backoff_ms(elapsed_secs: u64) -> u64 {
+    match elapsed_secs {
+        0..=29 => 500,     // 0.5s
+        30..=59 => 1000,   // 1s
+        60..=119 => 2000,  // 2s
+        120..=179 => 4000, // 4s
+        _ => 5000,         // 5s
+    }
+}
 
 pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // Load config file (required)
@@ -133,16 +144,55 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         println!("Recording duration: {} seconds", duration);
     }
 
-    // Create HTTP client and make request
+    // Retry configuration
+    const MAX_RETRY_DURATION: Duration = Duration::from_secs(5 * 60); // 5 minutes
+    let mut retry_start: Option<Instant> = None;
+
+    // Create HTTP client with connection timeout
     let client = Client::builder()
-        .timeout(None) // No timeout for streaming
+        .timeout(None) // No overall timeout for streaming
+        .connect_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(30))
         .build()?;
 
-    let response = client.get(&url).send()?;
+    // Main connection retry loop - each connection is a fresh recording
+    'connection: loop {
+        let response = match client.get(&url).send() {
+            Ok(resp) => {
+                retry_start = None; // Reset on success
+                resp
+            }
+            Err(e) => {
+                eprintln!("Connection error: {}", e);
+                if let Some(start) = retry_start {
+                    if start.elapsed() > MAX_RETRY_DURATION {
+                        return Err(format!("Max retry duration exceeded. Last error: {}", e).into());
+                    }
+                } else {
+                    retry_start = Some(Instant::now());
+                }
+                let backoff_ms = get_backoff_ms(retry_start.unwrap().elapsed().as_secs());
+                println!("Retrying in {}ms...", backoff_ms);
+                thread::sleep(Duration::from_millis(backoff_ms));
+                continue 'connection;
+            }
+        };
 
-    if !response.status().is_success() {
-        return Err(format!("HTTP error: {}", response.status()).into());
-    }
+        if !response.status().is_success() {
+            let status = response.status();
+            eprintln!("HTTP error: {}", status);
+            if let Some(start) = retry_start {
+                if start.elapsed() > MAX_RETRY_DURATION {
+                    return Err(format!("Max retry duration exceeded. HTTP error: {}", status).into());
+                }
+            } else {
+                retry_start = Some(Instant::now());
+            }
+            let backoff_ms = get_backoff_ms(retry_start.unwrap().elapsed().as_secs());
+            println!("Retrying in {}ms...", backoff_ms);
+            thread::sleep(Duration::from_millis(backoff_ms));
+            continue 'connection;
+        }
 
     // Extract headers
     let content_type = response
@@ -1056,6 +1106,31 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+
+        // Check if target was reached
+        if total_output_samples >= target_samples {
+            // Target reached, recording complete
+            break;
+        }
+
+        // Stream ended early - check if we should retry
+        eprintln!("\nStream ended before target duration reached ({} / {} samples)",
+                  total_output_samples, target_samples);
+
+        if let Some(start) = retry_start {
+            if start.elapsed() > MAX_RETRY_DURATION {
+                return Err(format!("Max retry duration exceeded. Only recorded {} of {} samples",
+                                   total_output_samples, target_samples).into());
+            }
+        } else {
+            retry_start = Some(Instant::now());
+        }
+
+        let backoff_ms = get_backoff_ms(retry_start.unwrap().elapsed().as_secs());
+        println!("Retrying connection in {}ms...", backoff_ms);
+        thread::sleep(Duration::from_millis(backoff_ms));
+        // Continue to next connection attempt
+    } // End of 'connection loop
 
     Ok(())
 }
