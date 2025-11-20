@@ -1,10 +1,12 @@
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
     http::{header, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::get,
     Router,
 };
+use tokio_util::io::ReaderStream;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -1529,23 +1531,39 @@ async fn audio_handler(
             .into_response();
     }
 
-    // Read file contents
-    let data = match std::fs::read(temp_file.path()) {
-        Ok(d) => d,
+    // Open file for async streaming
+    let file = match tokio::fs::File::open(temp_file.path()).await {
+        Ok(f) => f,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to read temp file: {}", e),
+                format!("Failed to open temp file: {}", e),
             )
                 .into_response()
         }
     };
 
-    let mut response = (StatusCode::OK, data).into_response();
+    // Get file size for Content-Length header
+    let file_size = match file.metadata().await {
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    };
+
+    // Create stream from file - temp file will be deleted when dropped,
+    // but the open file handle keeps data accessible until stream completes
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    let mut response = (StatusCode::OK, body).into_response();
     {
         let headers = response.headers_mut();
         let _ = headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/ogg"));
         let _ = headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+        if file_size > 0 {
+            if let Ok(val) = HeaderValue::from_str(&file_size.to_string()) {
+                let _ = headers.insert(header::CONTENT_LENGTH, val);
+            }
+        }
     }
 
     response
