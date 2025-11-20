@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AudioPlayer } from "./components/AudioPlayer";
 
 interface SessionInfo {
   start_id: number;
@@ -99,7 +100,12 @@ function App() {
                     Duration: {formatDuration(session.duration_seconds)}
                   </span>
                 </div>
-                <div className="session-urls">
+                <div className="session-content">
+                  <AudioPlayer
+                    manifestUrl={`/manifest.mpd?start_id=${session.start_id}&end_id=${session.end_id}`}
+                    startId={session.start_id}
+                    endId={session.end_id}
+                  />
                   <div className="url-row">
                     <span className="url-label">Audio:</span>
                     <a
@@ -107,16 +113,6 @@ function App() {
                       className="url-link"
                     >
                       /audio?start_id={session.start_id}&end_id={session.end_id}
-                    </a>
-                  </div>
-                  <div className="url-row">
-                    <span className="url-label">DASH:</span>
-                    <a
-                      href={`/manifest.mpd?start_id=${session.start_id}&end_id=${session.end_id}`}
-                      className="url-link"
-                    >
-                      /manifest.mpd?start_id={session.start_id}&end_id=
-                      {session.end_id}
                     </a>
                   </div>
                 </div>

@@ -13,5 +13,6 @@ export default defineConfig({
   },
   server: {
     port: 21173,
+    hmr: false,
   },
 });
