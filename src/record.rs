@@ -107,99 +107,228 @@ fn cleanup_old_segments(conn: &Connection) -> Result<(), Box<dyn std::error::Err
     cleanup_old_segments_with_retention(conn, RETENTION_HOURS)
 }
 
-pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
-    // Setup per-session file logging
-    let output_dir = config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
-    let log_path = format!("{}/{}.log", output_dir, config.name);
+/// Open database connection with WAL mode enabled
+fn open_database_connection(output_dir: &str, name: &str) -> Result<Connection, Box<dyn std::error::Error>> {
+    let db_path = format!("{}/{}.sqlite", output_dir, name);
+    let conn = Connection::open(&db_path)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    println!("SQLite database: {}", db_path);
+    Ok(conn)
+}
 
-    // Create output directory for log file
-    std::fs::create_dir_all(&output_dir).ok();
+/// Run the connection loop and handle recording with retries
+fn run_connection_loop(
+    url: &str,
+    audio_format: AudioFormat,
+    bitrate_kbps: u32,
+    name: &str,
+    output_dir: &str,
+    split_interval: u64,
+    duration: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize database once before the connection loop with WAL mode enabled
+    let conn = open_database_connection(output_dir, name)?;
 
-    // Setup file logger for this session
-    let _log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("Failed to open log file '{}': {}", log_path, e))?;
+    // Create tables
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS segments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_ms INTEGER NOT NULL,
+            is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
+            audio_data BLOB NOT NULL
+        )",
+        [],
+    )?;
 
-    // Note: Separate log files are created per session
-    // TODO: Implement proper file-based logging redirection for this thread
-    println!("Session '{}' logging to: {}", config.name, log_path);
+    // Create indexes for efficient cleanup queries
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_segments_boundary
+         ON segments(is_timestamp_from_source, timestamp_ms)",
+        [],
+    )?;
 
-    // Extract config values with defaults
-    let url = config.url.clone();
-    let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
-    let bitrate = config.bitrate;
-    let name = config.name.clone();
-    let output_dir = config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
-    let split_interval = config.split_interval.unwrap_or(0);
+    // Check if database already has metadata and validate it matches config
+    let audio_format_str = match audio_format {
+        AudioFormat::Aac => "aac",
+        AudioFormat::Opus => "opus",
+        AudioFormat::Wav => "wav",
+    };
 
-    // Acquire exclusive lock to prevent multiple instances
-    std::fs::create_dir_all(&output_dir)
-        .map_err(|e| format!("Failed to create output directory '{}': {}", output_dir, e))?;
-    let lock_path = format!("{}/{}.lock", output_dir, name);
-    let _lock_file = File::create(&lock_path)
-        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path, e))?;
-    _lock_file.try_lock_exclusive().map_err(|_| {
-        format!(
-            "Another instance is already recording '{}'. Lock file: {}",
-            name, lock_path
+    let existing_uuid: Option<String> = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'uuid'", [], |row| {
+            row.get(0)
+        })
+        .ok();
+    let existing_name: Option<String> = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
+            row.get(0)
+        })
+        .ok();
+    let existing_format: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'audio_format'",
+            [],
+            |row| row.get(0),
         )
-    })?;
-    // Lock will be held until lock_file is dropped (end of function)
+        .ok();
+    let existing_interval: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'split_interval'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    let existing_bitrate: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'bitrate'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    let existing_version: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'version'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    let existing_is_recipient: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'is_recipient'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
 
-    // Daily loop for scheduled recording - runs indefinitely
-    loop {
-        // Parse schedule times
-        let (start_hour, start_min) = parse_time(&config.schedule.record_start)?;
-        let (end_hour, end_min) = parse_time(&config.schedule.record_end)?;
-        let start_mins = time_to_minutes(start_hour, start_min);
-        let end_mins = time_to_minutes(end_hour, end_min);
+    // Check if this is an existing database
+    let is_existing_db =
+        existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
 
-        // Get current UTC time
-        let now = chrono::Utc::now();
-        let current_hour = now.hour();
-        let current_min = now.minute();
-        let current_mins = time_to_minutes(current_hour, current_min);
+    if is_existing_db {
+        // Validate version first
+        let db_version = existing_version.ok_or("Database is missing version in metadata")?;
+        if db_version != "1" {
+            return Err(format!(
+                "Unsupported database version: '{}'. This application only supports version '1'",
+                db_version
+            ).into());
+        }
 
-        // Check if we're in the active window
-        let duration = if !is_in_active_window(current_mins, start_mins, end_mins) {
-            // Wait until start time
-            let wait_secs = seconds_until_start(current_mins, start_mins);
-            println!(
-                "Current time is outside recording window ({} to {} UTC)",
-                config.schedule.record_start, config.schedule.record_end
-            );
-            println!(
-                "Waiting {} seconds ({:.1} hours) until {} UTC...",
-                wait_secs,
-                wait_secs as f64 / 3600.0,
-                config.schedule.record_start
-            );
-            std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+        // Check if this is a recipient database (sync target)
+        if let Some(is_recipient) = existing_is_recipient {
+            if is_recipient == "true" {
+                return Err("Cannot record to a recipient database. This database is configured for syncing only.".into());
+            }
+        }
 
-            // Recalculate current time after waiting
-            let now = chrono::Utc::now();
-            let current_hour = now.hour();
-            let current_min = now.minute();
-            let current_mins = time_to_minutes(current_hour, current_min);
-            seconds_until_end(current_mins, end_mins)
-        } else {
-            seconds_until_end(current_mins, end_mins)
+        // Existing database must have all required metadata
+        let db_uuid = existing_uuid.ok_or("Database is missing uuid in metadata")?;
+        let db_name = existing_name.ok_or("Database is missing name in metadata")?;
+        let db_format =
+            existing_format.ok_or("Database is missing audio_format in metadata")?;
+        let db_interval =
+            existing_interval.ok_or("Database is missing split_interval in metadata")?;
+        let db_bitrate =
+            existing_bitrate.ok_or("Database is missing bitrate in metadata")?;
+
+        // Validate metadata matches config
+        if db_name != name {
+            return Err(format!(
+                "Config mismatch: database has name '{}' but config specifies '{}'",
+                db_name, name
+            )
+            .into());
+        }
+        if db_format != audio_format_str {
+            return Err(format!(
+                "Config mismatch: database has audio_format '{}' but config specifies '{}'",
+                db_format, audio_format_str
+            )
+            .into());
+        }
+        let db_interval_val: u64 = db_interval.parse().unwrap_or(0);
+        if db_interval_val != split_interval {
+            return Err(format!(
+                "Config mismatch: database has split_interval '{}' but config specifies '{}'",
+                db_interval_val, split_interval
+            ).into());
+        }
+
+        // Determine expected bitrate for validation
+        let (_, _, default_bitrate) = match audio_format {
+            AudioFormat::Aac => (16000u32, 1024usize, 32u32),
+            AudioFormat::Opus => (48000u32, 960usize, 16u32),
+            AudioFormat::Wav => (0u32, 1024usize, 0u32),
         };
+        let expected_bitrate = if bitrate_kbps == 0 { default_bitrate } else { bitrate_kbps };
 
-    println!("Connecting to: {}", url);
-    println!(
-        "Recording until {} UTC ({} seconds)",
-        config.schedule.record_end, duration
-    );
+        let db_bitrate_val: u32 = db_bitrate.parse().unwrap_or(0);
+        if db_bitrate_val != expected_bitrate {
+            return Err(format!(
+                "Config mismatch: database has bitrate '{}' kbps but config specifies '{}' kbps",
+                db_bitrate_val, expected_bitrate
+            ).into());
+        }
+
+        println!("Session ID: {}", db_uuid);
+    } else {
+        // Determine bitrate and sample rate for new database
+        let (output_sample_rate, _, default_bitrate) = match audio_format {
+            AudioFormat::Aac => (16000u32, 1024usize, 32u32),
+            AudioFormat::Opus => (48000u32, 960usize, 16u32),
+            AudioFormat::Wav => (48000u32, 1024usize, 0u32), // Will be updated with actual source rate
+        };
+        let bitrate_to_store = if bitrate_kbps == 0 { default_bitrate } else { bitrate_kbps };
+
+        // New database - insert metadata with new uuid
+        let session_uuid: String = format!("db_{}", rand::thread_rng()
+            .sample_iter(&rand::distributions::Alphanumeric)
+            .take(12)
+            .map(char::from)
+            .collect::<String>());
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('version', '1')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
+            [&session_uuid],
+        )?;
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
+            [name],
+        )?;
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)",
+            [audio_format_str],
+        )?;
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)",
+            [&split_interval.to_string()],
+        )?;
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)",
+            [&bitrate_to_store.to_string()],
+        )?;
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
+            [&output_sample_rate.to_string()],
+        )?;
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'false')",
+            [],
+        )?;
+
+        println!("Session ID: {}", session_uuid);
+    }
 
     // Retry configuration
     const MAX_RETRY_DURATION: Duration = Duration::from_secs(5 * 60); // 5 minutes
     let mut retry_start: Option<Instant> = None;
-
-    // SQLite connection - persists across retries within the same recording day
-    let mut sqlite_conn: Option<Connection> = None;
 
     // Create HTTP client with connection timeout
     let client = Client::builder()
@@ -210,7 +339,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     // Main connection retry loop - each connection is a fresh recording
     'connection: loop {
-        let response = match client.get(&url).send() {
+        let response = match client.get(url).send() {
             Ok(resp) => {
                 retry_start = None; // Reset on success
                 resp
@@ -390,14 +519,14 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         AudioFormat::Opus => (48000u32, 960usize, 16u32),
         AudioFormat::Wav => (src_sample_rate, 1024usize, 0u32),
     };
-    let bitrate_kbps = bitrate.unwrap_or(default_bitrate);
-    let bitrate = bitrate_kbps as i32 * 1000;
+    let bitrate_kbps_resolved = if bitrate_kbps == 0 { default_bitrate } else { bitrate_kbps };
+    let bitrate = bitrate_kbps_resolved as i32 * 1000;
 
     match audio_format {
         AudioFormat::Wav => println!("Target: {} Hz, mono, lossless WAV", output_sample_rate),
         _ => println!(
             "Target: {} Hz, mono, {} kbps {:?}",
-            output_sample_rate, bitrate_kbps, audio_format
+            output_sample_rate, bitrate_kbps_resolved, audio_format
         ),
     }
 
@@ -435,197 +564,6 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
     // SQLite storage setup
     let mut segment_buffer: Vec<u8> = Vec::new();
     let base_timestamp_ms = timestamp.timestamp_millis();
-
-    // Create database file
-    let db_path = format!("{}/{}.sqlite", output_dir, name);
-    let conn = Connection::open(&db_path)?;
-
-    // Enable WAL mode for better concurrent access
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-
-    // Create tables
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS segments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp_ms INTEGER NOT NULL,
-            is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
-            audio_data BLOB NOT NULL
-        )",
-        [],
-    )?;
-
-    // Create indexes for efficient cleanup queries
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_segments_boundary
-         ON segments(is_timestamp_from_source, timestamp_ms)",
-        [],
-    )?;
-
-    // Check if database already has metadata and validate it matches config
-    let audio_format_str = match audio_format {
-        AudioFormat::Aac => "aac",
-        AudioFormat::Opus => "opus",
-        AudioFormat::Wav => "wav",
-    };
-
-    let existing_uuid: Option<String> = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'uuid'", [], |row| {
-            row.get(0)
-        })
-        .ok();
-    let existing_name: Option<String> = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
-            row.get(0)
-        })
-        .ok();
-    let existing_format: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'audio_format'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_interval: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'split_interval'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_bitrate: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'bitrate'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_version: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'version'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_is_recipient: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'is_recipient'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-
-    // Check if this is an existing database
-    let is_existing_db =
-        existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
-
-    if is_existing_db {
-        // Validate version first
-        let db_version = existing_version.ok_or("Database is missing version in metadata")?;
-        if db_version != "1" {
-            return Err(format!(
-                "Unsupported database version: '{}'. This application only supports version '1'",
-                db_version
-            ).into());
-        }
-
-        // Check if this is a recipient database (sync target)
-        if let Some(is_recipient) = existing_is_recipient {
-            if is_recipient == "true" {
-                return Err("Cannot record to a recipient database. This database is configured for syncing only.".into());
-            }
-        }
-
-        // Existing database must have all required metadata
-        let db_uuid = existing_uuid.ok_or("Database is missing uuid in metadata")?;
-        let db_name = existing_name.ok_or("Database is missing name in metadata")?;
-        let db_format =
-            existing_format.ok_or("Database is missing audio_format in metadata")?;
-        let db_interval =
-            existing_interval.ok_or("Database is missing split_interval in metadata")?;
-        let db_bitrate =
-            existing_bitrate.ok_or("Database is missing bitrate in metadata")?;
-
-        // Validate metadata matches config
-        if db_name != name {
-            return Err(format!(
-                "Config mismatch: database has name '{}' but config specifies '{}'",
-                db_name, name
-            )
-            .into());
-        }
-        if db_format != audio_format_str {
-            return Err(format!(
-                "Config mismatch: database has audio_format '{}' but config specifies '{}'",
-                db_format, audio_format_str
-            )
-            .into());
-        }
-        let db_interval_val: u64 = db_interval.parse().unwrap_or(0);
-        if db_interval_val != split_interval {
-            return Err(format!(
-                "Config mismatch: database has split_interval '{}' but config specifies '{}'",
-                db_interval_val, split_interval
-            ).into());
-        }
-        let db_bitrate_val: u32 = db_bitrate.parse().unwrap_or(0);
-        if db_bitrate_val != bitrate_kbps {
-            return Err(format!(
-                "Config mismatch: database has bitrate '{}' kbps but config specifies '{}' kbps",
-                db_bitrate_val, bitrate_kbps
-            ).into());
-        }
-
-        println!("SQLite database: {}", db_path);
-        println!("Session ID: {}", db_uuid);
-    } else {
-        // New database - insert metadata with new uuid
-        let session_uuid: String = format!("db_{}", rand::thread_rng()
-            .sample_iter(&rand::distributions::Alphanumeric)
-            .take(12)
-            .map(char::from)
-            .collect::<String>());
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('version', '1')",
-            [],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
-            [&session_uuid],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
-            [&name],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)",
-            [audio_format_str],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)",
-            [&split_interval.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)",
-            [&bitrate_kbps.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
-            [&output_sample_rate.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'false')",
-            [],
-        )?;
-
-        println!("SQLite database: {}", db_path);
-        println!("Session ID: {}", session_uuid);
-    }
-
-    sqlite_conn = Some(conn);
 
     // Create encoders for SQLite storage
     match audio_format {
@@ -737,21 +675,19 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                                                 if split_interval > 0
                                                     && segment_samples >= split_samples
                                                 {
-                                                    if let Some(ref conn) = sqlite_conn {
-                                                        let timestamp_ms = base_timestamp_ms
-                                                            + (segment_start_samples
-                                                                as i64
-                                                                * 1000
-                                                                / output_sample_rate
-                                                                    as i64);
-                                                        insert_segment(
-                                                            conn,
-                                                            timestamp_ms,
-                                                            segment_number == 0,
-                                                            &segment_buffer,
-                                                        )?;
-                                                        debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
-                                                    }
+                                                    let timestamp_ms = base_timestamp_ms
+                                                        + (segment_start_samples
+                                                            as i64
+                                                            * 1000
+                                                            / output_sample_rate
+                                                                as i64);
+                                                    insert_segment(
+                                                        &conn,
+                                                        timestamp_ms,
+                                                        segment_number == 0,
+                                                        &segment_buffer,
+                                                    )?;
+                                                    debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
                                                     segment_buffer.clear();
                                                     segment_number += 1;
                                                     segment_start_samples =
@@ -782,21 +718,19 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                                                 if split_interval > 0
                                                     && segment_samples >= split_samples
                                                 {
-                                                    if let Some(ref conn) = sqlite_conn {
-                                                        let timestamp_ms = base_timestamp_ms
-                                                            + (segment_start_samples
-                                                                as i64
-                                                                * 1000
-                                                                / output_sample_rate
-                                                                    as i64);
-                                                        insert_segment(
-                                                            conn,
-                                                            timestamp_ms,
-                                                            segment_number == 0,
-                                                            &segment_buffer,
-                                                        )?;
-                                                        debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
-                                                    }
+                                                    let timestamp_ms = base_timestamp_ms
+                                                        + (segment_start_samples
+                                                            as i64
+                                                            * 1000
+                                                            / output_sample_rate
+                                                                as i64);
+                                                    insert_segment(
+                                                        &conn,
+                                                        timestamp_ms,
+                                                        segment_number == 0,
+                                                        &segment_buffer,
+                                                    )?;
+                                                    debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
                                                     segment_buffer.clear();
                                                     segment_number += 1;
                                                     segment_start_samples =
@@ -820,22 +754,20 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                                     }
 
                                     if split_interval > 0 && segment_samples >= split_samples {
-                                        if let Some(ref conn) = sqlite_conn {
-                                            let timestamp_ms = base_timestamp_ms
-                                                + (segment_start_samples as i64 * 1000
-                                                    / output_sample_rate as i64);
-                                            insert_segment(
-                                                conn,
-                                                timestamp_ms,
-                                                segment_number == 0,
-                                                &segment_buffer,
-                                            )?;
-                                            debug!(
-                                                "Inserted segment {} ({} bytes)",
-                                                segment_number,
-                                                segment_buffer.len()
-                                            );
-                                        }
+                                        let timestamp_ms = base_timestamp_ms
+                                            + (segment_start_samples as i64 * 1000
+                                                / output_sample_rate as i64);
+                                        insert_segment(
+                                            &conn,
+                                            timestamp_ms,
+                                            segment_number == 0,
+                                            &segment_buffer,
+                                        )?;
+                                        debug!(
+                                            "Inserted segment {} ({} bytes)",
+                                            segment_number,
+                                            segment_buffer.len()
+                                        );
                                         segment_buffer.clear();
                                         segment_number += 1;
                                         segment_start_samples = total_output_samples;
@@ -911,16 +843,14 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     // Finalize storage
     if !segment_buffer.is_empty() {
-        if let Some(ref conn) = sqlite_conn {
-            let timestamp_ms = base_timestamp_ms
-                + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
-            insert_segment(conn, timestamp_ms, segment_number == 0, &segment_buffer)?;
-            println!(
-                "\nInserted final segment {} ({} bytes)",
-                segment_number,
-                segment_buffer.len()
-            );
-        }
+        let timestamp_ms = base_timestamp_ms
+            + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
+        insert_segment(&conn, timestamp_ms, segment_number == 0, &segment_buffer)?;
+        println!(
+            "\nInserted final segment {} ({} bytes)",
+            segment_number,
+            segment_buffer.len()
+        );
     }
 
     println!();
@@ -937,11 +867,10 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         total_input_samples, packets_decoded
     );
 
-    let db_path = format!("{}/{}.sqlite", output_dir, name);
     let total_segments = segment_number + 1;
     println!(
-        "Successfully saved {} segments to {} ({:.1} seconds of audio, {} bytes downloaded)",
-        total_segments, db_path, duration_secs, bytes_downloaded
+        "Successfully saved {} segments ({:.1} seconds of audio, {} bytes downloaded)",
+        total_segments, duration_secs, bytes_downloaded
     );
 
         // Check if target was reached
@@ -969,6 +898,107 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         // Continue to next connection attempt
     } // End of 'connection loop
 
+    Ok(())
+}
+
+pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
+    // Setup per-session file logging
+    let output_dir = config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
+    let log_path = format!("{}/{}.log", output_dir, config.name);
+
+    // Create output directory for log file
+    std::fs::create_dir_all(&output_dir).ok();
+
+    // Setup file logger for this session
+    let _log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("Failed to open log file '{}': {}", log_path, e))?;
+
+    // Note: Separate log files are created per session
+    // TODO: Implement proper file-based logging redirection for this thread
+    println!("Session '{}' logging to: {}", config.name, log_path);
+
+    // Extract config values with defaults
+    let url = config.url.clone();
+    let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
+    let bitrate = config.bitrate;
+    let name = config.name.clone();
+    let output_dir = config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
+    let split_interval = config.split_interval.unwrap_or(0);
+
+    // Acquire exclusive lock to prevent multiple instances
+    std::fs::create_dir_all(&output_dir)
+        .map_err(|e| format!("Failed to create output directory '{}': {}", output_dir, e))?;
+    let lock_path = format!("{}/{}.lock", output_dir, name);
+    let _lock_file = File::create(&lock_path)
+        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path, e))?;
+    _lock_file.try_lock_exclusive().map_err(|_| {
+        format!(
+            "Another instance is already recording '{}'. Lock file: {}",
+            name, lock_path
+        )
+    })?;
+    // Lock will be held until lock_file is dropped (end of function)
+
+    // Daily loop for scheduled recording - runs indefinitely
+    loop {
+        // Parse schedule times
+        let (start_hour, start_min) = parse_time(&config.schedule.record_start)?;
+        let (end_hour, end_min) = parse_time(&config.schedule.record_end)?;
+        let start_mins = time_to_minutes(start_hour, start_min);
+        let end_mins = time_to_minutes(end_hour, end_min);
+
+        // Get current UTC time
+        let now = chrono::Utc::now();
+        let current_hour = now.hour();
+        let current_min = now.minute();
+        let current_mins = time_to_minutes(current_hour, current_min);
+
+        // Check if we're in the active window
+        let duration = if !is_in_active_window(current_mins, start_mins, end_mins) {
+            // Wait until start time
+            let wait_secs = seconds_until_start(current_mins, start_mins);
+            println!(
+                "Current time is outside recording window ({} to {} UTC)",
+                config.schedule.record_start, config.schedule.record_end
+            );
+            println!(
+                "Waiting {} seconds ({:.1} hours) until {} UTC...",
+                wait_secs,
+                wait_secs as f64 / 3600.0,
+                config.schedule.record_start
+            );
+            std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+
+            // Recalculate current time after waiting
+            let now = chrono::Utc::now();
+            let current_hour = now.hour();
+            let current_min = now.minute();
+            let current_mins = time_to_minutes(current_hour, current_min);
+            seconds_until_end(current_mins, end_mins)
+        } else {
+            seconds_until_end(current_mins, end_mins)
+        };
+
+    println!("Connecting to: {}", url);
+    println!(
+        "Recording until {} UTC ({} seconds)",
+        config.schedule.record_end, duration
+    );
+
+    // Run the connection loop and record audio
+    run_connection_loop(
+        &url,
+        audio_format,
+        bitrate.unwrap_or(0),
+        &name,
+        &output_dir,
+        split_interval,
+        duration,
+    )?;
+
         // Loop for next day's recording window
         let (start_hour, start_min) = parse_time(&config.schedule.record_start)?;
         let start_mins = time_to_minutes(start_hour, start_min);
@@ -979,9 +1009,9 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
 
         println!("\nRecording window complete. Next window starts at {} UTC.", config.schedule.record_start);
 
-        // Run cleanup of old segments
-        if let Some(ref conn) = sqlite_conn {
-            if let Err(e) = cleanup_old_segments(conn) {
+        // Run cleanup of old segments - recreate connection for cleanup
+        if let Ok(cleanup_conn) = open_database_connection(&output_dir, &name) {
+            if let Err(e) = cleanup_old_segments(&cleanup_conn) {
                 eprintln!("Warning: Failed to clean up old segments: {}", e);
             }
         }
