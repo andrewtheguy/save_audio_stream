@@ -12,7 +12,7 @@ pub enum AudioFormat {
     Wav,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageFormat {
     /// Save to individual files

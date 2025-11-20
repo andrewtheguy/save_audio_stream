@@ -231,9 +231,11 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         timestamp.format("%d")
     );
 
-    // Create the full output directory structure
-    std::fs::create_dir_all(&output_path)
-        .map_err(|e| format!("Failed to create output directory '{}': {}", output_path, e))?;
+    // Create the full output directory structure (only for file storage)
+    if storage_format == StorageFormat::File {
+        std::fs::create_dir_all(&output_path)
+            .map_err(|e| format!("Failed to create output directory '{}': {}", output_path, e))?;
+    }
 
     // Generate output filename (with optional segment number for splitting)
     let generate_filename = |segment: Option<u32>| -> String {
@@ -256,7 +258,10 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("Content-Type: {}", content_type);
-    println!("Output file: {}", output_filename);
+    println!("Storage format: {:?}", storage_format);
+    if storage_format == StorageFormat::File {
+        println!("Output file: {}", output_filename);
+    }
     println!("Audio format: {:?}", audio_format);
     if split_interval > 0 {
         println!("Split interval: {} seconds", split_interval);
