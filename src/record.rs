@@ -513,12 +513,28 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                     |row| row.get(0),
                 )
                 .ok();
+            let existing_version: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
 
             // Check if this is an existing database
             let is_existing_db =
                 existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
 
             if is_existing_db {
+                // Validate version first
+                let db_version = existing_version.ok_or("Database is missing version in metadata")?;
+                if db_version != "1" {
+                    return Err(format!(
+                        "Unsupported database version: '{}'. This application only supports version '1'",
+                        db_version
+                    ).into());
+                }
+
                 // Existing database must have all required metadata
                 let db_uuid = existing_uuid.ok_or("Database is missing uuid in metadata")?;
                 let db_name = existing_name.ok_or("Database is missing name in metadata")?;
@@ -568,6 +584,10 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                     .take(12)
                     .map(char::from)
                     .collect::<String>());
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('version', '1')",
+                    [],
+                )?;
                 conn.execute(
                     "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
                     [&session_uuid],

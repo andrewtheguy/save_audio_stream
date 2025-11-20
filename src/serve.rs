@@ -60,6 +60,23 @@ pub fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::
 
     let conn = Connection::open(&sqlite_file)?;
 
+    // Check version first
+    let db_version: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Database is missing version in metadata")?;
+
+    if db_version != "1" {
+        return Err(format!(
+            "Unsupported database version: '{}'. This application only supports version '1'",
+            db_version
+        )
+        .into());
+    }
+
     // Check audio format
     let audio_format: String = conn
         .query_row(
