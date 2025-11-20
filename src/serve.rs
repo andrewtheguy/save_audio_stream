@@ -53,7 +53,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
 
     println!("Starting multi-show API server");
     println!("Output directory: {}", output_dir_str);
-    println!("Listening on: http://0.0.0.0:{}", port);
+    println!("Listening on: http://[::]{} (IPv4 + IPv6)", port);
     println!("Endpoints:");
     println!("  GET /health  - Health check");
     println!("  GET /api/sync/shows  - List available shows");
@@ -111,7 +111,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
             .layer(cors)
             .with_state(app_state);
 
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
+        let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port))
             .await
             .unwrap();
         axum::serve(listener, app).await.unwrap();
@@ -173,7 +173,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
 
     println!("Starting server for: {}", db_path);
     println!("Output directory: {}", output_dir);
-    println!("Listening on: http://0.0.0.0:{}", port);
+    println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
     println!("Endpoints:");
     println!("  GET /audio?start_id=<N>&end_id=<N>  - Ogg/Opus stream");
     println!("  GET /manifest.mpd?start_id=<N>&end_id=<N>  - DASH MPD");
@@ -253,7 +253,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
             .layer(cors)
             .with_state(app_state);
 
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
+        let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port))
             .await
             .map_err(|e| format!("Failed to bind to port {}: {}", port, e))?;
         axum::serve(listener, app)
