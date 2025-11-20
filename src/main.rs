@@ -1,12 +1,10 @@
 use axum::{
-    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::get,
     Router,
 };
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -34,8 +32,6 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
@@ -1325,62 +1321,6 @@ fn map_to_io_error<E: std::fmt::Display + Send + Sync + 'static>(err: E) -> std:
     std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
 }
 
-struct ChannelWriter {
-    sender: mpsc::Sender<Result<Bytes, std::io::Error>>,
-    buffer: Vec<u8>,
-}
-
-impl ChannelWriter {
-    fn new(sender: mpsc::Sender<Result<Bytes, std::io::Error>>) -> Self {
-        Self {
-            sender,
-            buffer: Vec::with_capacity(8192),
-        }
-    }
-
-    fn flush_buffer(&mut self) -> std::io::Result<()> {
-        if self.buffer.is_empty() {
-            return Ok(());
-        }
-
-        let data = std::mem::take(&mut self.buffer);
-        self.sender
-            .blocking_send(Ok(Bytes::from(data)))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
-        Ok(())
-    }
-}
-
-impl Write for ChannelWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buffer.extend_from_slice(buf);
-        if self.buffer.len() >= 8192 {
-            self.flush_buffer()?;
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.flush_buffer()
-    }
-}
-
-#[derive(Default)]
-struct CountingWriter {
-    bytes: u64,
-}
-
-impl Write for CountingWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.bytes += buf.len() as u64;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 fn write_ogg_stream<W: Write>(
     conn: &Connection,
     start_id: i64,
@@ -1455,79 +1395,6 @@ fn write_ogg_stream<W: Write>(
     }
 
     Ok(writer.into_inner())
-}
-
-fn stream_ogg_from_db(
-    db_path: String,
-    start_id: i64,
-    end_id: i64,
-    sample_rate: u32,
-    duration_secs: f64,
-    sender: mpsc::Sender<Result<Bytes, std::io::Error>>,
-) -> Result<(), std::io::Error> {
-    let conn = Connection::open(db_path).map_err(map_to_io_error)?;
-
-    let samples_per_packet = (sample_rate / 50) as u64;
-
-    let mut channel_writer = ChannelWriter::new(sender);
-    channel_writer = write_ogg_stream(
-        &conn,
-        start_id,
-        end_id,
-        sample_rate,
-        duration_secs,
-        samples_per_packet,
-        channel_writer,
-    )?;
-    channel_writer.flush_buffer()?;
-    Ok(())
-}
-
-fn calculate_ogg_stats(
-    db_path: String,
-    start_id: i64,
-    end_id: i64,
-    sample_rate: u32,
-) -> Result<(f64, u64), std::io::Error> {
-    let conn = Connection::open(db_path).map_err(map_to_io_error)?;
-    let samples_per_packet = (sample_rate / 50) as u64;
-
-    // First pass: duration in samples
-    let mut duration_samples: u64 = 0;
-    {
-        let mut stmt = conn
-            .prepare("SELECT audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
-            .map_err(map_to_io_error)?;
-        let mut rows = stmt.query([start_id, end_id]).map_err(map_to_io_error)?;
-        while let Some(row) = rows.next().map_err(map_to_io_error)? {
-            let segment: Vec<u8> = row.get(0).map_err(map_to_io_error)?;
-            let mut offset = 0;
-            while offset + 2 <= segment.len() {
-                let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
-                offset += 2;
-                if offset + len > segment.len() {
-                    break;
-                }
-                offset += len;
-                duration_samples += samples_per_packet;
-            }
-        }
-    }
-    let duration_secs = duration_samples as f64 / sample_rate as f64;
-
-    // Second pass: calculate total bytes via counting writer
-    let mut counting_writer = CountingWriter::default();
-    counting_writer = write_ogg_stream(
-        &conn,
-        start_id,
-        end_id,
-        sample_rate,
-        duration_secs,
-        samples_per_packet,
-        counting_writer,
-    )?;
-
-    Ok((duration_secs, counting_writer.bytes))
 }
 
 // Query parameters for audio endpoint
@@ -1618,58 +1485,70 @@ async fn audio_handler(
             .into_response();
     }
 
-    // Precompute duration and byte length so clients get Content-Length and duration metadata
-    let (duration_secs, content_length) = match calculate_ogg_stats(
-        state.db_path.clone(),
-        query.start_id,
-        query.end_id,
-        sample_rate,
-    ) {
-        Ok(stats) => stats,
+    // Calculate duration from segment count
+    let duration_secs = segment_count as f64 * split_interval;
+    let samples_per_packet = (sample_rate / 50) as u64;
+
+    // Create temporary file and write Ogg stream
+    let temp_file = match tempfile::NamedTempFile::new() {
+        Ok(f) => f,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to calculate stream length: {}", e),
+                format!("Failed to create temp file: {}", e),
             )
                 .into_response()
         }
     };
 
-    drop(conn);
-
-    let db_path = state.db_path.clone();
-    let start_id = query.start_id;
-    let end_id = query.end_id;
-    let duration_secs_for_stream = duration_secs;
-    let (tx, rx) = mpsc::channel(8);
-
-    tokio::task::spawn_blocking(move || {
-        let error_sender = tx.clone();
-        if let Err(e) = stream_ogg_from_db(
-            db_path,
-            start_id,
-            end_id,
-            sample_rate,
-            duration_secs_for_stream,
-            tx,
-        ) {
-            let _ = error_sender.blocking_send(Err(e));
+    let file = match temp_file.reopen() {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to reopen temp file: {}", e),
+            )
+                .into_response()
         }
-    });
+    };
 
-    let body_stream = ReceiverStream::new(rx);
-    let body = Body::from_stream(body_stream);
+    // Write Ogg stream to file
+    if let Err(e) = write_ogg_stream(
+        &conn,
+        query.start_id,
+        query.end_id,
+        sample_rate,
+        duration_secs,
+        samples_per_packet,
+        file,
+    ) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to write audio: {}", e),
+        )
+            .into_response();
+    }
 
-    (
-        StatusCode::OK,
-        [
-            ("content-type", "audio/ogg"),
-            ("accept-ranges", "bytes"),
-            ("content-length", &content_length.to_string()),
-        ],
-        body,
-    )
-        .into_response()
+    // Read file contents
+    let data = match std::fs::read(temp_file.path()) {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read temp file: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let mut response = (StatusCode::OK, data).into_response();
+    {
+        let headers = response.headers_mut();
+        let _ = headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/ogg"));
+        let _ = headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    }
+
+    response
 }
 
 // EBML/WebM writing helpers

@@ -1241,6 +1241,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "symphonia",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "toml",
