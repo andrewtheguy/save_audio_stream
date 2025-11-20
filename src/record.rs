@@ -11,6 +11,7 @@ use reqwest::blocking::Client;
 use rusqlite::Connection;
 use fs2::FileExt;
 use log::debug;
+use rand::Rng;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -24,8 +25,6 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use uuid::Uuid;
-
 use crate::audio::{create_opus_comment_header, create_opus_id_header, resample};
 use crate::config::{AudioFormat, Config, StorageFormat};
 use crate::schedule::{
@@ -580,7 +579,11 @@ pub fn record(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Session UUID: {}", db_uuid);
             } else {
                 // New database - insert metadata with new uuid
-                let session_uuid = Uuid::new_v4().to_string();
+                let session_uuid: String = format!("db_{}", rand::thread_rng()
+                    .sample_iter(&rand::distributions::Alphanumeric)
+                    .take(12)
+                    .map(char::from)
+                    .collect::<String>());
                 conn.execute(
                     "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
                     [&session_uuid],
