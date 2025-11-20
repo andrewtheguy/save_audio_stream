@@ -31,15 +31,6 @@ pub enum AudioFormat {
     Wav,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum StorageFormat {
-    /// Save to individual files
-    File,
-    /// Save to SQLite database
-    Sqlite,
-}
-
 /// Schedule configuration for recording during specific hours
 #[derive(Debug, Clone, Deserialize)]
 pub struct Schedule {
@@ -91,8 +82,6 @@ pub struct SessionConfig {
     pub schedule: Schedule,
     /// Audio format: aac, opus, or wav (default: opus)
     pub audio_format: Option<AudioFormat>,
-    /// Storage format: file or sqlite (default: sqlite)
-    pub storage_format: Option<StorageFormat>,
     /// Bitrate in kbps (default: 32 for AAC, 16 for Opus)
     pub bitrate: Option<u32>,
     /// Name prefix for output file (required)

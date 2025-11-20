@@ -5,7 +5,8 @@
       "WebFetch(domain:docs.rs)",
       "mcp__fetch__fetch_markdown",
       "Bash(mkdir:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(cargo check:*)"
     ],
     "deny": [],
     "ask": []

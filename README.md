@@ -1,21 +1,22 @@
 # save_audio_stream
 
-A Rust CLI tool for downloading and re-encoding Shoutcast/Icecast audio streams to AAC, Opus, or WAV format with support for automatic file splitting.
+A Rust CLI tool for downloading and re-encoding Shoutcast/Icecast audio streams to AAC, Opus, or WAV format with SQLite storage.
 
 ## Purpose
 
-This tool connects to internet radio streams, decodes the audio in real-time, and re-encodes it to a compressed format optimized for voice/speech. Useful for recording radio broadcasts, podcasts, or any Shoutcast/Icecast compatible stream.
+This tool connects to internet radio streams, decodes the audio in real-time, and re-encodes it to a compressed format optimized for voice/speech. All audio is stored in SQLite databases for reliability and easy syncing. Useful for recording radio broadcasts, podcasts, or any Shoutcast/Icecast compatible stream.
 
 ## Features
 
 - Downloads audio from Shoutcast/Icecast streams
 - Supports MP3 and AAC input formats
 - Re-encodes to AAC-LC (16kHz mono), Opus (48kHz mono), or WAV (lossless)
-- **Automatic file splitting** at configurable intervals with gapless playback
+- **SQLite storage** for reliability and incremental syncing
+- **Automatic segment splitting** at configurable intervals with gapless playback
 - Configurable recording duration and bitrate
-- Automatic timestamped output filenames
 - Configuration file support (TOML format)
 - Customizable output directory (defaults to `tmp/`)
+- Database synchronization for remote backup
 
 ## Installation
 
@@ -91,7 +92,6 @@ record_end = '16:00'       # UTC time to stop recording (HH:MM)
 
 # Optional (with defaults)
 audio_format = 'opus'      # default: 'opus' (options: aac, opus, wav)
-storage_format = 'sqlite'  # default: 'sqlite' (options: file, sqlite)
 bitrate = 24               # default: 32 for AAC, 16 for Opus
 split_interval = 300       # default: 0 (no splitting, in seconds)
 
@@ -142,9 +142,8 @@ chunk_size = 100            # default: 100 (batch size for fetching segments)
 | `record_start` | Recording start time in UTC (HH:MM) | - | Yes |
 | `record_end` | Recording end time in UTC (HH:MM) | - | Yes |
 | `audio_format` | Audio encoding: `aac`, `opus`, or `wav` | opus | No |
-| `storage_format` | Storage format: `file` or `sqlite` | sqlite | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
-| `split_interval` | Split files every N seconds (0 = no split) | 0 | No |
+| `split_interval` | Split segments every N seconds (0 = no split) | 0 | No |
 
 **Note:** The API server always runs in the main thread on the configured `api_port` (default: 3000). It provides synchronization endpoints for all shows being recorded, enabling remote access and database syncing while recording is in progress. The API server is required for sync functionality.
 
@@ -191,9 +190,7 @@ save_audio_stream sync -c config/sync.toml
 
 ## Output
 
-### SQLite Storage (Default)
-
-When `storage_format = 'sqlite'`, audio segments are stored in a SQLite database:
+All recordings are stored in SQLite databases:
 
 ```
 output_dir/name.sqlite
@@ -217,23 +214,7 @@ CREATE TABLE segments (
 );
 ```
 
-### File Storage
-
-When `storage_format = 'file'`, files are saved to a date-organized directory structure:
-
-```
-output_dir/name/yyyy/mm/dd/name_timestamp.ext
-```
-
-#### Without Splitting
-- `tmp/myradio/2024/11/18/myradio_20241118_143022.opus`
-
-#### With Splitting
-When using `split_interval`, files are numbered sequentially:
-- `tmp/myradio/2024/11/18/myradio_20241118_143022_000.opus`
-- `tmp/myradio/2024/11/18/myradio_20241118_143022_001.opus`
-- `tmp/myradio/2024/11/18/myradio_20241118_143022_002.opus`
-- ...
+**Note:** Files can be generated from the database if needed. The database format provides better reliability and supports incremental syncing.
 
 ### Output Format Specifications
 

@@ -4,6 +4,8 @@ use fdk_aac::enc::{
     AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
     Transport,
 };
+use hound::{WavSpec, WavWriter};
+use ogg::writing::PacketWriter;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
 use reqwest::blocking::Client;
 use rusqlite::Connection;
@@ -11,7 +13,7 @@ use fs2::FileExt;
 use log::debug;
 use rand::Rng;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -22,7 +24,7 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use crate::audio::resample;
+use crate::audio::{create_opus_comment_header, create_opus_id_header, resample};
 use crate::config::{AudioFormat, SessionConfig};
 use crate::schedule::{
     is_in_active_window, parse_time, seconds_until_end, seconds_until_start, time_to_minutes,
@@ -271,6 +273,13 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         system_time.into()
     };
 
+    println!("Content-Type: {}", content_type);
+    println!("Storage format: SQLite");
+    println!("Output audio format: {:?}", audio_format);
+    if split_interval > 0 {
+        println!("Split interval: {} seconds", split_interval);
+    }
+
     // Determine codec from content type
     let codec_hint = match content_type.as_str() {
         "audio/mpeg" | "audio/mp3" => "mp3",
@@ -283,12 +292,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    println!("Source codec: {} (Content-Type: {})", codec_hint, content_type);
-    println!("Target format: {:?}", audio_format);
-    println!("Storage: SQLite");
-    if split_interval > 0 {
-        println!("Split interval: {} seconds", split_interval);
-    }
+    println!("Detected source codec: {}", codec_hint);
 
     // Create channel for streaming data
     let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(100);
@@ -380,7 +384,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         .count() as u16;
 
     println!(
-        "Source: {} Hz, {} channels",
+        "Source audio format: {} Hz, {} channels",
         src_sample_rate, src_channels
     );
 
@@ -394,9 +398,9 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
     let bitrate = bitrate_kbps as i32 * 1000;
 
     match audio_format {
-        AudioFormat::Wav => println!("Target: {} Hz, mono, lossless WAV", output_sample_rate),
+        AudioFormat::Wav => println!("Output: {} Hz, mono, lossless WAV", output_sample_rate),
         _ => println!(
-            "Target: {} Hz, mono, {} kbps {:?}",
+            "Output: {} Hz, mono, {} kbps {:?}",
             output_sample_rate, bitrate_kbps, audio_format
         ),
     }
@@ -440,190 +444,190 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
     let db_path = format!("{}/{}.sqlite", output_dir, name);
     let conn = Connection::open(&db_path)?;
 
-    // Enable WAL mode for better concurrent access
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+            // Enable WAL mode for better concurrent access
+            conn.execute_batch("PRAGMA journal_mode=WAL;")?;
 
-    // Create tables
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS segments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp_ms INTEGER NOT NULL,
-            is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
-            audio_data BLOB NOT NULL
-        )",
-        [],
-    )?;
+            // Create tables
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )?;
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS segments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_ms INTEGER NOT NULL,
+                    is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
+                    audio_data BLOB NOT NULL
+                )",
+                [],
+            )?;
 
-    // Create indexes for efficient cleanup queries
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_segments_boundary
-         ON segments(is_timestamp_from_source, timestamp_ms)",
-        [],
-    )?;
+            // Create indexes for efficient cleanup queries
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_segments_boundary
+                 ON segments(is_timestamp_from_source, timestamp_ms)",
+                [],
+            )?;
 
-    // Check if database already has metadata and validate it matches config
-    let audio_format_str = match audio_format {
-        AudioFormat::Aac => "aac",
-        AudioFormat::Opus => "opus",
-        AudioFormat::Wav => "wav",
-    };
+            // Check if database already has metadata and validate it matches config
+            let audio_format_str = match audio_format {
+                AudioFormat::Aac => "aac",
+                AudioFormat::Opus => "opus",
+                AudioFormat::Wav => "wav",
+            };
 
-    let existing_uuid: Option<String> = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'uuid'", [], |row| {
-            row.get(0)
-        })
-        .ok();
-    let existing_name: Option<String> = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
-            row.get(0)
-        })
-        .ok();
-    let existing_format: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'audio_format'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_interval: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'split_interval'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_bitrate: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'bitrate'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_version: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'version'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_is_recipient: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'is_recipient'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
+            let existing_uuid: Option<String> = conn
+                .query_row("SELECT value FROM metadata WHERE key = 'uuid'", [], |row| {
+                    row.get(0)
+                })
+                .ok();
+            let existing_name: Option<String> = conn
+                .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
+                    row.get(0)
+                })
+                .ok();
+            let existing_format: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'audio_format'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            let existing_interval: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'split_interval'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            let existing_bitrate: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'bitrate'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            let existing_version: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            let existing_is_recipient: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'is_recipient'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
 
-    // Check if this is an existing database
-    let is_existing_db =
-        existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
+            // Check if this is an existing database
+            let is_existing_db =
+                existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
 
-    if is_existing_db {
-        // Validate version first
-        let db_version = existing_version.ok_or("Database is missing version in metadata")?;
-        if db_version != "1" {
-            return Err(format!(
-                "Unsupported database version: '{}'. This application only supports version '1'",
-                db_version
-            ).into());
-        }
+            if is_existing_db {
+                // Validate version first
+                let db_version = existing_version.ok_or("Database is missing version in metadata")?;
+                if db_version != "1" {
+                    return Err(format!(
+                        "Unsupported database version: '{}'. This application only supports version '1'",
+                        db_version
+                    ).into());
+                }
 
-        // Check if this is a recipient database (sync target)
-        if let Some(is_recipient) = existing_is_recipient {
-            if is_recipient == "true" {
-                return Err("Cannot record to a recipient database. This database is configured for syncing only.".into());
+                // Check if this is a recipient database (sync target)
+                if let Some(is_recipient) = existing_is_recipient {
+                    if is_recipient == "true" {
+                        return Err("Cannot record to a recipient database. This database is configured for syncing only.".into());
+                    }
+                }
+
+                // Existing database must have all required metadata
+                let db_uuid = existing_uuid.ok_or("Database is missing uuid in metadata")?;
+                let db_name = existing_name.ok_or("Database is missing name in metadata")?;
+                let db_format =
+                    existing_format.ok_or("Database is missing audio_format in metadata")?;
+                let db_interval =
+                    existing_interval.ok_or("Database is missing split_interval in metadata")?;
+                let db_bitrate =
+                    existing_bitrate.ok_or("Database is missing bitrate in metadata")?;
+
+                // Validate metadata matches config
+                if db_name != name {
+                    return Err(format!(
+                        "Config mismatch: database has name '{}' but config specifies '{}'",
+                        db_name, name
+                    )
+                    .into());
+                }
+                if db_format != audio_format_str {
+                    return Err(format!(
+                        "Config mismatch: database has audio_format '{}' but config specifies '{}'",
+                        db_format, audio_format_str
+                    )
+                    .into());
+                }
+                let db_interval_val: u64 = db_interval.parse().unwrap_or(0);
+                if db_interval_val != split_interval {
+                    return Err(format!(
+                        "Config mismatch: database has split_interval '{}' but config specifies '{}'",
+                        db_interval_val, split_interval
+                    ).into());
+                }
+                let db_bitrate_val: u32 = db_bitrate.parse().unwrap_or(0);
+                if db_bitrate_val != bitrate_kbps {
+                    return Err(format!(
+                        "Config mismatch: database has bitrate '{}' kbps but config specifies '{}' kbps",
+                        db_bitrate_val, bitrate_kbps
+                    ).into());
+                }
+
+                println!("SQLite database: {}", db_path);
+                println!("Session ID: {}", db_uuid);
+            } else {
+                // New database - insert metadata with new uuid
+                let session_uuid: String = format!("db_{}", rand::thread_rng()
+                    .sample_iter(&rand::distributions::Alphanumeric)
+                    .take(12)
+                    .map(char::from)
+                    .collect::<String>());
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('version', '1')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
+                    [&session_uuid],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
+                    [&name],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)",
+                    [audio_format_str],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)",
+                    [&split_interval.to_string()],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)",
+                    [&bitrate_kbps.to_string()],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
+                    [&output_sample_rate.to_string()],
+                )?;
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'false')",
+                    [],
+                )?;
+
+                println!("SQLite database: {}", db_path);
+                println!("Session ID: {}", session_uuid);
             }
-        }
-
-        // Existing database must have all required metadata
-        let db_uuid = existing_uuid.ok_or("Database is missing uuid in metadata")?;
-        let db_name = existing_name.ok_or("Database is missing name in metadata")?;
-        let db_format =
-            existing_format.ok_or("Database is missing audio_format in metadata")?;
-        let db_interval =
-            existing_interval.ok_or("Database is missing split_interval in metadata")?;
-        let db_bitrate =
-            existing_bitrate.ok_or("Database is missing bitrate in metadata")?;
-
-        // Validate metadata matches config
-        if db_name != name {
-            return Err(format!(
-                "Config mismatch: database has name '{}' but config specifies '{}'",
-                db_name, name
-            )
-            .into());
-        }
-        if db_format != audio_format_str {
-            return Err(format!(
-                "Config mismatch: database has audio_format '{}' but config specifies '{}'",
-                db_format, audio_format_str
-            )
-            .into());
-        }
-        let db_interval_val: u64 = db_interval.parse().unwrap_or(0);
-        if db_interval_val != split_interval {
-            return Err(format!(
-                "Config mismatch: database has split_interval '{}' but config specifies '{}'",
-                db_interval_val, split_interval
-            ).into());
-        }
-        let db_bitrate_val: u32 = db_bitrate.parse().unwrap_or(0);
-        if db_bitrate_val != bitrate_kbps {
-            return Err(format!(
-                "Config mismatch: database has bitrate '{}' kbps but config specifies '{}' kbps",
-                db_bitrate_val, bitrate_kbps
-            ).into());
-        }
-
-        println!("SQLite database: {}", db_path);
-        println!("Session ID: {}", db_uuid);
-    } else {
-        // New database - insert metadata with new uuid
-        let session_uuid: String = format!("db_{}", rand::thread_rng()
-            .sample_iter(&rand::distributions::Alphanumeric)
-            .take(12)
-            .map(char::from)
-            .collect::<String>());
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('version', '1')",
-            [],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
-            [&session_uuid],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
-            [&name],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)",
-            [audio_format_str],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)",
-            [&split_interval.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)",
-            [&bitrate_kbps.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
-            [&output_sample_rate.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'false')",
-            [],
-        )?;
-
-        println!("SQLite database: {}", db_path);
-        println!("Session ID: {}", session_uuid);
-    }
 
     sqlite_conn = Some(conn);
 
@@ -730,33 +734,63 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                                                 total_output_samples += frame_size as u64;
                                                 segment_samples += frame_size as u64;
 
-                                                segment_buffer.extend_from_slice(
-                                                    &encode_output[..info.output_size],
-                                                );
+                                                match storage_format {
+                                                    StorageFormat::File => {
+                                                        if let Some(ref mut file) = output_file {
+                                                            file.write_all(
+                                                                &encode_output[..info.output_size],
+                                                            )?;
+                                                        }
+                                                    }
+                                                    StorageFormat::Sqlite => {
+                                                        segment_buffer.extend_from_slice(
+                                                            &encode_output[..info.output_size],
+                                                        );
+                                                    }
+                                                }
 
                                                 if split_interval > 0
                                                     && segment_samples >= split_samples
                                                 {
-                                                    if let Some(ref conn) = sqlite_conn {
-                                                        let timestamp_ms = base_timestamp_ms
-                                                            + (segment_start_samples
-                                                                as i64
-                                                                * 1000
-                                                                / output_sample_rate
-                                                                    as i64);
-                                                        insert_segment(
-                                                            conn,
-                                                            timestamp_ms,
-                                                            segment_number == 0,
-                                                            &segment_buffer,
-                                                        )?;
-                                                        debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                    match storage_format {
+                                                        StorageFormat::File => {
+                                                            segment_number += 1;
+                                                            segment_samples = 0;
+                                                            let new_filename = generate_filename(
+                                                                Some(segment_number),
+                                                            );
+                                                            println!(
+                                                                "\nStarting new segment: {}",
+                                                                new_filename
+                                                            );
+                                                            files_written
+                                                                .push(new_filename.clone());
+                                                            output_file =
+                                                                Some(File::create(&new_filename)?);
+                                                        }
+                                                        StorageFormat::Sqlite => {
+                                                            if let Some(ref conn) = sqlite_conn {
+                                                                let timestamp_ms = base_timestamp_ms
+                                                                    + (segment_start_samples
+                                                                        as i64
+                                                                        * 1000
+                                                                        / output_sample_rate
+                                                                            as i64);
+                                                                insert_segment(
+                                                                    conn,
+                                                                    timestamp_ms,
+                                                                    segment_number == 0,
+                                                                    &segment_buffer,
+                                                                )?;
+                                                                debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                            }
+                                                            segment_buffer.clear();
+                                                            segment_number += 1;
+                                                            segment_start_samples =
+                                                                total_output_samples;
+                                                            segment_samples = 0;
+                                                        }
                                                     }
-                                                    segment_buffer.clear();
-                                                    segment_number += 1;
-                                                    segment_start_samples =
-                                                        total_output_samples;
-                                                    segment_samples = 0;
                                                 }
                                             }
                                             Err(e) => {
@@ -772,36 +806,78 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                                                 total_output_samples += frame_size as u64;
                                                 segment_samples += frame_size as u64;
 
-                                                segment_buffer.extend_from_slice(
-                                                    &(len as u16).to_le_bytes(),
-                                                );
-                                                segment_buffer.extend_from_slice(
-                                                    &encode_output[..len],
-                                                );
+                                                match storage_format {
+                                                    StorageFormat::File => {
+                                                        if let Some(ref mut writer) = ogg_writer {
+                                                            let is_end_of_segment = split_interval
+                                                                > 0
+                                                                && segment_samples >= split_samples;
+                                                            let end_info = if is_end_of_segment {
+                                                                ogg::writing::PacketWriteEndInfo::EndStream
+                                                            } else {
+                                                                ogg::writing::PacketWriteEndInfo::NormalPacket
+                                                            };
+                                                            writer.write_packet(
+                                                                encode_output[..len].to_vec(),
+                                                                1,
+                                                                end_info,
+                                                                total_output_samples,
+                                                            )?;
+                                                        }
+                                                    }
+                                                    StorageFormat::Sqlite => {
+                                                        segment_buffer.extend_from_slice(
+                                                            &(len as u16).to_le_bytes(),
+                                                        );
+                                                        segment_buffer.extend_from_slice(
+                                                            &encode_output[..len],
+                                                        );
+                                                    }
+                                                }
 
                                                 if split_interval > 0
                                                     && segment_samples >= split_samples
                                                 {
-                                                    if let Some(ref conn) = sqlite_conn {
-                                                        let timestamp_ms = base_timestamp_ms
-                                                            + (segment_start_samples
-                                                                as i64
-                                                                * 1000
-                                                                / output_sample_rate
-                                                                    as i64);
-                                                        insert_segment(
-                                                            conn,
-                                                            timestamp_ms,
-                                                            segment_number == 0,
-                                                            &segment_buffer,
-                                                        )?;
-                                                        debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                    match storage_format {
+                                                        StorageFormat::File => {
+                                                            segment_number += 1;
+                                                            segment_samples = 0;
+                                                            let new_filename = generate_filename(
+                                                                Some(segment_number),
+                                                            );
+                                                            println!(
+                                                                "\nStarting new segment: {}",
+                                                                new_filename
+                                                            );
+                                                            files_written
+                                                                .push(new_filename.clone());
+                                                            ogg_writer = Some(create_ogg_writer(
+                                                                &new_filename,
+                                                            )?);
+                                                        }
+                                                        StorageFormat::Sqlite => {
+                                                            if let Some(ref conn) = sqlite_conn {
+                                                                let timestamp_ms = base_timestamp_ms
+                                                                    + (segment_start_samples
+                                                                        as i64
+                                                                        * 1000
+                                                                        / output_sample_rate
+                                                                            as i64);
+                                                                insert_segment(
+                                                                    conn,
+                                                                    timestamp_ms,
+                                                                    segment_number == 0,
+                                                                    &segment_buffer,
+                                                                )?;
+                                                                debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
+                                                            }
+                                                            segment_buffer.clear();
+                                                            segment_number += 1;
+                                                            segment_start_samples =
+                                                                total_output_samples;
+                                                            segment_samples = 0;
+                                                        }
                                                     }
-                                                    segment_buffer.clear();
-                                                    segment_number += 1;
-                                                    segment_start_samples =
-                                                        total_output_samples;
-                                                    segment_samples = 0;
                                                 }
                                             }
                                             Err(e) => {
@@ -814,32 +890,63 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                                     total_output_samples += frame_size as u64;
                                     segment_samples += frame_size as u64;
 
-                                    for sample in &frame {
-                                        segment_buffer
-                                            .extend_from_slice(&sample.to_le_bytes());
+                                    match storage_format {
+                                        StorageFormat::File => {
+                                            if let Some(ref mut writer) = wav_writer {
+                                                for sample in &frame {
+                                                    writer.write_sample(*sample)?;
+                                                }
+                                            }
+                                        }
+                                        StorageFormat::Sqlite => {
+                                            for sample in &frame {
+                                                segment_buffer
+                                                    .extend_from_slice(&sample.to_le_bytes());
+                                            }
+                                        }
                                     }
 
                                     if split_interval > 0 && segment_samples >= split_samples {
-                                        if let Some(ref conn) = sqlite_conn {
-                                            let timestamp_ms = base_timestamp_ms
-                                                + (segment_start_samples as i64 * 1000
-                                                    / output_sample_rate as i64);
-                                            insert_segment(
-                                                conn,
-                                                timestamp_ms,
-                                                segment_number == 0,
-                                                &segment_buffer,
-                                            )?;
-                                            debug!(
-                                                "Inserted segment {} ({} bytes)",
-                                                segment_number,
-                                                segment_buffer.len()
-                                            );
+                                        match storage_format {
+                                            StorageFormat::File => {
+                                                if let Some(writer) = wav_writer.take() {
+                                                    writer.finalize()?;
+                                                }
+                                                segment_number += 1;
+                                                segment_samples = 0;
+                                                let new_filename =
+                                                    generate_filename(Some(segment_number));
+                                                println!(
+                                                    "\nStarting new segment: {}",
+                                                    new_filename
+                                                );
+                                                files_written.push(new_filename.clone());
+                                                wav_writer =
+                                                    Some(create_wav_writer(&new_filename)?);
+                                            }
+                                            StorageFormat::Sqlite => {
+                                                if let Some(ref conn) = sqlite_conn {
+                                                    let timestamp_ms = base_timestamp_ms
+                                                        + (segment_start_samples as i64 * 1000
+                                                            / output_sample_rate as i64);
+                                                    insert_segment(
+                                                        conn,
+                                                        timestamp_ms,
+                                                        segment_number == 0,
+                                                        &segment_buffer,
+                                                    )?;
+                                                    debug!(
+                                                        "Inserted segment {} ({} bytes)",
+                                                        segment_number,
+                                                        segment_buffer.len()
+                                                    );
+                                                }
+                                                segment_buffer.clear();
+                                                segment_number += 1;
+                                                segment_start_samples = total_output_samples;
+                                                segment_samples = 0;
+                                            }
                                         }
-                                        segment_buffer.clear();
-                                        segment_number += 1;
-                                        segment_start_samples = total_output_samples;
-                                        segment_samples = 0;
                                     }
                                 }
                             }
@@ -885,8 +992,17 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref encoder) = aac_encoder {
                     if let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {
                         total_output_samples += frame_size as u64;
-                        segment_buffer
-                            .extend_from_slice(&encode_output[..info.output_size]);
+                        match storage_format {
+                            StorageFormat::File => {
+                                if let Some(ref mut file) = output_file {
+                                    file.write_all(&encode_output[..info.output_size])?;
+                                }
+                            }
+                            StorageFormat::Sqlite => {
+                                segment_buffer
+                                    .extend_from_slice(&encode_output[..info.output_size]);
+                            }
+                        }
                     }
                 }
             }
@@ -895,31 +1011,66 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref mut encoder) = opus_encoder {
                     if let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output) {
                         total_output_samples += frame_size as u64;
-                        segment_buffer.extend_from_slice(&(len as u16).to_le_bytes());
-                        segment_buffer.extend_from_slice(&encode_output[..len]);
+                        match storage_format {
+                            StorageFormat::File => {
+                                if let Some(ref mut writer) = ogg_writer {
+                                    writer.write_packet(
+                                        encode_output[..len].to_vec(),
+                                        1,
+                                        ogg::writing::PacketWriteEndInfo::EndStream,
+                                        total_output_samples,
+                                    )?;
+                                }
+                            }
+                            StorageFormat::Sqlite => {
+                                segment_buffer.extend_from_slice(&(len as u16).to_le_bytes());
+                                segment_buffer.extend_from_slice(&encode_output[..len]);
+                            }
+                        }
                     }
                 }
             }
             AudioFormat::Wav => {
-                for sample in &mono_buffer {
-                    segment_buffer.extend_from_slice(&sample.to_le_bytes());
+                match storage_format {
+                    StorageFormat::File => {
+                        if let Some(ref mut writer) = wav_writer {
+                            for sample in &mono_buffer {
+                                writer.write_sample(*sample)?;
+                            }
+                            total_output_samples += mono_buffer.len() as u64;
+                        }
+                    }
+                    StorageFormat::Sqlite => {
+                        for sample in &mono_buffer {
+                            segment_buffer.extend_from_slice(&sample.to_le_bytes());
+                        }
+                        total_output_samples += mono_buffer.len() as u64;
+                    }
                 }
-                total_output_samples += mono_buffer.len() as u64;
             }
         }
     }
 
     // Finalize storage
-    if !segment_buffer.is_empty() {
-        if let Some(ref conn) = sqlite_conn {
-            let timestamp_ms = base_timestamp_ms
-                + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
-            insert_segment(conn, timestamp_ms, segment_number == 0, &segment_buffer)?;
-            println!(
-                "\nInserted final segment {} ({} bytes)",
-                segment_number,
-                segment_buffer.len()
-            );
+    match storage_format {
+        StorageFormat::File => {
+            if let Some(writer) = wav_writer.take() {
+                writer.finalize()?;
+            }
+        }
+        StorageFormat::Sqlite => {
+            if !segment_buffer.is_empty() {
+                if let Some(ref conn) = sqlite_conn {
+                    let timestamp_ms = base_timestamp_ms
+                        + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
+                    insert_segment(conn, timestamp_ms, segment_number == 0, &segment_buffer)?;
+                    println!(
+                        "\nInserted final segment {} ({} bytes)",
+                        segment_number,
+                        segment_buffer.len()
+                    );
+                }
+            }
         }
     }
 
@@ -937,12 +1088,34 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         total_input_samples, packets_decoded
     );
 
-    let db_path = format!("{}/{}.sqlite", output_dir, name);
-    let total_segments = segment_number + 1;
-    println!(
-        "Successfully saved {} segments to {} ({:.1} seconds of audio, {} bytes downloaded)",
-        total_segments, db_path, duration_secs, bytes_downloaded
-    );
+    match storage_format {
+        StorageFormat::File => {
+            if files_written.len() > 1 {
+                println!(
+                    "Successfully saved {} files ({:.1} seconds of audio, {} bytes downloaded):",
+                    files_written.len(),
+                    duration_secs,
+                    bytes_downloaded
+                );
+                for file in &files_written {
+                    println!("  - {}", file);
+                }
+            } else {
+                println!(
+                    "Successfully saved {} ({:.1} seconds of audio, {} bytes downloaded)",
+                    output_filename, duration_secs, bytes_downloaded
+                );
+            }
+        }
+        StorageFormat::Sqlite => {
+            let db_path = format!("{}/{}.sqlite", output_dir, name);
+            let total_segments = segment_number + 1;
+            println!(
+                "Successfully saved {} segments to {} ({:.1} seconds of audio, {} bytes downloaded)",
+                total_segments, db_path, duration_secs, bytes_downloaded
+            );
+        }
+    }
 
         // Check if target was reached
         if total_output_samples >= target_samples {
@@ -979,10 +1152,12 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
 
         println!("\nRecording window complete. Next window starts at {} UTC.", config.schedule.record_start);
 
-        // Run cleanup of old segments
-        if let Some(ref conn) = sqlite_conn {
-            if let Err(e) = cleanup_old_segments(conn) {
-                eprintln!("Warning: Failed to clean up old segments: {}", e);
+        // Run cleanup of old segments for SQLite storage
+        if storage_format == StorageFormat::Sqlite {
+            if let Some(ref conn) = sqlite_conn {
+                if let Err(e) = cleanup_old_segments(conn) {
+                    eprintln!("Warning: Failed to clean up old segments: {}", e);
+                }
             }
         }
 
