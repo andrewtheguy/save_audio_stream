@@ -70,9 +70,14 @@ save_audio_stream record -c <CONFIG_FILE> [-p <PORT>]
 
 ### Config File Format
 
-The config file uses TOML format with global settings and an array of recording sessions:
+The config file uses TOML format. All config files must specify a `config_type` to indicate whether they're for recording or syncing.
+
+#### Recording Config
 
 ```toml
+# Required
+config_type = 'record'
+
 # Global settings (optional)
 output_dir = 'recordings'  # default: 'tmp' (applies to all sessions)
 
@@ -99,13 +104,34 @@ record_end = '20:00'
 api_port = 3001            # Different port for second session
 ```
 
+#### Sync Config
+
+```toml
+# Required
+config_type = 'sync'
+remote_url = 'http://remote:3000'  # URL of remote recording server
+local_dir = './synced'              # Local directory for synced databases
+shows = ['show1', 'show2']          # Show names to sync
+
+# Optional
+chunk_size = 100  # default: 100 (batch size for fetching segments)
+```
+
 ### Config Options
+
+#### Recording Config Options
+
+**Required:**
+
+| Option | Description |
+|--------|-------------|
+| `config_type` | Must be `'record'` for recording configurations |
 
 **Global Options:**
 
-| Option | Description | Default | Required |
-|--------|-------------|---------|----------|
-| `output_dir` | Base output directory for all sessions | tmp | No |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `output_dir` | Base output directory for all sessions | tmp |
 
 **Session Options:**
 
@@ -122,6 +148,23 @@ api_port = 3001            # Different port for second session
 | `api_port` | API server port for sync endpoints | - | No |
 
 **Note:** The `api_port` option starts an HTTP API server alongside recording for synchronization endpoints. Useful for remote access to recorded audio while recording is in progress.
+
+#### Sync Config Options
+
+**Required:**
+
+| Option | Description |
+|--------|-------------|
+| `config_type` | Must be `'sync'` for sync configurations |
+| `remote_url` | URL of remote recording server (e.g., http://remote:3000) |
+| `local_dir` | Local directory for synced databases |
+| `shows` | Array of show names to sync |
+
+**Optional:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `chunk_size` | Batch size for fetching segments | 100 |
 
 ### Examples
 
@@ -144,7 +187,7 @@ save_audio_stream serve <database.sqlite> [-p PORT]
 
 **Sync from remote server:**
 ```bash
-save_audio_stream -c config/am1430.toml -d 3600
+save_audio_stream sync -c config/sync.toml
 ```
 
 ## Output
@@ -242,12 +285,19 @@ The application supports one-way synchronization from a remote recording server 
 
 ### Quick Start
 
-```bash
-# Sync a single show from remote server
-save_audio_stream sync -r http://remote:3000 -l ./synced -n myradio
+Create a sync config file (e.g., `config/sync.toml`):
 
-# Sync multiple shows
-save_audio_stream sync -r http://remote:3000 -l ./synced -n show1 -n show2
+```toml
+config_type = 'sync'
+remote_url = 'http://remote:3000'
+local_dir = './synced'
+shows = ['myradio']  # or ['show1', 'show2'] for multiple shows
+```
+
+Run the sync command:
+
+```bash
+save_audio_stream sync -c config/sync.toml
 ```
 
 **Key Features:**

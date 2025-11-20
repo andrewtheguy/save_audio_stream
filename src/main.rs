@@ -9,7 +9,7 @@ mod webm;
 
 use chrono::Timelike;
 use clap::{Parser, Subcommand};
-use config::MultiSessionConfig;
+use config::{ConfigType, MultiSessionConfig, SyncConfig};
 use schedule::{parse_time, seconds_until_start, time_to_minutes};
 use std::path::PathBuf;
 use std::thread;
@@ -49,21 +49,9 @@ enum Command {
     },
     /// Sync show(s) from remote recording server to local database
     Sync {
-        /// URL of remote recording server (e.g., http://remote:3000)
+        /// Path to sync config file (TOML format)
         #[arg(short, long)]
-        remote_url: String,
-
-        /// Local base directory for synced databases
-        #[arg(short, long)]
-        local_dir: PathBuf,
-
-        /// Show names to sync (can specify multiple)
-        #[arg(short = 'n', long = "show", num_args = 1..)]
-        shows: Vec<String>,
-
-        /// Chunk size for batch fetching (default: 100)
-        #[arg(short = 's', long, default_value = "100")]
-        chunk_size: u64,
+        config: PathBuf,
     },
 }
 
@@ -75,12 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
         Command::Record { config, port } => record_multi_session(config, port),
         Command::Serve { sqlite_file, port } => serve::serve(sqlite_file, port),
-        Command::Sync {
-            remote_url,
-            local_dir,
-            shows,
-            chunk_size,
-        } => sync::sync_shows(remote_url, local_dir, shows, chunk_size),
+        Command::Sync { config } => sync_from_config(config),
     }
 }
 
@@ -100,6 +83,16 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
             e
         )
     })?;
+
+    // Validate config type
+    if multi_config.config_type != ConfigType::Record {
+        return Err(format!(
+            "Config file '{}' has config_type = {:?}, but 'record' command requires config_type = 'record'",
+            config_path.display(),
+            multi_config.config_type
+        )
+        .into());
+    }
 
     if multi_config.sessions.is_empty() {
         return Err("No sessions defined in config file".into());
@@ -169,4 +162,43 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
     }
 
     Ok(())
+}
+
+fn sync_from_config(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    // Load sync config file
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
+        format!(
+            "Failed to read config file '{}': {}",
+            config_path.display(),
+            e
+        )
+    })?;
+    let sync_config: SyncConfig = toml::from_str(&config_content).map_err(|e| {
+        format!(
+            "Failed to parse config file '{}': {}",
+            config_path.display(),
+            e
+        )
+    })?;
+
+    // Validate config type
+    if sync_config.config_type != ConfigType::Sync {
+        return Err(format!(
+            "Config file '{}' has config_type = {:?}, but 'sync' command requires config_type = 'sync'",
+            config_path.display(),
+            sync_config.config_type
+        )
+        .into());
+    }
+
+    // Call sync function with config values
+    let local_dir = PathBuf::from(&sync_config.local_dir);
+    let chunk_size = sync_config.chunk_size.unwrap_or(100);
+
+    sync::sync_shows(
+        sync_config.remote_url,
+        local_dir,
+        sync_config.shows,
+        chunk_size,
+    )
 }

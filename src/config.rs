@@ -1,6 +1,15 @@
 use clap::ValueEnum;
 use serde::Deserialize;
 
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigType {
+    /// Recording configuration
+    Record,
+    /// Syncing configuration
+    Sync,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AudioFormat {
@@ -30,13 +39,30 @@ pub struct Schedule {
     pub record_end: String,
 }
 
-/// Multi-session configuration file structure
+/// Multi-session recording configuration file structure
 #[derive(Debug, Deserialize)]
 pub struct MultiSessionConfig {
+    /// Configuration type (must be "record")
+    pub config_type: ConfigType,
     /// Array of recording sessions
     pub sessions: Vec<SessionConfig>,
     /// Global output directory for all sessions (default: tmp)
     pub output_dir: Option<String>,
+}
+
+/// Sync configuration file structure
+#[derive(Debug, Deserialize)]
+pub struct SyncConfig {
+    /// Configuration type (must be "sync")
+    pub config_type: ConfigType,
+    /// URL of remote recording server (e.g., http://remote:3000)
+    pub remote_url: String,
+    /// Local base directory for synced databases
+    pub local_dir: String,
+    /// Show names to sync
+    pub shows: Vec<String>,
+    /// Chunk size for batch fetching (default: 100)
+    pub chunk_size: Option<u64>,
 }
 
 /// Single session configuration
