@@ -9,12 +9,6 @@ use std::path::PathBuf;
 #[derive(Debug, Deserialize)]
 struct ShowInfo {
     name: String,
-    #[allow(dead_code)]
-    database_file: String,
-    #[allow(dead_code)]
-    min_id: i64,
-    #[allow(dead_code)]
-    max_id: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,8 +25,6 @@ struct ShowMetadata {
     bitrate: String,
     sample_rate: String,
     version: String,
-    #[allow(dead_code)]
-    is_recipient: bool,
     min_id: i64,
     max_id: i64,
 }
