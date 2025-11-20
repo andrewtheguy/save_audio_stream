@@ -1,4 +1,4 @@
-type = 'record'  # Indicates this is a recording configuration
+config_type = 'record'  # Indicates this is a recording configuration
 output_dir = './tmp/recorded'  # Directory to save the output files
 api_port = 17000   # Port for the optional API server
 
