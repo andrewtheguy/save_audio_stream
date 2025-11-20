@@ -12,6 +12,12 @@ use axum::{
     http::Uri,
     response::Response,
 };
+
+#[cfg(debug_assertions)]
+use axum::{
+    http::Uri,
+    response::Response,
+};
 use ogg::writing::PacketWriter;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -24,7 +30,6 @@ use std::time::Instant;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::ServeDir;
 use uuid::Uuid;
 
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
@@ -130,15 +135,10 @@ pub fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::
             .route("/api/segments/range", get(segments_range_handler));
 
         #[cfg(debug_assertions)]
-        let app = {
-            let serve_dir = ServeDir::new("app/dist").not_found_service(
-                ServeDir::new("app/dist").append_index_html_on_directories(true)
-            );
-            api_routes
-                .fallback_service(serve_dir)
-                .layer(cors)
-                .with_state(app_state)
-        };
+        let app = api_routes
+            .fallback(vite_proxy_handler)
+            .layer(cors)
+            .with_state(app_state);
 
         #[cfg(not(debug_assertions))]
         let app = api_routes
@@ -893,6 +893,48 @@ async fn segments_range_handler(
             "No segments found in database",
         )
             .into_response(),
+    }
+}
+
+#[cfg(debug_assertions)]
+async fn vite_proxy_handler(uri: Uri) -> Response {
+    const VITE_DEV_SERVER: &str = "http://localhost:5173";
+
+    let path_and_query = uri.path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    let vite_url = format!("{}{}", VITE_DEV_SERVER, path_and_query);
+
+    match reqwest::get(&vite_url).await {
+        Ok(resp) => {
+            let status = resp.status();
+            let headers = resp.headers().clone();
+
+            match resp.bytes().await {
+                Ok(body) => {
+                    let mut response = Response::new(Body::from(body));
+                    *response.status_mut() = status;
+
+                    for (name, value) in headers.iter() {
+                        if name != "transfer-encoding" {
+                            response.headers_mut().insert(name, value.clone());
+                        }
+                    }
+
+                    response
+                }
+                Err(_) => {
+                    (StatusCode::BAD_GATEWAY, "Failed to read response from Vite").into_response()
+                }
+            }
+        }
+        Err(_) => {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to connect to Vite dev server at {}. Make sure to run 'npm run dev' in the app/ directory.", VITE_DEV_SERVER)
+            ).into_response()
+        }
     }
 }
 

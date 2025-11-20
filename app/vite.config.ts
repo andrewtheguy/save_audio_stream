@@ -8,7 +8,4 @@ export default defineConfig({
       input: ["index.html"],
     },
   },
-  server: {
-    hmr: false,
-  },
 });
