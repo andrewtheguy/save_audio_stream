@@ -7,3 +7,5 @@
 *.aac
 *.ogg
 tmp/
+app/node_modules/
+app/dist/

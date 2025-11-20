@@ -6,9 +6,15 @@ use axum::{
     routing::get,
     Router,
 };
+
+#[cfg(not(debug_assertions))]
+use axum::{
+    http::Uri,
+    response::Response,
+};
 use ogg::writing::PacketWriter;
 use rusqlite::Connection;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -18,10 +24,16 @@ use std::time::Instant;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use uuid::Uuid;
 
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
 use crate::webm::{write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string, write_ebml_uint};
+
+#[cfg(not(debug_assertions))]
+#[derive(rust_embed::RustEmbed)]
+#[folder = "app/dist/"]
+struct Asset;
 
 // State for axum handlers
 struct AudioSession {
@@ -109,12 +121,28 @@ pub fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::
             .allow_methods(Any)
             .allow_headers(Any);
 
-        let app = Router::new()
+        let api_routes = Router::new()
             .route("/audio", get(audio_handler))
-            .route("/audio/session/:id", get(session_handler))
+            .route("/audio/session/{id}", get(session_handler))
             .route("/manifest.mpd", get(mpd_handler))
             .route("/init.webm", get(init_handler))
-            .route("/segment/:id", get(segment_handler))
+            .route("/segment/{id}", get(segment_handler))
+            .route("/api/segments/range", get(segments_range_handler));
+
+        #[cfg(debug_assertions)]
+        let app = {
+            let serve_dir = ServeDir::new("app/dist").not_found_service(
+                ServeDir::new("app/dist").append_index_html_on_directories(true)
+            );
+            api_routes
+                .fallback_service(serve_dir)
+                .layer(cors)
+                .with_state(app_state)
+        };
+
+        #[cfg(not(debug_assertions))]
+        let app = api_routes
+            .fallback(static_file_handler)
             .layer(cors)
             .with_state(app_state);
 
@@ -822,4 +850,77 @@ async fn segment_handler(
     webm.extend_from_slice(&cluster_content);
 
     (StatusCode::OK, [("content-type", "video/webm")], webm).into_response()
+}
+
+#[derive(Serialize)]
+struct SegmentRange {
+    start_id: i64,
+    end_id: i64,
+}
+
+async fn segments_range_handler(
+    State(state): State<StdArc<AppState>>,
+) -> impl IntoResponse {
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let min_id: Result<i64, _> = conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0));
+    let max_id: Result<i64, _> = conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0));
+
+    match (min_id, max_id) {
+        (Ok(min), Ok(max)) => {
+            let range = SegmentRange {
+                start_id: min,
+                end_id: max,
+            };
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&range).unwrap(),
+            )
+                .into_response()
+        }
+        _ => (
+            StatusCode::NOT_FOUND,
+            "No segments found in database",
+        )
+            .into_response(),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+async fn static_file_handler(uri: Uri) -> Response {
+    let path = uri.path();
+
+    let file_path = if path == "/" {
+        "index.html"
+    } else {
+        path.trim_start_matches('/')
+    };
+
+    match Asset::get(file_path) {
+        Some(content) => {
+            let mime_type = mime_guess::from_path(file_path)
+                .first_or_octet_stream()
+                .to_string();
+
+            let mut response = Response::new(Body::from(content.data.into_owned()));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(&mime_type).unwrap(),
+            );
+            response
+        }
+        None => {
+            (StatusCode::NOT_FOUND, "Not found").into_response()
+        }
+    }
 }
