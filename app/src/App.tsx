@@ -1,31 +1,57 @@
 import { useEffect, useState } from "react";
 
-interface SegmentRange {
+interface SessionInfo {
   start_id: number;
   end_id: number;
+  timestamp_ms: number;
+  duration_seconds: number;
+}
+
+interface SessionsResponse {
+  name: string;
+  sessions: SessionInfo[];
+}
+
+function formatDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${secs}s`;
+  } else if (minutes > 0) {
+    return `${minutes}m ${secs}s`;
+  } else {
+    return `${secs}s`;
+  }
+}
+
+function formatTimestamp(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  return date.toISOString().replace("T", " ").substring(0, 19) + " UTC";
 }
 
 function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [segmentRange, setSegmentRange] = useState<SegmentRange | null>(null);
+  const [data, setData] = useState<SessionsResponse | null>(null);
 
   useEffect(() => {
-    fetch("/api/segments/range")
+    fetch("/api/sessions")
       .then((response) => {
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
         return response.json();
       })
-      .then((data: SegmentRange) => {
-        setSegmentRange(data);
+      .then((data: SessionsResponse) => {
+        setData(data);
         setLoading(false);
       })
       .catch((err) => {
-        console.error("Failed to load segment info:", err);
+        console.error("Failed to load sessions:", err);
         setError(
-          `Error loading segment information: ${err instanceof Error ? err.message : String(err)}`
+          `Error loading sessions: ${err instanceof Error ? err.message : String(err)}`
         );
         setLoading(false);
       });
@@ -35,7 +61,7 @@ function App() {
     return (
       <div id="app">
         <h1>Audio Stream Server</h1>
-        <div id="loading">Loading segment information...</div>
+        <div className="loading">Loading recording sessions...</div>
       </div>
     );
   }
@@ -44,43 +70,60 @@ function App() {
     return (
       <div id="app">
         <h1>Audio Stream Server</h1>
-        <div id="error" style={{ color: "red" }}>
-          {error}
-        </div>
+        <div className="error">{error}</div>
       </div>
     );
   }
 
-  if (!segmentRange) {
+  if (!data) {
     return null;
   }
 
-  const audioUrl = `/audio?start_id=${segmentRange.start_id}&end_id=${segmentRange.end_id}`;
-  const mpdUrl = `/manifest.mpd?start_id=${segmentRange.start_id}&end_id=${segmentRange.end_id}`;
-
   return (
     <div id="app">
-      <h1>Audio Stream Server</h1>
-      <div id="content">
-        <div className="url-section">
-          <h2>Available URLs</h2>
-          <div className="url-item">
-            <h3>Audio URL (Ogg/Opus)</h3>
-            <code>{audioUrl}</code>
+      <h1>Audio Stream Server - {data.name}</h1>
+
+      <div className="sessions-container">
+        <h2>Recording Sessions</h2>
+        {data.sessions.length === 0 ? (
+          <p>No recording sessions found.</p>
+        ) : (
+          <div className="sessions-list">
+            {data.sessions.map((session, index) => (
+              <div key={index} className="session-card">
+                <div className="session-header">
+                  <span className="session-time">
+                    {formatTimestamp(session.timestamp_ms)}
+                  </span>
+                  <span className="session-duration">
+                    Duration: {formatDuration(session.duration_seconds)}
+                  </span>
+                </div>
+                <div className="session-urls">
+                  <div className="url-row">
+                    <span className="url-label">Audio:</span>
+                    <a
+                      href={`/audio?start_id=${session.start_id}&end_id=${session.end_id}`}
+                      className="url-link"
+                    >
+                      /audio?start_id={session.start_id}&end_id={session.end_id}
+                    </a>
+                  </div>
+                  <div className="url-row">
+                    <span className="url-label">DASH:</span>
+                    <a
+                      href={`/manifest.mpd?start_id=${session.start_id}&end_id=${session.end_id}`}
+                      className="url-link"
+                    >
+                      /manifest.mpd?start_id={session.start_id}&end_id=
+                      {session.end_id}
+                    </a>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="url-item">
-            <h3>MPD URL (DASH Manifest)</h3>
-            <code>{mpdUrl}</code>
-          </div>
-        </div>
-        <div className="info-section">
-          <p>
-            Segment Range:{" "}
-            <span>
-              {segmentRange.start_id} - {segmentRange.end_id}
-            </span>
-          </p>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -132,17 +132,25 @@ pub fn serve(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::
             .route("/manifest.mpd", get(mpd_handler))
             .route("/init.webm", get(init_handler))
             .route("/segment/{id}", get(segment_handler))
-            .route("/api/segments/range", get(segments_range_handler));
+            .route("/api/segments/range", get(segments_range_handler))
+            .route("/api/sessions", get(sessions_handler));
 
         #[cfg(debug_assertions)]
         let app = api_routes
-            .fallback(vite_proxy_handler)
+            .route("/", get(index_handler))
+            .route("/assets/{*path}", get(vite_assets_handler))
+            .route("/src/{*path}", get(vite_src_handler))
+            .route("/@vite/client", get(vite_client_handler))
+            .route("/@react-refresh", get(vite_react_refresh_handler))
+            .route("/@id/{*path}", get(vite_id_handler))
+            .route("/node_modules/{*path}", get(vite_node_modules_handler))
             .layer(cors)
             .with_state(app_state);
 
         #[cfg(not(debug_assertions))]
         let app = api_routes
-            .fallback(static_file_handler)
+            .route("/", get(index_handler_release))
+            .route("/assets/{*path}", get(assets_handler_release))
             .layer(cors)
             .with_state(app_state);
 
@@ -858,6 +866,20 @@ struct SegmentRange {
     end_id: i64,
 }
 
+#[derive(Serialize)]
+struct SessionInfo {
+    start_id: i64,
+    end_id: i64,
+    timestamp_ms: i64,
+    duration_seconds: f64,
+}
+
+#[derive(Serialize)]
+struct SessionsResponse {
+    name: String,
+    sessions: Vec<SessionInfo>,
+}
+
 async fn segments_range_handler(
     State(state): State<StdArc<AppState>>,
 ) -> impl IntoResponse {
@@ -896,15 +918,124 @@ async fn segments_range_handler(
     }
 }
 
+async fn sessions_handler(
+    State(state): State<StdArc<AppState>>,
+) -> impl IntoResponse {
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    // Get show name from metadata
+    let name: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'name'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(n) => n,
+        Err(_) => "Unknown".to_string(),
+    };
+
+    // Get split interval
+    let split_interval: f64 = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'split_interval'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(10.0))
+            },
+        )
+        .unwrap_or(10.0);
+
+    // Get all boundary segments (is_timestamp_from_source = 1)
+    let mut stmt = match conn.prepare(
+        "SELECT id, timestamp_ms FROM segments WHERE is_timestamp_from_source = 1 ORDER BY id"
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let boundaries: Vec<(i64, i64)> = match stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+    {
+        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    if boundaries.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            "No recording sessions found",
+        )
+            .into_response();
+    }
+
+    // Get max segment ID to handle the last session
+    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to get max segment ID",
+            )
+                .into_response()
+        }
+    };
+
+    // Build sessions by grouping segments between boundaries
+    let mut sessions = Vec::new();
+    for i in 0..boundaries.len() {
+        let (start_id, timestamp_ms) = boundaries[i];
+        let end_id = if i + 1 < boundaries.len() {
+            boundaries[i + 1].0 - 1
+        } else {
+            max_id
+        };
+
+        let segment_count = (end_id - start_id + 1) as f64;
+        let duration_seconds = segment_count * split_interval;
+
+        sessions.push(SessionInfo {
+            start_id,
+            end_id,
+            timestamp_ms,
+            duration_seconds,
+        });
+    }
+
+    let response = SessionsResponse { name, sessions };
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&response).unwrap(),
+    )
+        .into_response()
+}
+
 #[cfg(debug_assertions)]
-async fn vite_proxy_handler(uri: Uri) -> Response {
+async fn proxy_to_vite(path: &str) -> Response {
     const VITE_DEV_SERVER: &str = "http://localhost:21173";
-
-    let path_and_query = uri.path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
-
-    let vite_url = format!("{}{}", VITE_DEV_SERVER, path_and_query);
+    let vite_url = format!("{}{}", VITE_DEV_SERVER, path);
 
     match reqwest::get(&vite_url).await {
         Ok(resp) => {
@@ -948,19 +1079,65 @@ async fn vite_proxy_handler(uri: Uri) -> Response {
     }
 }
 
+#[cfg(debug_assertions)]
+async fn index_handler() -> Response {
+    proxy_to_vite("/").await
+}
+
+#[cfg(debug_assertions)]
+async fn vite_assets_handler(Path(path): Path<String>) -> Response {
+    proxy_to_vite(&format!("/assets/{}", path)).await
+}
+
+#[cfg(debug_assertions)]
+async fn vite_src_handler(Path(path): Path<String>) -> Response {
+    proxy_to_vite(&format!("/src/{}", path)).await
+}
+
+#[cfg(debug_assertions)]
+async fn vite_client_handler() -> Response {
+    proxy_to_vite("/@vite/client").await
+}
+
+#[cfg(debug_assertions)]
+async fn vite_react_refresh_handler() -> Response {
+    proxy_to_vite("/@react-refresh").await
+}
+
+#[cfg(debug_assertions)]
+async fn vite_id_handler(Path(path): Path<String>) -> Response {
+    proxy_to_vite(&format!("/@id/{}", path)).await
+}
+
+#[cfg(debug_assertions)]
+async fn vite_node_modules_handler(Path(path): Path<String>) -> Response {
+    proxy_to_vite(&format!("/node_modules/{}", path)).await
+}
+
 #[cfg(not(debug_assertions))]
-async fn static_file_handler(uri: Uri) -> Response {
-    let path = uri.path();
-
-    let file_path = if path == "/" {
-        "index.html"
-    } else {
-        path.trim_start_matches('/')
-    };
-
-    match Asset::get(file_path) {
+async fn index_handler_release() -> Response {
+    match Asset::get("index.html") {
         Some(content) => {
-            let mime_type = mime_guess::from_path(file_path)
+            let mut response = Response::new(Body::from(content.data.into_owned()));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html"),
+            );
+            response
+        }
+        None => {
+            (StatusCode::NOT_FOUND, "index.html not found").into_response()
+        }
+    }
+}
+
+#[cfg(not(debug_assertions))]
+async fn assets_handler_release(Path(path): Path<String>) -> Response {
+    let file_path = format!("assets/{}", path);
+
+    match Asset::get(&file_path) {
+        Some(content) => {
+            let mime_type = mime_guess::from_path(&file_path)
                 .first_or_octet_stream()
                 .to_string();
 
@@ -972,7 +1149,7 @@ async fn static_file_handler(uri: Uri) -> Response {
             response
         }
         None => {
-            (StatusCode::NOT_FOUND, "Not found").into_response()
+            (StatusCode::NOT_FOUND, "Asset not found").into_response()
         }
     }
 }
