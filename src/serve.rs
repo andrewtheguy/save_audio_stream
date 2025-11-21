@@ -31,8 +31,11 @@ use crate::constants::EXPECTED_DB_VERSION;
 use crate::webm::{write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string, write_ebml_uint};
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
-#[derive(rust_embed::RustEmbed)]
+#[derive(rust_embed::Embed)]
 #[folder = "app/dist/"]
+#[include = "index.html"]
+#[include = "assets/style.css"]
+#[include = "assets/main.js"]
 struct Asset;
 
 // State for axum handlers
