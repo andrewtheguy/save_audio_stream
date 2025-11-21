@@ -189,6 +189,8 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
     } else if audio_format == "aac" {
         println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
         println!("  GET /aac-segment/:id.aac  - AAC audio segment");
+    } else {
+        return Err("Unsupported audio format in database".into());
     }
     println!("  GET /api/sync/shows  - List available shows for syncing");
 
