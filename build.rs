@@ -16,9 +16,7 @@ fn main() {
             .output();
 
         if deno_check.is_err() {
-            println!("cargo:warning=deno not found. Skipping frontend build.");
-            println!("cargo:warning=Install Deno to build frontend assets: https://deno.land");
-            return;
+            panic!("deno not found. Install Deno to build frontend assets: https://deno.land");
         }
 
         // Run deno task build
