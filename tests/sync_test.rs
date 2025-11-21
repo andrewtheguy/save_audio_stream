@@ -786,3 +786,350 @@ async fn test_sync_rejects_old_version_on_resume() {
         err_msg
     );
 }
+
+#[tokio::test]
+async fn test_sync_rejects_local_old_version() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create destination database with old version (simulating old local sync target)
+    let dest_db_path = temp_dir.path().join("test_show.sqlite");
+    let conn = Connection::open(&dest_db_path).unwrap();
+
+    conn.execute(
+        "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_ms INTEGER NOT NULL,
+            is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
+            audio_data BLOB NOT NULL,
+            segment_id INTEGER NOT NULL
+        )",
+        [],
+    )
+    .unwrap();
+
+    // Old version database
+    conn.execute("INSERT INTO metadata (key, value) VALUES ('version', '2')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('unique_id', 'local_123')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('source_unique_id', 'source_999')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO metadata (key, value) VALUES ('name', 'test_show')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('audio_format', 'opus')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('split_interval', '300')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO metadata (key, value) VALUES ('bitrate', '16')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('sample_rate', '48000')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'true')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('last_synced_id', '0')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Create current version source database
+    let source_db = create_source_database("test_show", "source_999", 2, 5);
+
+    let mut databases = HashMap::new();
+    databases.insert("test_show".to_string(), source_db);
+    let (server_url, _handle) = start_test_server(databases).await;
+
+    // Try to resume sync with old local database - should fail
+    let local_dir = temp_dir.path().to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    assert!(result.is_err());
+    let err_msg = result.err().unwrap();
+    assert!(
+        err_msg.contains("Local database has unsupported") || err_msg.contains("version '2'"),
+        "Expected local version error but got: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn test_sync_rejects_split_interval_mismatch() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create source database
+    let source_db = create_source_database("test_show", "source_split", 2, 5);
+
+    let mut databases = HashMap::new();
+    databases.insert("test_show".to_string(), source_db);
+    let (server_url, _handle) = start_test_server(databases).await;
+
+    // Initial sync
+    let local_dir = temp_dir.path().to_path_buf();
+    let server_url_clone = server_url.clone();
+    let local_dir_clone = local_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url_clone, local_dir_clone, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+    assert!(result.is_ok());
+
+    // Tamper with split_interval
+    let dest_db_path = temp_dir.path().join("test_show.sqlite");
+    let conn = Connection::open(&dest_db_path).unwrap();
+    conn.execute(
+        "UPDATE metadata SET value = '600' WHERE key = 'split_interval'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Try to sync again - should fail
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    assert!(result.is_err());
+    let err_msg = result.err().unwrap();
+    assert!(
+        err_msg.contains("Split interval mismatch"),
+        "Expected split_interval mismatch error but got: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn test_sync_rejects_bitrate_mismatch() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create source database
+    let source_db = create_source_database("test_show", "source_bitrate", 2, 5);
+
+    let mut databases = HashMap::new();
+    databases.insert("test_show".to_string(), source_db);
+    let (server_url, _handle) = start_test_server(databases).await;
+
+    // Initial sync
+    let local_dir = temp_dir.path().to_path_buf();
+    let server_url_clone = server_url.clone();
+    let local_dir_clone = local_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url_clone, local_dir_clone, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+    assert!(result.is_ok());
+
+    // Tamper with bitrate
+    let dest_db_path = temp_dir.path().join("test_show.sqlite");
+    let conn = Connection::open(&dest_db_path).unwrap();
+    conn.execute(
+        "UPDATE metadata SET value = '32' WHERE key = 'bitrate'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Try to sync again - should fail
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    assert!(result.is_err());
+    let err_msg = result.err().unwrap();
+    assert!(
+        err_msg.contains("Bitrate mismatch"),
+        "Expected bitrate mismatch error but got: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn test_sync_rejects_source_unique_id_mismatch() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create source database
+    let source_db = create_source_database("test_show", "source_correct", 2, 5);
+
+    let mut databases = HashMap::new();
+    databases.insert("test_show".to_string(), source_db);
+    let (server_url, _handle) = start_test_server(databases).await;
+
+    // Initial sync
+    let local_dir = temp_dir.path().to_path_buf();
+    let server_url_clone = server_url.clone();
+    let local_dir_clone = local_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url_clone, local_dir_clone, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+    assert!(result.is_ok());
+
+    // Tamper with source_unique_id (simulating pointing to different source)
+    let dest_db_path = temp_dir.path().join("test_show.sqlite");
+    let conn = Connection::open(&dest_db_path).unwrap();
+    conn.execute(
+        "UPDATE metadata SET value = 'different_source' WHERE key = 'source_unique_id'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Try to sync again - should fail
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    assert!(result.is_err());
+    let err_msg = result.err().unwrap();
+    assert!(
+        err_msg.contains("Source mismatch"),
+        "Expected source mismatch error but got: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn test_sync_rejects_recipient_database() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create source database marked as recipient (sync target)
+    let mut conn = Connection::open_in_memory().unwrap();
+
+    // Create schema
+    conn.execute(
+        "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE segments (
+            id INTEGER PRIMARY KEY,
+            start_timestamp_ms INTEGER NOT NULL
+        )",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_ms INTEGER NOT NULL,
+            is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
+            audio_data BLOB NOT NULL,
+            segment_id INTEGER NOT NULL REFERENCES segments(id)
+        )",
+        [],
+    )
+    .unwrap();
+
+    // Insert metadata with is_recipient=true
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
+        [EXPECTED_DB_VERSION],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('unique_id', 'recipient_db')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('name', 'test_show')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('audio_format', 'opus')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('split_interval', '300')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('bitrate', '16')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('sample_rate', '48000')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'true')",
+        [],
+    )
+    .unwrap();
+
+    // Insert test segment and chunk
+    let segment_id = 1700000000000i64 * 1000;
+    conn.execute(
+        "INSERT INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
+        rusqlite::params![segment_id, 1700000000000i64],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id)
+         VALUES (1700000000000, 1, 'test', ?1)",
+        [segment_id],
+    )
+    .unwrap();
+
+    let mut databases = HashMap::new();
+    databases.insert("test_show".to_string(), conn);
+    let (server_url, _handle) = start_test_server(databases).await;
+
+    // Try to sync - should fail with forbidden error
+    let local_dir = temp_dir.path().to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    assert!(result.is_err());
+    let err_msg = result.err().unwrap();
+    assert!(
+        err_msg.contains("recipient") || err_msg.contains("403") || err_msg.contains("Forbidden"),
+        "Expected recipient database error but got: {}",
+        err_msg
+    );
+}
