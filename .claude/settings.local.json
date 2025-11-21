@@ -10,7 +10,8 @@
       "Bash(find:*)",
       "mcp__context7__resolve-library-id",
       "Bash(npm install:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(deno task:*)"
     ],
     "deny": [],
     "ask": []
