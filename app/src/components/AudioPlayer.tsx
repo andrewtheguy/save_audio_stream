@@ -47,7 +47,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioP
   const [volume, setVolume] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showAbsoluteTime, setShowAbsoluteTime] = useState(false);
+  const [showAbsoluteTime, setShowAbsoluteTime] = useState(true);
 
   const streamUrl =
     format === "aac"

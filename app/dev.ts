@@ -102,24 +102,51 @@ Deno.serve({
 });
 
 // Watch for file changes
-const watcher = Deno.watchFs(["./src", "./deps.ts"]);
+const watcher = Deno.watchFs(["./src", "./deps.ts"], { recursive: true });
 
 let isBuilding = false;
+let lastEventTime = 0;
+let lastBuildTime = 0;
+const DEBOUNCE_MS = 300;
 
-console.log("Watching for changes in ./src and ./deps.ts");
+console.log("Watching for changes in ./src and ./deps.ts (recursive)");
 
 for await (const event of watcher) {
-  if (event.kind === "modify" || event.kind === "create") {
-    // Debounce: skip if already building
+  // Watch for any changes to source files
+  if (event.kind === "modify" || event.kind === "create" || event.kind === "remove") {
+    // Only rebuild for relevant files
+    const relevantFiles = event.paths.filter(
+      (path) => path.endsWith(".ts") || path.endsWith(".tsx") || path.endsWith(".css")
+    );
+
+    if (relevantFiles.length === 0) {
+      continue;
+    }
+
+    const now = Date.now();
+
+    // Skip if we're already building
     if (isBuilding) {
       continue;
     }
 
-    console.log(`\nFile changed: ${event.paths.join(", ")}`);
+    // Debounce: skip if we saw an event very recently or if we built very recently
+    const timeSinceLastEvent = now - lastEventTime;
+    const timeSinceLastBuild = now - lastBuildTime;
+
+    lastEventTime = now;
+
+    if (timeSinceLastEvent < DEBOUNCE_MS || timeSinceLastBuild < DEBOUNCE_MS) {
+      continue;
+    }
+
+    console.log(`\nFile changed: ${relevantFiles.join(", ")}`);
 
     isBuilding = true;
+
     try {
       await build();
+      lastBuildTime = Date.now();
     } catch (error) {
       console.error("Build error:", error);
     } finally {
