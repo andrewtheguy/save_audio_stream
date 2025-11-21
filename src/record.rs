@@ -24,6 +24,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use crate::audio::resample;
 use crate::config::{AudioFormat, SessionConfig};
+use crate::constants::EXPECTED_DB_VERSION;
 use crate::schedule::{
     is_in_active_window, parse_time, seconds_until_end, seconds_until_start, time_to_minutes,
 };
@@ -242,10 +243,10 @@ fn run_connection_loop(
     if is_existing_db {
         // Validate version first
         let db_version = existing_version.ok_or("Database is missing version in metadata")?;
-        if db_version != "3" {
+        if db_version != EXPECTED_DB_VERSION {
             return Err(format!(
-                "Unsupported database version: '{}'. This application only supports version '3'",
-                db_version
+                "Unsupported database version: '{}'. This application only supports version '{}'",
+                db_version, EXPECTED_DB_VERSION
             ).into());
         }
 
@@ -322,8 +323,8 @@ fn run_connection_loop(
             .map(char::from)
             .collect::<String>());
         conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('version', '3')",
-            [],
+            "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
+            [EXPECTED_DB_VERSION],
         )?;
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('unique_id', ?1)",

@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
 
+use crate::constants::EXPECTED_DB_VERSION;
+
 #[derive(Debug, Deserialize)]
 struct ShowInfo {
     name: String,
@@ -158,9 +160,27 @@ fn sync_single_show(
         .send()
         .map_err(|e| format!("Network error fetching metadata: {}", e))?
         .json()
-        .map_err(|e| format!("Failed to parse metadata JSON: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to parse metadata JSON: {}. \
+                 This may indicate the remote server is running incompatible old code. \
+                 Please upgrade the remote server.",
+                e
+            )
+        })?;
 
     println!("  Remote: unique_id={}, min_id={}, max_id={}", metadata.unique_id, metadata.min_id, metadata.max_id);
+
+    // Validate remote version BEFORE doing anything else
+    // This ensures we never sync from incompatible schema versions
+    if metadata.version != EXPECTED_DB_VERSION {
+        return Err(format!(
+            "Remote database has unsupported schema version '{}' (expected '{}'). \
+             Cannot sync from incompatible versions. Please upgrade the remote server.",
+            metadata.version, EXPECTED_DB_VERSION
+        )
+        .into());
+    }
 
     // Open or create local database
     let local_db_path = local_dir.join(format!("{}.sqlite", show_name));
@@ -179,6 +199,24 @@ fn sync_single_show(
         // Existing database - validate and resume
         println!("  Found existing local database");
 
+        // Validate local version matches expected version
+        let local_version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'version'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Local database missing version")?;
+
+        if local_version != EXPECTED_DB_VERSION {
+            return Err(format!(
+                "Local database has unsupported schema version '{}' (expected '{}'). \
+                 Cannot sync with incompatible local database. Please delete and re-sync.",
+                local_version, EXPECTED_DB_VERSION
+            )
+            .into());
+        }
+
         // Validate source_unique_id matches remote unique_id
         let source_unique_id: String = conn
             .query_row(
@@ -196,7 +234,8 @@ fn sync_single_show(
             .into());
         }
 
-        // Validate metadata matches
+        // Validate metadata matches (audio_format, split_interval, bitrate)
+        // Version is already validated above
         validate_metadata(&conn, &metadata)?;
 
         // Get last synced ID
@@ -444,6 +483,22 @@ fn validate_metadata(
     conn: &Connection,
     remote: &ShowMetadata,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate version
+    let local_version: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Local database missing version")?;
+    if local_version != remote.version {
+        return Err(format!(
+            "Version mismatch: local='{}', remote='{}'. Cannot sync between different schema versions.",
+            local_version, remote.version
+        )
+        .into());
+    }
+
     // Validate audio_format
     let local_format: String = conn
         .query_row(

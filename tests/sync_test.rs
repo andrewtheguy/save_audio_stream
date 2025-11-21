@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 
 use save_audio_stream::sync::sync_shows;
+use save_audio_stream::EXPECTED_DB_VERSION;
 
 /// Test metadata structure
 #[derive(Debug, Serialize)]
@@ -123,8 +124,8 @@ fn create_source_database(
 
     // Insert metadata
     conn.execute(
-        "INSERT INTO metadata (key, value) VALUES ('version', '3')",
-        [],
+        "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
+        [EXPECTED_DB_VERSION],
     )
     .unwrap();
     conn.execute(
@@ -582,4 +583,206 @@ async fn test_sync_metadata_validation() {
     assert!(result.is_err());
     let err_msg = result.err().unwrap();
     assert!(err_msg.contains("Audio format mismatch") || err_msg.contains("mismatch"));
+}
+
+#[tokio::test]
+async fn test_sync_rejects_old_version() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create source database with old version (version "2" instead of "3")
+    let conn = Connection::open_in_memory().unwrap();
+
+    // Create old schema (version 2 - without segments table)
+    conn.execute(
+        "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_ms INTEGER NOT NULL,
+            is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
+            audio_data BLOB NOT NULL,
+            segment_id INTEGER NOT NULL
+        )",
+        [],
+    )
+    .unwrap();
+
+    // Insert old version metadata
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('version', '2')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('unique_id', 'old_source')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('name', 'old_show')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('audio_format', 'opus')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('split_interval', '300')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('bitrate', '16')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('sample_rate', '48000')",
+        [],
+    )
+    .unwrap();
+
+    // Insert some test data
+    conn.execute(
+        "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id)
+         VALUES (1700000000000, 1, 'test_data', 1)",
+        [],
+    )
+    .unwrap();
+
+    // Start test server with old database
+    let mut databases = HashMap::new();
+    databases.insert("old_show".to_string(), conn);
+    let (server_url, _handle) = start_test_server(databases).await;
+
+    // Try to sync - should fail due to version mismatch
+    let local_dir = temp_dir.path().to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    assert!(result.is_err());
+    let err_msg = result.err().unwrap();
+    assert!(
+        err_msg.contains("unsupported") || err_msg.contains("schema version"),
+        "Expected version error but got: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn test_sync_rejects_old_version_on_resume() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create source database with current version (3) initially
+    let source_db = create_source_database("test_show", "source_unique_999", 2, 5);
+
+    // Start test server
+    let mut databases = HashMap::new();
+    databases.insert("test_show".to_string(), source_db);
+    let (server_url, _handle) = start_test_server(databases).await;
+
+    // Initial sync (should succeed)
+    let local_dir = temp_dir.path().to_path_buf();
+    let server_url_clone = server_url.clone();
+    let local_dir_clone = local_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url_clone, local_dir_clone, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+    assert!(result.is_ok());
+
+    // Now simulate remote server being downgraded to old version
+    // (In reality this would be a server restart with old code)
+    // Create old version database
+    let old_conn = Connection::open_in_memory().unwrap();
+    old_conn
+        .execute(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+    old_conn
+        .execute(
+            "CREATE TABLE chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms INTEGER NOT NULL,
+                is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
+                audio_data BLOB NOT NULL,
+                segment_id INTEGER NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+
+    // Insert old version metadata
+    old_conn
+        .execute("INSERT INTO metadata (key, value) VALUES ('version', '2')", [])
+        .unwrap();
+    old_conn
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('unique_id', 'source_unique_999')",
+            [],
+        )
+        .unwrap();
+    old_conn
+        .execute("INSERT INTO metadata (key, value) VALUES ('name', 'test_show')", [])
+        .unwrap();
+    old_conn
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('audio_format', 'opus')",
+            [],
+        )
+        .unwrap();
+    old_conn
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('split_interval', '300')",
+            [],
+        )
+        .unwrap();
+    old_conn
+        .execute("INSERT INTO metadata (key, value) VALUES ('bitrate', '16')", [])
+        .unwrap();
+    old_conn
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('sample_rate', '48000')",
+            [],
+        )
+        .unwrap();
+    old_conn
+        .execute(
+            "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id)
+             VALUES (1700000000000, 1, 'test', 1)",
+            [],
+        )
+        .unwrap();
+
+    // Replace server database with old version
+    drop(_handle); // Stop old server
+    let mut databases = HashMap::new();
+    databases.insert("test_show".to_string(), old_conn);
+    let (server_url, _handle) = start_test_server(databases).await;
+
+    // Try to resume sync with old remote - should fail
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    assert!(result.is_err());
+    let err_msg = result.err().unwrap();
+    assert!(
+        err_msg.contains("unsupported") || err_msg.contains("schema version '2'"),
+        "Expected version error but got: {}",
+        err_msg
+    );
 }
