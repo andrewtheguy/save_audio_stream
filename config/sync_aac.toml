@@ -1,0 +1,17 @@
+# Sync Configuration
+# This config is for syncing shows from a remote recording server to local databases
+
+# Required: Configuration type (must be 'sync')
+config_type = 'sync'
+
+# Required: URL of remote recording server
+remote_url = 'http://localhost:17000'
+
+# Required: Local base directory for synced databases
+local_dir = './tmp/synced_aac'
+
+# Optional: whitelist show names to sync (array)
+#shows = ['am1430', 'knx_news']
+
+# Optional: Chunk size for batch fetching segments (default: 100)
+chunk_size = 100

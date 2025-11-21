@@ -45,6 +45,7 @@ struct AudioSession {
 struct AppState {
     db_path: String,
     output_dir: String,
+    audio_format: String,
     sessions: Mutex<HashMap<String, AudioSession>>,
 }
 
@@ -68,6 +69,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
         let app_state = StdArc::new(AppState {
             db_path: String::new(), // Not used for multi-show serving
             output_dir: output_dir_str,
+            audio_format: String::new(), // Not used for multi-show serving
             sessions: Mutex::new(HashMap::new()),
         });
 
@@ -158,9 +160,9 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
         )
         .map_err(|_| "Database missing audio_format metadata")?;
 
-    if audio_format != "opus" {
+    if audio_format != "opus" && audio_format != "aac" {
         return Err(format!(
-            "Only Opus format is supported for serving, found: {}",
+            "Only Opus and AAC formats are supported for serving, found: {}",
             audio_format
         )
         .into());
@@ -176,12 +178,18 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
 
     println!("Starting server for: {}", db_path);
     println!("Output directory: {}", output_dir);
+    println!("Audio format: {}", audio_format);
     println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
     println!("Endpoints:");
-    println!("  GET /audio?start_id=<N>&end_id=<N>  - Ogg/Opus stream");
-    println!("  GET /manifest.mpd?start_id=<N>&end_id=<N>  - DASH MPD");
-    println!("  GET /init.webm  - WebM initialization segment");
-    println!("  GET /segment/:id  - WebM audio segment");
+    if audio_format == "opus" {
+        println!("  GET /audio?start_id=<N>&end_id=<N>  - Ogg/Opus stream");
+        println!("  GET /manifest.mpd?start_id=<N>&end_id=<N>  - DASH MPD");
+        println!("  GET /init.webm  - WebM initialization segment");
+        println!("  GET /segment/:id  - WebM audio segment");
+    } else if audio_format == "aac" {
+        println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
+        println!("  GET /segment/:id.aac  - AAC audio segment");
+    }
     println!("  GET /api/sync/shows  - List available shows for syncing");
 
     // Create tokio runtime and run server
@@ -190,6 +198,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
         let app_state = StdArc::new(AppState {
             db_path,
             output_dir,
+            audio_format: audio_format.clone(),
             sessions: Mutex::new(HashMap::new()),
         });
 
@@ -225,18 +234,27 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
             .allow_methods(Any)
             .allow_headers(Any);
 
-        let api_routes = Router::new()
-            .route("/audio", get(audio_handler))
-            .route("/audio/session/{id}", get(session_handler))
-            .route("/manifest.mpd", get(mpd_handler))
-            .route("/init.webm", get(init_handler))
-            .route("/segment/{id}", get(segment_handler))
+        let mut api_routes = Router::new()
             .route("/api/segments/range", get(segments_range_handler))
             .route("/api/sessions", get(sessions_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
             .route("/api/sync/shows/{show_name}/sections", get(db_sections_handler))
             .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
+
+        // Add format-specific routes
+        if audio_format == "opus" {
+            api_routes = api_routes
+                .route("/audio", get(audio_handler))
+                .route("/audio/session/{id}", get(session_handler))
+                .route("/manifest.mpd", get(mpd_handler))
+                .route("/init.webm", get(init_handler))
+                .route("/segment/{id}", get(segment_handler));
+        } else if audio_format == "aac" {
+            api_routes = api_routes
+                .route("/playlist.m3u8", get(hls_playlist_handler))
+                .route("/segment/{id}.aac", get(aac_segment_handler));
+        }
 
         #[cfg(debug_assertions)]
         let app = api_routes
@@ -270,6 +288,38 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
 
 fn map_to_io_error<E: std::fmt::Display + Send + Sync + 'static>(err: E) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+}
+
+/// Parse ADTS frames in AAC data and return total samples
+fn parse_adts_frames(data: &[u8], frame_size: u32) -> Result<u64, String> {
+    let mut total_samples = 0u64;
+    let mut pos = 0;
+
+    while pos + 7 < data.len() {
+        // Find ADTS sync word (0xFFF at start of header)
+        if data[pos] != 0xFF || (data[pos + 1] & 0xF0) != 0xF0 {
+            pos += 1;
+            continue;
+        }
+
+        // Extract frame length from ADTS header (13 bits)
+        let frame_len = (((data[pos + 3] & 0x03) as usize) << 11)
+            | ((data[pos + 4] as usize) << 3)
+            | ((data[pos + 5] as usize) >> 5);
+
+        if pos + frame_len > data.len() || frame_len < 7 {
+            break;
+        }
+
+        total_samples += frame_size as u64;
+        pos += frame_len;
+    }
+
+    if total_samples == 0 {
+        return Err("No valid ADTS frames found".to_string());
+    }
+
+    Ok(total_samples)
 }
 
 fn write_ogg_stream<W: Write>(
@@ -999,6 +1049,218 @@ struct SessionInfo {
 struct SessionsResponse {
     name: String,
     sessions: Vec<SessionInfo>,
+}
+
+// HLS playlist handler for AAC format
+async fn hls_playlist_handler(
+    State(state): State<StdArc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    // Get metadata
+    let sample_rate: u32 = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'sample_rate'",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(sr) => sr.parse().unwrap_or(16000),
+        Err(_) => 16000,
+    };
+
+    let frame_size: u32 = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'aac_frame_size'",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(fs) => fs.parse().unwrap_or(1024),
+        Err(_) => 1024,
+    };
+
+    // Determine segment range
+    let start_id: i64 = params
+        .get("start_id")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+
+    let end_id: i64 = if let Some(end_str) = params.get("end_id") {
+        end_str.parse().unwrap_or(i64::MAX)
+    } else {
+        match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+            Ok(id) => id,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to determine max segment ID",
+                )
+                    .into_response()
+            }
+        }
+    };
+
+    // Query segments and calculate durations
+    let mut stmt = match conn.prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let segments_iter = match stmt.query_map([start_id, end_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+    }) {
+        Ok(iter) => iter,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
+    let mut max_duration = 0.0f64;
+    let mut segment_durations = Vec::new();
+
+    for segment_result in segments_iter {
+        let (seg_id, audio_data) = match segment_result {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let samples = match parse_adts_frames(&audio_data, frame_size) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let duration = samples as f64 / sample_rate as f64;
+        if duration > max_duration {
+            max_duration = duration;
+        }
+
+        segment_durations.push((seg_id, duration));
+    }
+
+    playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
+
+    for (seg_id, duration) in segment_durations {
+        playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
+        playlist.push_str(&format!("/segment/{}.aac\n", seg_id));
+    }
+
+    playlist.push_str("#EXT-X-ENDLIST\n");
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+        playlist,
+    )
+        .into_response()
+}
+
+// AAC segment handler for HLS
+async fn aac_segment_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(segment_path): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Extract segment ID from path (remove .aac extension)
+    let seg_id: i64 = match segment_path.strip_suffix(".aac").and_then(|s| s.parse().ok()) {
+        Some(id) => id,
+        None => {
+            return (StatusCode::BAD_REQUEST, "Invalid segment ID").into_response();
+        }
+    };
+
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let audio_data: Vec<u8> = match conn.query_row(
+        "SELECT audio_data FROM segments WHERE id = ?1",
+        [seg_id],
+        |row| row.get(0),
+    ) {
+        Ok(data) => data,
+        Err(_) => {
+            return (StatusCode::NOT_FOUND, "Segment not found").into_response();
+        }
+    };
+
+    let total_len = audio_data.len() as u64;
+
+    // Handle Range requests
+    if let Some(range_header) = headers.get(header::RANGE) {
+        if let Ok(range_str) = range_header.to_str() {
+            if let Some(range) = range_str.strip_prefix("bytes=") {
+                let parts: Vec<&str> = range.split('-').collect();
+                if parts.len() == 2 {
+                    let start: u64 = parts[0].parse().unwrap_or(0);
+                    let end: u64 = if parts[1].is_empty() {
+                        total_len - 1
+                    } else {
+                        parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
+                    };
+
+                    if start < total_len {
+                        let range_data = audio_data[start as usize..=(end as usize)].to_vec();
+                        return (
+                            StatusCode::PARTIAL_CONTENT,
+                            [
+                                (header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
+                                (
+                                    header::CONTENT_RANGE,
+                                    HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len))
+                                        .unwrap(),
+                                ),
+                                (
+                                    header::CONTENT_LENGTH,
+                                    HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
+                                ),
+                            ],
+                            range_data,
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        }
+    }
+
+    // Return full segment
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
+            (
+                header::CONTENT_LENGTH,
+                HeaderValue::from_str(&total_len.to_string()).unwrap(),
+            ),
+        ],
+        audio_data,
+    )
+        .into_response()
 }
 
 async fn segments_range_handler(
