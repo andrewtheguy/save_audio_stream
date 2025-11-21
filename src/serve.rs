@@ -58,7 +58,8 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
     println!("  GET /health  - Health check");
     println!("  GET /api/sync/shows  - List available shows");
     println!("  GET /api/sync/shows/:name/metadata  - Show metadata");
-    println!("  GET /api/sync/shows/:name/segments  - Show segments");
+    println!("  GET /api/sync/shows/:name/segments  - Show segments metadata");
+    println!("  GET /api/sync/shows/:name/chunks  - Show chunks");
 
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
@@ -105,7 +106,8 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
             .route("/health", get(health_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
-            .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
+            .route("/api/sync/shows/{show_name}/segments", get(db_segments_handler))
+            .route("/api/sync/shows/{show_name}/chunks", get(sync_show_segments_handler));
 
         let app = api_routes
             .layer(cors)
@@ -178,7 +180,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
     println!("  GET /audio?start_id=<N>&end_id=<N>  - Ogg/Opus stream");
     println!("  GET /manifest.mpd?start_id=<N>&end_id=<N>  - DASH MPD");
     println!("  GET /init.webm  - WebM initialization segment");
-    println!("  GET /segment/:id  - WebM audio segment");
+    println!("  GET /webm/segment/:id  - WebM audio segment");
     println!("  GET /api/sync/shows  - List available shows for syncing");
 
     // Create tokio runtime and run server
@@ -227,13 +229,13 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
             .route("/audio/session/{id}", get(session_handler))
             .route("/manifest.mpd", get(mpd_handler))
             .route("/init.webm", get(init_handler))
-            .route("/segment/{id}", get(segment_handler))
+            .route("/webm/segment/{id}", get(segment_handler))
             .route("/api/segments/range", get(segments_range_handler))
             .route("/api/sessions", get(sessions_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
-            .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler))
-            .route("/api/db/{name}/segments", get(db_segments_handler));
+            .route("/api/sync/shows/{show_name}/segments", get(db_segments_handler))
+            .route("/api/sync/shows/{show_name}/chunks", get(sync_show_segments_handler));
 
         #[cfg(debug_assertions)]
         let app = api_routes
@@ -726,14 +728,52 @@ async fn mpd_handler(
         .unwrap_or(16);
     let bandwidth = bitrate_kbps * 1000;
 
-    // Calculate total duration and segment repeat count
-    let segment_count = (query.end_id - query.start_id + 1) as u32;
+    // Query actual chunk IDs in the range (to handle gaps from deletions)
+    let mut stmt = match conn.prepare(
+        "SELECT id FROM chunks WHERE id >= ?1 AND id <= ?2 ORDER BY id"
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to prepare query: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let chunk_ids: Vec<i64> = match stmt
+        .query_map([query.start_id, query.end_id], |row| row.get(0))
+    {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to fetch chunk IDs: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    if chunk_ids.is_empty() {
+        return (StatusCode::NOT_FOUND, "No chunks found in range").into_response();
+    }
+
+    // Calculate total duration
+    let segment_count = chunk_ids.len();
     let total_duration = segment_count as f64 * split_interval;
-
     let duration_ms = (split_interval * 1000.0) as u32;
-    let repeat_count = segment_count.saturating_sub(1);
 
-    // Build DASH MPD
+    // Build segment list with explicit URLs for each chunk
+    let mut segment_list = String::new();
+    for chunk_id in &chunk_ids {
+        segment_list.push_str(&format!(
+            "        <SegmentURL media=\"webm/segment/{}\" />\n",
+            chunk_id
+        ));
+    }
+
+    // Build DASH MPD with SegmentList instead of SegmentTemplate
     let mpd = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
@@ -743,28 +783,21 @@ async fn mpd_handler(
      profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
   <Period duration="PT{:.3}S">
     <AdaptationSet mimeType="audio/webm" codecs="opus" lang="en">
-      <SegmentTemplate
-        initialization="init.webm"
-        media="segment/$Number$?base={}"
-        startNumber="1"
-        timescale="1000">
-        <SegmentTimeline>
-          <S d="{}" r="{}"/>
-        </SegmentTimeline>
-      </SegmentTemplate>
       <Representation id="audio" bandwidth="{}" audioSamplingRate="{}">
         <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
+        <SegmentList timescale="1000" duration="{}">
+          <Initialization sourceURL="init.webm" />
+{}        </SegmentList>
       </Representation>
     </AdaptationSet>
   </Period>
 </MPD>"#,
         total_duration,
         total_duration,
-        query.start_id,
-        duration_ms,
-        repeat_count,
         bandwidth,
-        sample_rate
+        sample_rate,
+        duration_ms,
+        segment_list
     );
 
     (

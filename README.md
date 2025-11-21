@@ -380,7 +380,7 @@ save_audio_stream serve <database.sqlite> [-p PORT]
 | `GET /audio/session/{id}` | Cached audio session with Range support |
 | `GET /manifest.mpd?start_id=N&end_id=N` | DASH MPD manifest |
 | `GET /init.webm` | WebM initialization segment |
-| `GET /segment/{id}` | Individual WebM audio segment |
+| `GET /webm/segment/{id}` | Individual WebM audio segment |
 | `GET /api/segments/range` | JSON with min/max segment IDs |
 
 ### Development Workflow

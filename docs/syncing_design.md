@@ -113,7 +113,8 @@ The sender (recording server) exposes these endpoints for synchronization:
 |----------|-------------|
 | `GET /api/sync/shows` | List all available shows (databases) |
 | `GET /api/sync/shows/:name/metadata` | Get show metadata and segment range |
-| `GET /api/sync/shows/:name/segments?start_id=N&end_id=N&limit=N` | Fetch segment batch |
+| `GET /api/sync/shows/:name/segments` | Get segments metadata (id, start_timestamp_ms) |
+| `GET /api/sync/shows/:name/chunks?start_id=N&end_id=N&limit=N` | Fetch chunk batch |
 
 ### Metadata Response
 

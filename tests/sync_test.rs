@@ -365,8 +365,8 @@ async fn start_test_server(
     let app = Router::new()
         .route("/api/sync/shows", get(list_shows_handler))
         .route("/api/sync/shows/{show}/metadata", get(get_metadata_handler))
-        .route("/api/db/{show}/segments", get(get_segments_handler))
-        .route("/api/sync/shows/{show}/segments", get(get_chunks_handler))
+        .route("/api/sync/shows/{show}/segments", get(get_segments_handler))
+        .route("/api/sync/shows/{show}/chunks", get(get_chunks_handler))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

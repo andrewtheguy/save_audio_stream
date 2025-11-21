@@ -367,7 +367,7 @@ fn sync_single_show(
 
     // Sync segments table first
     println!("  Syncing segments metadata...");
-    let segments_url = format!("{}/api/db/{}/segments", remote_url, show_name);
+    let segments_url = format!("{}/api/sync/shows/{}/segments", remote_url, show_name);
     let segments: Vec<SegmentData> = client
         .get(&segments_url)
         .send()
@@ -400,13 +400,13 @@ fn sync_single_show(
         let end_id = std::cmp::min(current_id + chunk_size as i64 - 1, target_max_id);
 
         // Fetch chunks (no retry on network error)
-        let segments_url = format!(
-            "{}/api/sync/shows/{}/segments?start_id={}&end_id={}&limit={}",
+        let chunks_url = format!(
+            "{}/api/sync/shows/{}/chunks?start_id={}&end_id={}&limit={}",
             remote_url, show_name, current_id, end_id, chunk_size
         );
 
         let chunks: Vec<ChunkData> = client
-            .get(&segments_url)
+            .get(&chunks_url)
             .send()
             .map_err(|e| format!("Network error fetching chunks: {}", e))?
             .json()
