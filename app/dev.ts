@@ -6,7 +6,8 @@ import { serveDir } from "jsr:@std/http@1.0.10/file-server";
 import { NodeGlobalsPolyfillPlugin } from "npm:@esbuild-plugins/node-globals-polyfill";
 import { NodeModulesPolyfillPlugin } from "npm:@esbuild-plugins/node-modules-polyfill";
 
-const distDir = "./dist";
+// Use a dedicated dev output folder so dev artifacts don't mix with prod builds
+const distDir = "./dist-dev";
 const assetsDir = `${distDir}/assets`;
 
 // Create dist and assets directories if they don't exist
@@ -83,7 +84,7 @@ async function build() {
 await build();
 
 console.log("\nStarting file server on http://localhost:21173");
-console.log("Serving from ./dist directory\n");
+console.log(`Serving from ${distDir}/ directory\n`);
 
 // Start the file server in a separate async context
 const serverPromise = Deno.serve({

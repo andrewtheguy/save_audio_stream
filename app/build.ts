@@ -37,7 +37,7 @@ const result = await esbuild.build({
   bundle: true,
   format: "esm",
   minify: true,
-  sourcemap: true,
+  sourcemap: false,
   target: ["es2020"],
   platform: "browser",
   jsx: "automatic",
@@ -78,9 +78,5 @@ const htmlContent = `<!doctype html>
 await Deno.writeTextFile(`${distDir}/index.html`, htmlContent);
 
 console.log("Build artifacts created in dist/");
-console.log("- dist/index.html");
-console.log("- dist/assets/main.js");
-console.log("- dist/assets/main.js.map");
-console.log("- dist/assets/style.css");
 
 esbuild.stop();
