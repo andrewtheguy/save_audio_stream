@@ -44,6 +44,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const audioRef = useRef<HTMLAudioElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const saveTimerRef = useRef<number | null>(null);
+  const retryCountRef = useRef<number>(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -74,6 +75,9 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   useEffect(() => {
     if (!audioRef.current) return;
 
+    // Reset retry count when loading new stream
+    retryCountRef.current = 0;
+
     // Use HLS for all formats (both AAC and Opus)
     if (Hls.isSupported()) {
       const hls = new Hls();
@@ -85,17 +89,48 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
       hls.on(Hls.Events.ERROR, (event, data) => {
         console.error("HLS error:", data);
         if (data.fatal) {
-          setError("Failed to load HLS stream");
-          setIsLoading(false);
-          setIsPlaying(false);
-          if (audioRef.current) {
-            audioRef.current.pause();
+          // Check if it's a network error (temporary/recoverable)
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            // Retry with exponential backoff
+            retryCountRef.current += 1;
+            const maxRetries = 5;
+
+            if (retryCountRef.current <= maxRetries) {
+              const retryDelay = Math.min(1000 * Math.pow(2, retryCountRef.current - 1), 10000);
+              console.log(`Network error, retrying in ${retryDelay}ms (attempt ${retryCountRef.current}/${maxRetries})`);
+              setError(`Connection error, retrying... (${retryCountRef.current}/${maxRetries})`);
+
+              setTimeout(() => {
+                if (hlsRef.current) {
+                  hlsRef.current.startLoad();
+                }
+              }, retryDelay);
+            } else {
+              // Max retries reached
+              setError("Failed to load HLS stream after multiple retries");
+              setIsLoading(false);
+              setIsPlaying(false);
+              if (audioRef.current) {
+                audioRef.current.pause();
+              }
+            }
+          } else {
+            // Media error or other fatal error - don't retry
+            setError("Failed to load HLS stream");
+            setIsLoading(false);
+            setIsPlaying(false);
+            if (audioRef.current) {
+              audioRef.current.pause();
+            }
           }
         }
       });
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setIsLoading(false);
+        // Reset retry count and clear error on successful load
+        retryCountRef.current = 0;
+        setError(null);
         // Restore initial playback position if provided
         if (initialTime !== undefined && audioRef.current) {
           audioRef.current.currentTime = initialTime;
