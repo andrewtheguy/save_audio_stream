@@ -150,6 +150,7 @@ function App() {
                         format={audioFormat}
                         startId={session.start_id}
                         endId={session.end_id}
+                        sessionTimestamp={session.timestamp_ms}
                       />
                     </div>
                   )}

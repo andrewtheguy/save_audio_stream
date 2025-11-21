@@ -86,8 +86,8 @@ await build();
 console.log("\nStarting file server on http://localhost:21173");
 console.log(`Serving from ${distDir}/ directory\n`);
 
-// Start the file server in a separate async context
-const serverPromise = Deno.serve({
+// Start the file server
+Deno.serve({
   port: 21173,
   onListen: () => {
     console.log("Server ready at http://localhost:21173");
@@ -104,15 +104,26 @@ const serverPromise = Deno.serve({
 // Watch for file changes
 const watcher = Deno.watchFs(["./src", "./deps.ts"]);
 
-try {
-  for await (const event of watcher) {
-    if (event.kind === "modify" || event.kind === "create") {
-      console.log(`\nFile changed: ${event.paths.join(", ")}`);
+let isBuilding = false;
+
+console.log("Watching for changes in ./src and ./deps.ts");
+
+for await (const event of watcher) {
+  if (event.kind === "modify" || event.kind === "create") {
+    // Debounce: skip if already building
+    if (isBuilding) {
+      continue;
+    }
+
+    console.log(`\nFile changed: ${event.paths.join(", ")}`);
+
+    isBuilding = true;
+    try {
       await build();
+    } catch (error) {
+      console.error("Build error:", error);
+    } finally {
+      isBuilding = false;
     }
   }
-} finally {
-  // Cleanup
-  await serverPromise;
-  esbuild.stop();
 }

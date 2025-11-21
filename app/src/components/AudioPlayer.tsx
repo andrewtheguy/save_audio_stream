@@ -5,6 +5,7 @@ interface AudioPlayerProps {
   format: string;
   startId: number;
   endId: number;
+  sessionTimestamp: number;
 }
 
 function formatTime(seconds: number): string {
@@ -19,7 +20,24 @@ function formatTime(seconds: number): string {
   return `${minutes}:${secs.toString().padStart(2, "0")}`;
 }
 
-export function AudioPlayer({ format, startId, endId }: AudioPlayerProps) {
+function formatAbsoluteTime(timestampMs: number, offsetSeconds: number): string {
+  if (!isFinite(offsetSeconds)) return "--:--:--";
+  const absoluteTime = new Date(timestampMs + offsetSeconds * 1000);
+  const now = new Date();
+
+  // Check if the absolute time is today
+  const isToday = absoluteTime.getDate() === now.getDate() &&
+                  absoluteTime.getMonth() === now.getMonth() &&
+                  absoluteTime.getFullYear() === now.getFullYear();
+
+  if (isToday) {
+    return absoluteTime.toLocaleTimeString();
+  } else {
+    return `${absoluteTime.toLocaleTimeString()} ${absoluteTime.toLocaleDateString()}`;
+  }
+}
+
+export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const dashPlayerRef = useRef<dashjs.MediaPlayerClass | null>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -29,6 +47,7 @@ export function AudioPlayer({ format, startId, endId }: AudioPlayerProps) {
   const [volume, setVolume] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAbsoluteTime, setShowAbsoluteTime] = useState(false);
 
   const streamUrl =
     format === "aac"
@@ -187,7 +206,11 @@ export function AudioPlayer({ format, startId, endId }: AudioPlayerProps) {
           {isLoading ? "⏳" : isPlaying ? "⏸" : "▶"}
         </button>
 
-        <div className="time-display">{formatTime(currentTime)}</div>
+        <div className="time-display">
+          {showAbsoluteTime
+            ? formatAbsoluteTime(sessionTimestamp, currentTime)
+            : formatTime(currentTime)}
+        </div>
 
         <input
           type="range"
@@ -199,7 +222,20 @@ export function AudioPlayer({ format, startId, endId }: AudioPlayerProps) {
           disabled={!duration || !!error}
         />
 
-        <div className="time-display">{formatTime(duration)}</div>
+        <div className="time-display">
+          {showAbsoluteTime
+            ? formatAbsoluteTime(sessionTimestamp, duration)
+            : formatTime(duration)}
+        </div>
+
+        <button
+          className="time-mode-toggle"
+          onClick={() => setShowAbsoluteTime(!showAbsoluteTime)}
+          title={showAbsoluteTime ? "Show relative time" : "Show absolute time"}
+          aria-label={showAbsoluteTime ? "Show relative time" : "Show absolute time"}
+        >
+          {showAbsoluteTime ? "⏱" : "🕐"}
+        </button>
 
         <div className="volume-control">
           <span className="volume-icon">🔊</span>

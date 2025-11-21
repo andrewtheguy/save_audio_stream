@@ -245,6 +245,27 @@ h2 {
   opacity: 0.6;
 }
 
+.time-mode-toggle {
+  background: transparent;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+}
+
+.time-mode-toggle:hover {
+  background: #f8f9fa;
+  border-color: #0066cc;
+}
+
 .time-display {
   font-family: 'Courier New', Courier, monospace;
   font-size: 0.9rem;
@@ -252,6 +273,7 @@ h2 {
   min-width: 45px;
   text-align: center;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .progress-bar {
@@ -376,7 +398,16 @@ h2 {
     flex-basis: 100%;
   }
 
+  .time-mode-toggle {
+    order: 4;
+  }
+
   .volume-control {
+    order: 5;
     margin-left: auto;
+  }
+
+  .time-display {
+    font-size: 0.8rem;
   }
 }
