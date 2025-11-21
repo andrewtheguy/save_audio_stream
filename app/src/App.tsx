@@ -30,7 +30,7 @@ function formatDuration(seconds: number): string {
 
 function formatTimestamp(timestampMs: number): string {
   const date = new Date(timestampMs);
-  return date.toISOString().replace("T", " ").substring(0, 19) + " UTC";
+  return date.toLocaleString();
 }
 
 function App() {
