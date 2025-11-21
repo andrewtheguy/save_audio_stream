@@ -729,62 +729,14 @@ async fn mpd_handler(
         .unwrap_or(16);
     let bandwidth = bitrate_kbps * 1000;
 
-    // Query actual chunk IDs in the range (to handle gaps from deletions)
-    let mut stmt = match conn.prepare(
-        "SELECT id FROM chunks WHERE id >= ?1 AND id <= ?2 ORDER BY id"
-    ) {
-        Ok(stmt) => stmt,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to prepare query: {}", e),
-            )
-                .into_response()
-        }
-    };
-
-    let chunk_ids: Vec<i64> = match stmt
-        .query_map([query.start_id, query.end_id], |row| row.get(0))
-    {
-        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch chunk IDs: {}", e),
-            )
-                .into_response()
-        }
-    };
-
-    if chunk_ids.is_empty() {
-        return (StatusCode::NOT_FOUND, "No chunks found in range").into_response();
-    }
-
-    // Calculate total duration
-    let segment_count = chunk_ids.len();
+    // Calculate total duration and segment repeat count
+    let segment_count = (query.end_id - query.start_id + 1) as u32;
     let total_duration = segment_count as f64 * split_interval;
+
     let duration_ms = (split_interval * 1000.0) as u32;
+    let repeat_count = segment_count.saturating_sub(1);
 
-    // Build segment list with explicit URLs and timeline for each chunk
-    let mut segment_list = String::new();
-    let mut segment_timeline = String::new();
-    let base_chunk_id = chunk_ids[0]; // Use first chunk ID as base
-
-    for (index, chunk_id) in chunk_ids.iter().enumerate() {
-        segment_list.push_str(&format!(
-            "          <SegmentURL media=\"webm/segment/{}?base={}\" />\n",
-            chunk_id, base_chunk_id
-        ));
-
-        // Each segment has explicit start time in the timeline
-        let start_time = index as u64 * duration_ms as u64;
-        segment_timeline.push_str(&format!(
-            "            <S t=\"{}\" d=\"{}\" />\n",
-            start_time, duration_ms
-        ));
-    }
-
-    // Build DASH MPD with SegmentList and explicit SegmentTimeline
+    // Build DASH MPD with SegmentTemplate
     let mpd = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
@@ -794,23 +746,28 @@ async fn mpd_handler(
      profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
   <Period duration="PT{:.3}S">
     <AdaptationSet mimeType="audio/webm" codecs="opus" lang="en">
+      <SegmentTemplate
+        initialization="init.webm"
+        media="webm/segment/$Number$?base={}"
+        startNumber="1"
+        timescale="1000">
+        <SegmentTimeline>
+          <S d="{}" r="{}"/>
+        </SegmentTimeline>
+      </SegmentTemplate>
       <Representation id="audio" bandwidth="{}" audioSamplingRate="{}">
         <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
-        <SegmentList timescale="1000">
-          <Initialization sourceURL="init.webm" />
-          <SegmentTimeline>
-{}          </SegmentTimeline>
-{}        </SegmentList>
       </Representation>
     </AdaptationSet>
   </Period>
 </MPD>"#,
         total_duration,
         total_duration,
+        query.start_id,
+        duration_ms,
+        repeat_count,
         bandwidth,
-        sample_rate,
-        segment_timeline,
-        segment_list
+        sample_rate
     );
 
     (
