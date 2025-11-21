@@ -2,68 +2,27 @@
 
 import * as esbuild from "https://deno.land/x/esbuild@v0.20.1/mod.js";
 import { denoPlugins } from "jsr:@luca/esbuild-deno-loader@^0.10.3";
-import { serveDir } from "jsr:@std/http@1.0.10/file-server";
 import { NodeGlobalsPolyfillPlugin } from "npm:@esbuild-plugins/node-globals-polyfill";
 import { NodeModulesPolyfillPlugin } from "npm:@esbuild-plugins/node-modules-polyfill";
+import { extname } from "https://deno.land/std@0.221.0/path/mod.ts";
 
-// Use a dedicated dev output folder so dev artifacts don't mix with prod builds
+const PORT = 21173;
 const distDir = "./dist-dev";
 const assetsDir = `${distDir}/assets`;
+const entryPoint = "./src/main.tsx";
+const cssSource = "./src/style.css";
 
-// Create dist and assets directories if they don't exist
-try {
-  await Deno.mkdir(assetsDir, { recursive: true });
-} catch {
-  // Directory already exists
-}
+let cleaned = false;
+let building = false;
+let pendingRebuild = false;
 
-console.log("Starting development build...");
-
-// Initial build
-async function build() {
-  console.log("Building...");
-
-  try {
-    await esbuild.build({
-      plugins: [
-        NodeGlobalsPolyfillPlugin({
-          process: true,
-          buffer: true,
-        }),
-        NodeModulesPolyfillPlugin(),
-        ...denoPlugins({
-          configPath: Deno.cwd() + "/deno.json",
-        }),
-      ],
-      entryPoints: ["./src/main.tsx"],
-      outfile: `${assetsDir}/main.js`,
-      bundle: true,
-      format: "esm",
-      minify: false,
-      sourcemap: true,
-      target: ["es2020"],
-      platform: "browser",
-      jsx: "automatic",
-      jsxImportSource: "react",
-      external: ["*.css"],
-      define: {
-        "process.env.NODE_ENV": '"development"',
-        "global": "window",
-      },
-      logLevel: "info",
-    });
-
-    // Copy CSS file
-    const cssContent = await Deno.readTextFile("./src/style.css");
-    await Deno.writeTextFile(`${assetsDir}/style.css`, cssContent);
-
-    // Generate index.html
-    const htmlContent = `<!doctype html>
+const htmlContent = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Audio Stream Server</title>
+    <title>Audio Stream Server (dev)</title>
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
@@ -73,84 +32,157 @@ async function build() {
 </html>
 `;
 
-    await Deno.writeTextFile(`${distDir}/index.html`, htmlContent);
-    console.log("Build completed!");
-  } catch (error) {
-    console.error("Build failed:", error);
+function contentType(path: string): string {
+  switch (extname(path)) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+      return "application/javascript";
+    case ".css":
+      return "text/css";
+    case ".map":
+      return "application/json";
+    default:
+      return "application/octet-stream";
   }
 }
 
-// Run initial build
-await build();
+async function ensureDirs() {
+  if (!cleaned) {
+    try {
+      await Deno.remove(distDir, { recursive: true });
+    } catch {
+      // directory might not exist yet
+    }
+    cleaned = true;
+  }
 
-console.log("\nStarting file server on http://localhost:21173");
-console.log(`Serving from ${distDir}/ directory\n`);
+  await Deno.mkdir(assetsDir, { recursive: true });
+}
 
-// Start the file server
-Deno.serve({
-  port: 21173,
-  onListen: () => {
-    console.log("Server ready at http://localhost:21173");
-    console.log("Watching for file changes...\n");
-  },
-}, (req) => {
-  return serveDir(req, {
-    fsRoot: distDir,
-    showDirListing: false,
-    enableCors: true,
+async function writeHtml() {
+  await Deno.writeTextFile(`${distDir}/index.html`, htmlContent);
+}
+
+async function copyCss() {
+  const css = await Deno.readTextFile(cssSource);
+  await Deno.writeTextFile(`${assetsDir}/style.css`, css);
+}
+
+async function buildBundle() {
+  await ensureDirs();
+
+  await esbuild.build({
+    plugins: [
+      NodeGlobalsPolyfillPlugin({
+        process: true,
+        buffer: true,
+      }),
+      NodeModulesPolyfillPlugin(),
+      ...denoPlugins({
+        configPath: Deno.cwd() + "/deno.json",
+      }),
+    ],
+    entryPoints: [entryPoint],
+    outfile: `${assetsDir}/main.js`,
+    bundle: true,
+    format: "esm",
+    minify: false,
+    sourcemap: true,
+    target: ["es2020"],
+    platform: "browser",
+    jsx: "automatic",
+    jsxImportSource: "react",
+    external: ["*.css"],
+    define: {
+      "process.env.NODE_ENV": '"development"',
+      "global": "window",
+    },
+    logLevel: "info",
   });
-});
 
-// Watch for file changes
-const watcher = Deno.watchFs(["./src", "./deps.ts"], { recursive: true });
+  await copyCss();
+  await writeHtml();
 
-let isBuilding = false;
-let lastEventTime = 0;
-let lastBuildTime = 0;
-const DEBOUNCE_MS = 300;
+  console.log(`[dev] build completed at ${new Date().toLocaleTimeString()}`);
+}
 
-console.log("Watching for changes in ./src and ./deps.ts (recursive)");
+async function rebuild() {
+  if (building) {
+    pendingRebuild = true;
+    return;
+  }
 
-for await (const event of watcher) {
-  // Watch for any changes to source files
-  if (event.kind === "modify" || event.kind === "create" || event.kind === "remove") {
-    // Only rebuild for relevant files
-    const relevantFiles = event.paths.filter(
-      (path) => path.endsWith(".ts") || path.endsWith(".tsx") || path.endsWith(".css")
-    );
+  building = true;
+  try {
+    await buildBundle();
+  } catch (error) {
+    console.error("[dev] build failed:", error);
+  } finally {
+    building = false;
+    if (pendingRebuild) {
+      pendingRebuild = false;
+      await rebuild();
+    }
+  }
+}
 
-    if (relevantFiles.length === 0) {
-      continue;
+function startServer() {
+  console.log(`[dev] serving ${distDir} on http://localhost:${PORT}`);
+
+  Deno.serve({ hostname: "0.0.0.0", port: PORT }, async (req) => {
+    const url = new URL(req.url);
+    let filePath: string | null = null;
+
+    if (url.pathname === "/") {
+      filePath = `${distDir}/index.html`;
+    } else if (url.pathname.startsWith("/assets/")) {
+      filePath = `${distDir}${url.pathname}`;
     }
 
-    const now = Date.now();
-
-    // Skip if we're already building
-    if (isBuilding) {
-      continue;
+    if (!filePath) {
+      return new Response("Not Found", { status: 404 });
     }
-
-    // Debounce: skip if we saw an event very recently or if we built very recently
-    const timeSinceLastEvent = now - lastEventTime;
-    const timeSinceLastBuild = now - lastBuildTime;
-
-    lastEventTime = now;
-
-    if (timeSinceLastEvent < DEBOUNCE_MS || timeSinceLastBuild < DEBOUNCE_MS) {
-      continue;
-    }
-
-    console.log(`\nFile changed: ${relevantFiles.join(", ")}`);
-
-    isBuilding = true;
 
     try {
-      await build();
-      lastBuildTime = Date.now();
-    } catch (error) {
-      console.error("Build error:", error);
-    } finally {
-      isBuilding = false;
+      const data = await Deno.readFile(filePath);
+      return new Response(data, {
+        status: 200,
+        headers: {
+          "content-type": contentType(filePath),
+        },
+      });
+    } catch {
+      return new Response("Not Found", { status: 404 });
     }
+  });
+}
+
+async function watchSource() {
+  console.log("[dev] watching ./src for changes...");
+  const watcher = Deno.watchFs("./src");
+  let debounceTimer: number | null = null;
+
+  for await (const event of watcher) {
+    if (event.kind === "access") continue;
+
+    const relativePaths = event.paths.map((p) => p.replace(`${Deno.cwd()}/`, ""));
+    console.log(`[dev] change detected (${event.kind}): ${relativePaths.join(", ")}`);
+
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+    }
+    debounceTimer = setTimeout(async () => {
+      debounceTimer = null;
+      await rebuild();
+    }, 100) as unknown as number;
   }
 }
+
+addEventListener("unload", () => {
+  esbuild.stop();
+});
+
+await rebuild();
+startServer();
+await watchSource();
