@@ -38,6 +38,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [audioFormat, setAudioFormat] = useState<string>("opus");
+  const [selectedSessionIndex, setSelectedSessionIndex] = useState<number | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -90,36 +91,71 @@ function App() {
           <p>No recording sessions found.</p>
         ) : (
           <div className="sessions-list">
-            {data.sessions.map((session, index) => (
-              <div key={index} className="session-card">
-                <div className="session-header">
-                  <span className="session-time">
-                    {formatTimestamp(session.timestamp_ms)}
-                  </span>
-                  <span className="session-duration">
-                    Duration: {formatDuration(session.duration_seconds)}
-                  </span>
-                </div>
-                <div className="session-content">
-                  <AudioPlayer
-                    format={audioFormat}
-                    startId={session.start_id}
-                    endId={session.end_id}
-                  />
-                  {audioFormat === "opus" && (
+            {data.sessions.map((session, index) => {
+              const isSelected = selectedSessionIndex === index;
+              return (
+                <div
+                  key={index}
+                  className={`session-card ${isSelected ? "selected" : ""}`}
+                >
+                  <div
+                    className="session-header clickable"
+                    onClick={() => setSelectedSessionIndex(isSelected ? null : index)}
+                  >
+                    <span className="session-time">
+                      {formatTimestamp(session.timestamp_ms)}
+                    </span>
+                    <span className="session-duration">
+                      Duration: {formatDuration(session.duration_seconds)}
+                    </span>
+                    <span className="expand-icon">{isSelected ? "▼" : "▶"}</span>
+                  </div>
+                  <div className="session-info">
+                    {audioFormat === "opus" && (
+                      <div className="url-row">
+                        <span className="url-label">Audio:</span>
+                        <a
+                          href={`/audio?start_id=${session.start_id}&end_id=${session.end_id}`}
+                          className="url-link"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          /audio?start_id={session.start_id}&end_id={session.end_id}
+                        </a>
+                      </div>
+                    )}
                     <div className="url-row">
-                      <span className="url-label">Audio:</span>
+                      <span className="url-label">
+                        {audioFormat === "aac" ? "HLS:" : "DASH:"}
+                      </span>
                       <a
-                        href={`/audio?start_id=${session.start_id}&end_id=${session.end_id}`}
+                        href={
+                          audioFormat === "aac"
+                            ? `/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
+                            : `/manifest.mpd?start_id=${session.start_id}&end_id=${session.end_id}`
+                        }
                         className="url-link"
+                        onClick={(e) => e.stopPropagation()}
+                        target="_blank"
+                        rel="noopener noreferrer"
                       >
-                        /audio?start_id={session.start_id}&end_id={session.end_id}
+                        {audioFormat === "aac"
+                          ? `/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
+                          : `/manifest.mpd?start_id=${session.start_id}&end_id=${session.end_id}`}
                       </a>
+                    </div>
+                  </div>
+                  {isSelected && (
+                    <div className="session-content">
+                      <AudioPlayer
+                        format={audioFormat}
+                        startId={session.start_id}
+                        endId={session.end_id}
+                      />
                     </div>
                   )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

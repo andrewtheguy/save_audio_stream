@@ -214,18 +214,6 @@ export function AudioPlayer({ format, startId, endId }: AudioPlayerProps) {
           />
         </div>
       </div>
-
-      <div className="player-info">
-        <span className="info-label">{format === "aac" ? "HLS:" : "DASH:"}</span>
-        <a
-          href={streamUrl}
-          className="manifest-link"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {streamUrl}
-        </a>
-      </div>
     </div>
   );
 }
