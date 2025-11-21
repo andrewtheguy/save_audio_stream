@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import dashjs from "dashjs";
+import Hls from "hls.js";
 
 interface AudioPlayerProps {
-  manifestUrl: string;
+  format: string;
   startId: number;
   endId: number;
 }
@@ -19,9 +20,10 @@ function formatTime(seconds: number): string {
   return `${minutes}:${secs.toString().padStart(2, "0")}`;
 }
 
-export function AudioPlayer({ manifestUrl, startId, endId }: AudioPlayerProps) {
+export function AudioPlayer({ format, startId, endId }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const playerRef = useRef<dashjs.MediaPlayerClass | null>(null);
+  const dashPlayerRef = useRef<dashjs.MediaPlayerClass | null>(null);
+  const hlsRef = useRef<Hls | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -29,39 +31,78 @@ export function AudioPlayer({ manifestUrl, startId, endId }: AudioPlayerProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const streamUrl =
+    format === "aac"
+      ? `/playlist.m3u8?start_id=${startId}&end_id=${endId}`
+      : `/manifest.mpd?start_id=${startId}&end_id=${endId}`;
+
   useEffect(() => {
     if (!audioRef.current) return;
 
-    const player = dashjs.MediaPlayer().create();
-    playerRef.current = player;
+    if (format === "aac") {
+      // Use HLS for AAC
+      if (Hls.isSupported()) {
+        const hls = new Hls();
+        hlsRef.current = hls;
 
-    player.initialize(audioRef.current, manifestUrl, false);
+        hls.loadSource(streamUrl);
+        hls.attachMedia(audioRef.current);
 
-    player.on(dashjs.MediaPlayer.events.ERROR, (e: any) => {
-      console.error("DASH error:", e);
-      setError("Failed to load audio stream");
-      setIsLoading(false);
-    });
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          console.error("HLS error:", data);
+          if (data.fatal) {
+            setError("Failed to load HLS stream");
+            setIsLoading(false);
+          }
+        });
 
-    player.on(dashjs.MediaPlayer.events.PLAYBACK_STARTED, () => {
-      setIsLoading(false);
-    });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          setIsLoading(false);
+        });
+      } else if (audioRef.current.canPlayType("application/vnd.apple.mpegurl")) {
+        // Native HLS support (Safari)
+        audioRef.current.src = streamUrl;
+        setIsLoading(false);
+      } else {
+        setError("HLS is not supported in this browser");
+      }
+    } else {
+      // Use DASH for Opus
+      const player = dashjs.MediaPlayer().create();
+      dashPlayerRef.current = player;
 
-    player.on(dashjs.MediaPlayer.events.PLAYBACK_WAITING, () => {
-      setIsLoading(true);
-    });
+      player.initialize(audioRef.current, streamUrl, false);
 
-    player.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => {
-      setIsLoading(false);
-    });
+      player.on(dashjs.MediaPlayer.events.ERROR, (e: any) => {
+        console.error("DASH error:", e);
+        setError("Failed to load audio stream");
+        setIsLoading(false);
+      });
+
+      player.on(dashjs.MediaPlayer.events.PLAYBACK_STARTED, () => {
+        setIsLoading(false);
+      });
+
+      player.on(dashjs.MediaPlayer.events.PLAYBACK_WAITING, () => {
+        setIsLoading(true);
+      });
+
+      player.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => {
+        setIsLoading(false);
+      });
+    }
 
     return () => {
-      if (playerRef.current) {
-        playerRef.current.destroy();
-        playerRef.current = null;
+      if (dashPlayerRef.current) {
+        dashPlayerRef.current.destroy();
+        dashPlayerRef.current = null;
+      }
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
       }
     };
-  }, [manifestUrl]);
+  }, [format, streamUrl]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -164,14 +205,14 @@ export function AudioPlayer({ manifestUrl, startId, endId }: AudioPlayerProps) {
       </div>
 
       <div className="player-info">
-        <span className="info-label">DASH:</span>
+        <span className="info-label">{format === "aac" ? "HLS:" : "DASH:"}</span>
         <a
-          href={manifestUrl}
+          href={streamUrl}
           className="manifest-link"
           target="_blank"
           rel="noopener noreferrer"
         >
-          /manifest.mpd?start_id={startId}&end_id={endId}
+          {streamUrl}
         </a>
       </div>
     </div>
