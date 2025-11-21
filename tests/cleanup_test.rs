@@ -2,7 +2,9 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
 // Import the cleanup functions from the library
-use save_audio_stream::record::{cleanup_old_sections_with_params, cleanup_old_sections_with_retention};
+use save_audio_stream::record::{
+    cleanup_old_sections_with_params, cleanup_old_sections_with_retention,
+};
 
 /// Helper function to create a test database with segments
 fn create_test_database() -> Connection {
@@ -84,7 +86,7 @@ fn insert_segment_with_timestamp(
         conn.query_row(
             "SELECT section_id FROM segments ORDER BY id DESC LIMIT 1",
             [],
-            |row| row.get(0)
+            |row| row.get(0),
         )
         .unwrap_or_else(|_| {
             // No existing segments - create a default section
@@ -92,7 +94,8 @@ fn insert_segment_with_timestamp(
             conn.execute(
                 "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
                 rusqlite::params![default_section_id, timestamp_ms],
-            ).unwrap();
+            )
+            .unwrap();
             default_section_id
         })
     };
@@ -107,12 +110,7 @@ fn insert_segment_with_timestamp(
 }
 
 /// Helper to insert a segment relative to current time
-fn insert_segment(
-    conn: &Connection,
-    hours_ago: i64,
-    is_boundary: bool,
-    data: &[u8],
-) -> i64 {
+fn insert_segment(conn: &Connection, hours_ago: i64, is_boundary: bool, data: &[u8]) -> i64 {
     let now = Utc::now();
     let timestamp = now - chrono::Duration::try_hours(hours_ago).expect("Valid hours");
     let timestamp_ms = timestamp.timestamp_millis();

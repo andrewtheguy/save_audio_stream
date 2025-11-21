@@ -70,7 +70,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
+fn record_multi_session(
+    config_path: PathBuf,
+    port_override: Option<u16>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Load multi-session config file
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
@@ -102,7 +105,10 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
     }
 
     // Determine output directory and API port
-    let output_dir = multi_config.output_dir.clone().unwrap_or_else(|| "tmp".to_string());
+    let output_dir = multi_config
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| "tmp".to_string());
     let api_port = port_override.unwrap_or(multi_config.api_port);
 
     // Create output directory if it doesn't exist
@@ -146,7 +152,11 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
                 break;
             }
             Ok(response) => {
-                eprintln!("API server healthcheck failed with status {} (attempt {})", response.status(), attempt);
+                eprintln!(
+                    "API server healthcheck failed with status {} (attempt {})",
+                    response.status(),
+                    attempt
+                );
             }
             Err(e) => {
                 eprintln!("API server healthcheck failed: {} (attempt {})", e, attempt);
@@ -168,7 +178,10 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
     }
 
     println!("API server is healthy and ready");
-    println!("Starting {} recording session(s)", multi_config.sessions.len());
+    println!(
+        "Starting {} recording session(s)",
+        multi_config.sessions.len()
+    );
 
     // Now spawn recording session threads (they run in background with supervision)
     let mut recording_handles = Vec::new();
@@ -195,7 +208,9 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
                 }
 
                 // Calculate wait time until next scheduled start
-                if let Ok((start_hour, start_min)) = parse_time(&session_config.schedule.record_start) {
+                if let Ok((start_hour, start_min)) =
+                    parse_time(&session_config.schedule.record_start)
+                {
                     let start_mins = time_to_minutes(start_hour, start_min);
                     let now = chrono::Utc::now();
                     let current_mins = time_to_minutes(now.hour(), now.minute());
@@ -210,7 +225,10 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
                     );
                     thread::sleep(Duration::from_secs(wait_secs));
                 } else {
-                    eprintln!("[{}] Invalid schedule time, waiting 60 seconds before retry", session_name_for_handle);
+                    eprintln!(
+                        "[{}] Invalid schedule time, waiting 60 seconds before retry",
+                        session_name_for_handle
+                    );
                     thread::sleep(Duration::from_secs(60));
                 }
             }
@@ -220,9 +238,9 @@ fn record_multi_session(config_path: PathBuf, port_override: Option<u16>) -> Res
     }
 
     // Wait for API server thread (blocking) - if it fails, return error
-    api_handle.join().map_err(|e| {
-        format!("API server thread panicked: {:?}", e)
-    })?;
+    api_handle
+        .join()
+        .map_err(|e| format!("API server thread panicked: {:?}", e))?;
 
     Ok(())
 }

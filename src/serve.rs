@@ -29,7 +29,10 @@ use uuid::Uuid;
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
 use crate::constants::EXPECTED_DB_VERSION;
 use crate::fmp4::{generate_init_segment, generate_media_segment};
-use crate::webm::{write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string, write_ebml_uint};
+use crate::webm::{
+    write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string,
+    write_ebml_uint,
+};
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 const INDEX_HTML: &[u8] = include_bytes!("../app/dist/index.html");
@@ -113,13 +116,20 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
         let api_routes = Router::new()
             .route("/health", get(health_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
-            .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
-            .route("/api/sync/shows/{show_name}/sections", get(db_sections_handler))
-            .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
+            .route(
+                "/api/sync/shows/{show_name}/metadata",
+                get(sync_show_metadata_handler),
+            )
+            .route(
+                "/api/sync/shows/{show_name}/sections",
+                get(db_sections_handler),
+            )
+            .route(
+                "/api/sync/shows/{show_name}/segments",
+                get(sync_show_segments_handler),
+            );
 
-        let app = api_routes
-            .layer(cors)
-            .with_state(app_state);
+        let app = api_routes.layer(cors).with_state(app_state);
 
         let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port))
             .await
@@ -248,9 +258,18 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
             .route("/api/segments/range", get(segments_range_handler))
             .route("/api/sessions", get(sessions_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
-            .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
-            .route("/api/sync/shows/{show_name}/sections", get(db_sections_handler))
-            .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
+            .route(
+                "/api/sync/shows/{show_name}/metadata",
+                get(sync_show_metadata_handler),
+            )
+            .route(
+                "/api/sync/shows/{show_name}/sections",
+                get(db_sections_handler),
+            )
+            .route(
+                "/api/sync/shows/{show_name}/segments",
+                get(sync_show_segments_handler),
+            );
 
         // Add format-specific routes
         if audio_format == "opus" {
@@ -669,8 +688,12 @@ async fn session_handler(
                         let mut response = (StatusCode::PARTIAL_CONTENT, body).into_response();
                         {
                             let headers = response.headers_mut();
-                            let _ = headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/ogg"));
-                            let _ = headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+                            let _ = headers.insert(
+                                header::CONTENT_TYPE,
+                                HeaderValue::from_static("audio/ogg"),
+                            );
+                            let _ = headers
+                                .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
                             if let Ok(val) = HeaderValue::from_str(&content_range) {
                                 let _ = headers.insert(header::CONTENT_RANGE, val);
                             }
@@ -977,7 +1000,11 @@ async fn segment_handler(
     ) {
         Ok(data) => data,
         Err(_) => {
-            return (StatusCode::NOT_FOUND, format!("Segment {} not found", actual_id)).into_response()
+            return (
+                StatusCode::NOT_FOUND,
+                format!("Segment {} not found", actual_id),
+            )
+                .into_response()
         }
     };
 
@@ -1120,7 +1147,9 @@ async fn hls_playlist_handler(
     };
 
     // Query segments and calculate durations
-    let mut stmt = match conn.prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
+    let mut stmt = match conn
+        .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
+    {
         Ok(s) => s,
         Err(e) => {
             return (
@@ -1167,7 +1196,10 @@ async fn hls_playlist_handler(
         segment_durations.push((seg_id, duration));
     }
 
-    playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
+    playlist.push_str(&format!(
+        "#EXT-X-TARGETDURATION:{}\n",
+        max_duration.ceil() as u64
+    ));
 
     for (seg_id, duration) in segment_durations {
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
@@ -1243,8 +1275,11 @@ async fn aac_segment_handler(
                                 (header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
                                 (
                                     header::CONTENT_RANGE,
-                                    HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len))
-                                        .unwrap(),
+                                    HeaderValue::from_str(&format!(
+                                        "bytes {}-{}/{}",
+                                        start, end, total_len
+                                    ))
+                                    .unwrap(),
                                 ),
                                 (
                                     header::CONTENT_LENGTH,
@@ -1352,7 +1387,9 @@ async fn opus_hls_playlist_handler(
     };
 
     // Query segments and calculate durations
-    let mut stmt = match conn.prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
+    let mut stmt = match conn
+        .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
+    {
         Ok(s) => s,
         Err(e) => {
             return (
@@ -1400,7 +1437,12 @@ async fn opus_hls_playlist_handler(
         segment_durations.push((seg_id, duration));
     }
 
-    playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
+    playlist.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", start_id));
+    playlist.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
+    playlist.push_str(&format!(
+        "#EXT-X-TARGETDURATION:{}\n",
+        max_duration.ceil() as u64
+    ));
     playlist.push_str("#EXT-X-MAP:URI=\"/opus-segment/init.mp4\"\n");
 
     for (seg_id, duration) in segment_durations {
@@ -1431,21 +1473,22 @@ async fn opus_segment_handler(
         let channel_count = 1u16; // Mono
         let sample_rate = 48000u32;
 
-        let init_segment = match generate_init_segment(timescale, track_id, channel_count, sample_rate) {
-            Ok(data) => data,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to generate init segment: {}", e),
-                )
-                    .into_response()
-            }
-        };
+        let init_segment =
+            match generate_init_segment(timescale, track_id, channel_count, sample_rate) {
+                Ok(data) => data,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to generate init segment: {}", e),
+                    )
+                        .into_response()
+                }
+            };
 
         return (
             StatusCode::OK,
             [
-                (header::CONTENT_TYPE, HeaderValue::from_static("video/mp4")),
+                (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
                 (
                     header::CONTENT_LENGTH,
                     HeaderValue::from_str(&init_segment.len().to_string()).unwrap(),
@@ -1505,7 +1548,8 @@ async fn opus_segment_handler(
 
     // Calculate base media decode time (for simplicity, use segment_id * average_duration)
     // In a real implementation, you might want to track cumulative time
-    let base_media_decode_time = ((seg_id - 1) as u64) * (opus_packets.len() as u64 * samples_per_packet as u64);
+    let base_media_decode_time =
+        ((seg_id - 1) as u64) * (opus_packets.len() as u64 * samples_per_packet as u64);
 
     let media_segment = match generate_media_segment(
         seg_id as u32,
@@ -1545,11 +1589,14 @@ async fn opus_segment_handler(
                         return (
                             StatusCode::PARTIAL_CONTENT,
                             [
-                                (header::CONTENT_TYPE, HeaderValue::from_static("video/mp4")),
+                                (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
                                 (
                                     header::CONTENT_RANGE,
-                                    HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len))
-                                        .unwrap(),
+                                    HeaderValue::from_str(&format!(
+                                        "bytes {}-{}/{}",
+                                        start, end, total_len
+                                    ))
+                                    .unwrap(),
                                 ),
                                 (
                                     header::CONTENT_LENGTH,
@@ -1569,7 +1616,7 @@ async fn opus_segment_handler(
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, HeaderValue::from_static("video/mp4")),
+            (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
             (
                 header::CONTENT_LENGTH,
                 HeaderValue::from_str(&total_len.to_string()).unwrap(),
@@ -1596,9 +1643,7 @@ async fn format_handler(State(state): State<StdArc<AppState>>) -> impl IntoRespo
     )
 }
 
-async fn segments_range_handler(
-    State(state): State<StdArc<AppState>>,
-) -> impl IntoResponse {
+async fn segments_range_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
@@ -1610,8 +1655,10 @@ async fn segments_range_handler(
         }
     };
 
-    let min_id: Result<i64, _> = conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0));
-    let max_id: Result<i64, _> = conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0));
+    let min_id: Result<i64, _> =
+        conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0));
+    let max_id: Result<i64, _> =
+        conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0));
 
     match (min_id, max_id) {
         (Ok(min), Ok(max)) => {
@@ -1626,17 +1673,11 @@ async fn segments_range_handler(
             )
                 .into_response()
         }
-        _ => (
-            StatusCode::NOT_FOUND,
-            "No segments found in database",
-        )
-            .into_response(),
+        _ => (StatusCode::NOT_FOUND, "No segments found in database").into_response(),
     }
 }
 
-async fn sessions_handler(
-    State(state): State<StdArc<AppState>>,
-) -> impl IntoResponse {
+async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
     let conn = match Connection::open(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
@@ -1649,14 +1690,13 @@ async fn sessions_handler(
     };
 
     // Get show name from metadata
-    let name: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'name'",
-        [],
-        |row| row.get(0),
-    ) {
-        Ok(n) => n,
-        Err(_) => "Unknown".to_string(),
-    };
+    let name: String =
+        match conn.query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
+            row.get(0)
+        }) {
+            Ok(n) => n,
+            Err(_) => "Unknown".to_string(),
+        };
 
     // Get split interval
     let split_interval: f64 = conn
@@ -1686,7 +1726,7 @@ async fn sessions_handler(
          FROM sections s
          JOIN segments seg ON seg.section_id = s.id
          GROUP BY s.id
-         ORDER BY s.id"
+         ORDER BY s.id",
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -1698,8 +1738,7 @@ async fn sessions_handler(
         }
     };
 
-    let boundaries: Vec<(i64, i64)> = match stmt
-        .query_map([], |row| Ok((row.get(2)?, row.get(1)?)))
+    let boundaries: Vec<(i64, i64)> = match stmt.query_map([], |row| Ok((row.get(2)?, row.get(1)?)))
     {
         Ok(rows) => rows.filter_map(Result::ok).collect(),
         Err(e) => {
@@ -1712,11 +1751,7 @@ async fn sessions_handler(
     };
 
     if boundaries.is_empty() {
-        return (
-            StatusCode::NOT_FOUND,
-            "No recording sessions found",
-        )
-            .into_response();
+        return (StatusCode::NOT_FOUND, "No recording sessions found").into_response();
     }
 
     // Get max segment ID to handle the last session
@@ -1847,16 +1882,19 @@ async fn vite_node_modules_handler(Path(path): Path<String>) -> Response {
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 async fn index_handler_release() -> Response {
     let mut response = Response::new(Body::from(INDEX_HTML));
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
     response
 }
 
 #[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
 async fn index_handler_release() -> Response {
-    (StatusCode::NOT_FOUND, "Web frontend not available in this build").into_response()
+    (
+        StatusCode::NOT_FOUND,
+        "Web frontend not available in this build",
+    )
+        .into_response()
 }
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
@@ -1870,16 +1908,19 @@ async fn assets_handler_release(Path(path): Path<String>) -> Response {
     };
 
     let mut response = Response::new(Body::from(content));
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(mime_type),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
     response
 }
 
 #[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
 async fn assets_handler_release(Path(_path): Path<String>) -> Response {
-    (StatusCode::NOT_FOUND, "Web frontend not available in this build").into_response()
+    (
+        StatusCode::NOT_FOUND,
+        "Web frontend not available in this build",
+    )
+        .into_response()
 }
 
 // Sync API Handlers
@@ -1988,7 +2029,9 @@ async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl 
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to read directory: {}", e)})),
+                axum::Json(
+                    serde_json::json!({"error": format!("Failed to read directory: {}", e)}),
+                ),
             )
                 .into_response();
         }
@@ -2049,11 +2092,9 @@ async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl 
 
         // Get min/max segment IDs
         let (min_id, max_id): (Option<i64>, Option<i64>) = conn
-            .query_row(
-                "SELECT MIN(id), MAX(id) FROM segments",
-                [],
-                |row| Ok((row.get(0).ok(), row.get(1).ok())),
-            )
+            .query_row("SELECT MIN(id), MAX(id) FROM segments", [], |row| {
+                Ok((row.get(0).ok(), row.get(1).ok()))
+            })
             .unwrap_or((None, None));
 
         if let (Some(min_id), Some(max_id)) = (min_id, max_id) {
@@ -2146,20 +2187,19 @@ async fn sync_show_metadata_handler(
         }
     };
 
-    let name: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'name'",
-        [],
-        |row| row.get(0),
-    ) {
-        Ok(v) => v,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "Missing name metadata"})),
-            )
-                .into_response();
-        }
-    };
+    let name: String =
+        match conn.query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
+            row.get(0)
+        }) {
+            Ok(v) => v,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": "Missing name metadata"})),
+                )
+                    .into_response();
+            }
+        };
 
     let audio_format: String = match conn.query_row(
         "SELECT value FROM metadata WHERE key = 'audio_format'",
@@ -2237,20 +2277,19 @@ async fn sync_show_metadata_handler(
     };
 
     // Get min/max segment IDs
-    let (min_id, max_id): (i64, i64) = match conn.query_row(
-        "SELECT MIN(id), MAX(id) FROM segments",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ) {
-        Ok(v) => v,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "No segments found"})),
-            )
-                .into_response();
-        }
-    };
+    let (min_id, max_id): (i64, i64) =
+        match conn.query_row("SELECT MIN(id), MAX(id) FROM segments", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        }) {
+            Ok(v) => v,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": "No segments found"})),
+                )
+                    .into_response();
+            }
+        };
 
     let metadata = ShowMetadata {
         unique_id,
@@ -2364,7 +2403,9 @@ async fn sync_show_segments_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to query segments: {}", e)})),
+                axum::Json(
+                    serde_json::json!({"error": format!("Failed to query segments: {}", e)}),
+                ),
             )
                 .into_response();
         }
@@ -2377,7 +2418,9 @@ async fn sync_show_segments_handler(
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": format!("Failed to fetch segment: {}", e)})),
+                    axum::Json(
+                        serde_json::json!({"error": format!("Failed to fetch segment: {}", e)}),
+                    ),
                 )
                     .into_response();
             }

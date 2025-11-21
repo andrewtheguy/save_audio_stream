@@ -11,9 +11,7 @@ fn main() {
         println!("cargo:warning=Building frontend assets for release...");
 
         // Check if deno is available
-        let deno_check = Command::new("deno")
-            .arg("--version")
-            .output();
+        let deno_check = Command::new("deno").arg("--version").output();
 
         if deno_check.is_err() {
             panic!("deno not found. Install Deno to build frontend assets: https://deno.land");
@@ -31,7 +29,10 @@ fn main() {
                 println!("cargo:warning=Frontend build completed successfully");
             }
             Ok(status) => {
-                println!("cargo:warning=Frontend build failed with status: {}", status);
+                println!(
+                    "cargo:warning=Frontend build failed with status: {}",
+                    status
+                );
                 panic!("Frontend build failed");
             }
             Err(e) => {

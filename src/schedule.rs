@@ -2,7 +2,10 @@
 pub fn parse_time(time_str: &str) -> Result<(u32, u32), String> {
     let parts: Vec<&str> = time_str.split(':').collect();
     if parts.len() != 2 {
-        return Err(format!("Invalid time format '{}', expected HH:MM", time_str));
+        return Err(format!(
+            "Invalid time format '{}', expected HH:MM",
+            time_str
+        ));
     }
     let hour: u32 = parts[0]
         .parse()

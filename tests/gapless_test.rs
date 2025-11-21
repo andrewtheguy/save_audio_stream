@@ -395,7 +395,12 @@ fn test_aac_gapless_split() {
     let expected_total_loss = expected_loss_per_segment * files.len();
     let actual_loss = samples.len() as i64 - decoded.len() as i64;
 
-    println!("  Expected loss ({} segments * {} delay): {}", files.len(), AAC_ENCODER_DELAY, expected_total_loss);
+    println!(
+        "  Expected loss ({} segments * {} delay): {}",
+        files.len(),
+        AAC_ENCODER_DELAY,
+        expected_total_loss
+    );
     println!("  Actual sample loss: {}", actual_loss);
 
     // Verify the loss is approximately what we'd expect from encoder delay per segment

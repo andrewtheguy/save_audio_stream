@@ -214,7 +214,13 @@ async fn get_metadata_handler(
 
     let conn = match databases.get(&show_name) {
         Some(conn) => conn,
-        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Show not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Show not found"})),
+            )
+                .into_response()
+        }
     };
 
     // Check is_recipient flag - reject if true
@@ -238,25 +244,51 @@ async fn get_metadata_handler(
 
     // Fetch metadata
     let unique_id: String = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'unique_id'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'unique_id'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     let name: String = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| row.get(0))
+        .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     let audio_format: String = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'audio_format'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'audio_format'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     let split_interval: String = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'split_interval'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     let bitrate: String = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'bitrate'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'bitrate'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     let sample_rate: String = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'sample_rate'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     let version: String = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'version'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'version'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
 
     // Get min/max segment IDs
@@ -291,7 +323,13 @@ async fn get_sections_handler(
 
     let conn = match databases.get(&show_name) {
         Some(conn) => conn,
-        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Show not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Show not found"})),
+            )
+                .into_response()
+        }
     };
 
     let mut stmt = conn
@@ -322,7 +360,13 @@ async fn get_segments_handler(
 
     let conn = match databases.get(&show_name) {
         Some(conn) => conn,
-        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Show not found"}))).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Show not found"})),
+            )
+                .into_response()
+        }
     };
 
     let mut stmt = conn
@@ -335,18 +379,15 @@ async fn get_segments_handler(
         .unwrap();
 
     let segments: Vec<SegmentData> = stmt
-        .query_map(
-            rusqlite::params![params.start_id, params.end_id],
-            |row| {
-                Ok(SegmentData {
-                    id: row.get(0)?,
-                    timestamp_ms: row.get(1)?,
-                    is_timestamp_from_source: row.get(2)?,
-                    audio_data: row.get(3)?,
-                    section_id: row.get(4)?,
-                })
-            },
-        )
+        .query_map(rusqlite::params![params.start_id, params.end_id], |row| {
+            Ok(SegmentData {
+                id: row.get(0)?,
+                timestamp_ms: row.get(1)?,
+                is_timestamp_from_source: row.get(2)?,
+                audio_data: row.get(3)?,
+                section_id: row.get(4)?,
+            })
+        })
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -404,7 +445,9 @@ fn verify_destination_db(
     assert_eq!(source_unique_id, expected_source_unique_id);
 
     let name: String = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| row.get(0))
+        .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(name, expected_show_name);
 
@@ -446,9 +489,7 @@ async fn test_sync_new_show() {
     let local_dir = temp_dir.path().to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         sync_shows(
-            server_url,
-            local_dir,
-            None, // Sync all shows
+            server_url, local_dir, None, // Sync all shows
             100,  // chunk_size
         )
         .map_err(|e| e.to_string())
@@ -488,8 +529,7 @@ async fn test_sync_incremental() {
     let server_url_clone = server_url.clone();
     let local_dir_clone = local_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url_clone, local_dir_clone, None, 100)
-            .map_err(|e| e.to_string())
+        sync_shows(server_url_clone, local_dir_clone, None, 100).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -503,8 +543,7 @@ async fn test_sync_incremental() {
     // (In a real scenario, we'd update the source DB and restart server)
     // For this test, we verify that re-syncing doesn't break anything
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url, local_dir, None, 100)
-            .map_err(|e| e.to_string())
+        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -575,8 +614,7 @@ async fn test_sync_metadata_validation() {
     let server_url_clone = server_url.clone();
     let local_dir_clone = local_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url_clone, local_dir_clone, None, 100)
-            .map_err(|e| e.to_string())
+        sync_shows(server_url_clone, local_dir_clone, None, 100).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -594,8 +632,7 @@ async fn test_sync_metadata_validation() {
 
     // Try to sync again - should fail due to metadata mismatch
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url, local_dir, None, 100)
-            .map_err(|e| e.to_string())
+        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -744,7 +781,10 @@ async fn test_sync_rejects_old_version_on_resume() {
 
     // Insert old version metadata
     old_conn
-        .execute("INSERT INTO metadata (key, value) VALUES ('version', '2')", [])
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('version', '2')",
+            [],
+        )
         .unwrap();
     old_conn
         .execute(
@@ -753,7 +793,10 @@ async fn test_sync_rejects_old_version_on_resume() {
         )
         .unwrap();
     old_conn
-        .execute("INSERT INTO metadata (key, value) VALUES ('name', 'test_show')", [])
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('name', 'test_show')",
+            [],
+        )
         .unwrap();
     old_conn
         .execute(
@@ -768,7 +811,10 @@ async fn test_sync_rejects_old_version_on_resume() {
         )
         .unwrap();
     old_conn
-        .execute("INSERT INTO metadata (key, value) VALUES ('bitrate', '16')", [])
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('bitrate', '16')",
+            [],
+        )
         .unwrap();
     old_conn
         .execute(
@@ -832,8 +878,11 @@ async fn test_sync_rejects_local_old_version() {
     .unwrap();
 
     // Old version database
-    conn.execute("INSERT INTO metadata (key, value) VALUES ('version', '2')", [])
-        .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('version', '2')",
+        [],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO metadata (key, value) VALUES ('unique_id', 'local_123')",
         [],
@@ -844,8 +893,11 @@ async fn test_sync_rejects_local_old_version() {
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO metadata (key, value) VALUES ('name', 'test_show')", [])
-        .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('name', 'test_show')",
+        [],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO metadata (key, value) VALUES ('audio_format', 'opus')",
         [],
@@ -856,8 +908,11 @@ async fn test_sync_rejects_local_old_version() {
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO metadata (key, value) VALUES ('bitrate', '16')", [])
-        .unwrap();
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('bitrate', '16')",
+        [],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO metadata (key, value) VALUES ('sample_rate', '48000')",
         [],
@@ -972,11 +1027,8 @@ async fn test_sync_rejects_bitrate_mismatch() {
     // Tamper with bitrate
     let dest_db_path = temp_dir.path().join("test_show.sqlite");
     let conn = Connection::open(&dest_db_path).unwrap();
-    conn.execute(
-        "UPDATE metadata SET value = '32' WHERE key = 'bitrate'",
-        [],
-    )
-    .unwrap();
+    conn.execute("UPDATE metadata SET value = '32' WHERE key = 'bitrate'", [])
+        .unwrap();
     drop(conn);
 
     // Try to sync again - should fail

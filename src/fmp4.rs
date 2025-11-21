@@ -56,7 +56,7 @@ fn write_mvhd(writer: &mut Vec<u8>, timescale: u32) -> io::Result<()> {
         write_u16_be(w, 0); // Reserved
         write_u32_be(w, 0); // Reserved
         write_u32_be(w, 0); // Reserved
-        // Matrix
+                            // Matrix
         for &val in &[0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000] {
             write_u32_be(w, val);
         }
@@ -85,7 +85,7 @@ fn write_tkhd(writer: &mut Vec<u8>, track_id: u32) -> io::Result<()> {
         write_u16_be(w, 0); // Alternate group
         write_u16_be(w, 0x0100); // Volume (1.0)
         write_u16_be(w, 0); // Reserved
-        // Matrix
+                            // Matrix
         for &val in &[0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000] {
             write_u32_be(w, val);
         }
@@ -155,9 +155,7 @@ fn write_dref(writer: &mut Vec<u8>) -> io::Result<()> {
 
 /// Write dinf box (data information)
 fn write_dinf(writer: &mut Vec<u8>) -> io::Result<()> {
-    write_box(writer, b"dinf", |w| {
-        write_dref(w)
-    })
+    write_box(writer, b"dinf", |w| write_dref(w))
 }
 
 /// Write dOps box (Opus Specific Box)
@@ -174,7 +172,11 @@ fn write_dops(writer: &mut Vec<u8>, channel_count: u8, sample_rate: u32) -> io::
 }
 
 /// Write Opus sample entry
-fn write_opus_sample_entry(writer: &mut Vec<u8>, channel_count: u16, sample_rate: u32) -> io::Result<()> {
+fn write_opus_sample_entry(
+    writer: &mut Vec<u8>,
+    channel_count: u16,
+    sample_rate: u32,
+) -> io::Result<()> {
     write_box(writer, b"Opus", |w| {
         // SampleEntry fields
         w.extend_from_slice(&[0; 6]); // Reserved
@@ -270,7 +272,12 @@ fn write_minf(writer: &mut Vec<u8>, channel_count: u16, sample_rate: u32) -> io:
 }
 
 /// Write mdia box (media)
-fn write_mdia(writer: &mut Vec<u8>, timescale: u32, channel_count: u16, sample_rate: u32) -> io::Result<()> {
+fn write_mdia(
+    writer: &mut Vec<u8>,
+    timescale: u32,
+    channel_count: u16,
+    sample_rate: u32,
+) -> io::Result<()> {
     write_box(writer, b"mdia", |w| {
         write_mdhd(w, timescale)?;
         write_hdlr(w)?;
@@ -298,7 +305,13 @@ fn write_mvex(writer: &mut Vec<u8>, track_id: u32) -> io::Result<()> {
 }
 
 /// Write trak box (track)
-fn write_trak(writer: &mut Vec<u8>, track_id: u32, timescale: u32, channel_count: u16, sample_rate: u32) -> io::Result<()> {
+fn write_trak(
+    writer: &mut Vec<u8>,
+    track_id: u32,
+    timescale: u32,
+    channel_count: u16,
+    sample_rate: u32,
+) -> io::Result<()> {
     write_box(writer, b"trak", |w| {
         write_tkhd(w, track_id)?;
         write_mdia(w, timescale, channel_count, sample_rate)?;
@@ -307,7 +320,13 @@ fn write_trak(writer: &mut Vec<u8>, track_id: u32, timescale: u32, channel_count
 }
 
 /// Write moov box (movie metadata)
-fn write_moov(writer: &mut Vec<u8>, timescale: u32, track_id: u32, channel_count: u16, sample_rate: u32) -> io::Result<()> {
+fn write_moov(
+    writer: &mut Vec<u8>,
+    timescale: u32,
+    track_id: u32,
+    channel_count: u16,
+    sample_rate: u32,
+) -> io::Result<()> {
     write_box(writer, b"moov", |w| {
         write_mvhd(w, timescale)?;
         write_trak(w, track_id, timescale, channel_count, sample_rate)?;
@@ -330,7 +349,8 @@ fn write_mfhd(writer: &mut Vec<u8>, sequence_number: u32) -> io::Result<()> {
 fn write_tfhd(writer: &mut Vec<u8>, track_id: u32) -> io::Result<()> {
     write_box(writer, b"tfhd", |w| {
         w.push(0); // Version
-        w.extend_from_slice(&[0, 0, 0x20]); // Flags: default-base-is-moof
+                   // Flags: default-base-is-moof (so offsets are relative to this moof box)
+        w.extend_from_slice(&[0x02, 0, 0]);
         write_u32_be(w, track_id); // Track ID
         Ok(())
     })
@@ -347,39 +367,70 @@ fn write_tfdt(writer: &mut Vec<u8>, base_media_decode_time: u64) -> io::Result<(
 }
 
 /// Write trun box (track fragment run)
-fn write_trun(writer: &mut Vec<u8>, sample_count: u32, sample_sizes: &[u32], sample_durations: &[u32]) -> io::Result<()> {
+fn write_trun(
+    writer: &mut Vec<u8>,
+    sample_count: u32,
+    sample_sizes: &[u32],
+    sample_durations: &[u32],
+) -> io::Result<usize> {
+    let mut data_offset_pos = 0usize;
     write_box(writer, b"trun", |w| {
         w.push(0); // Version
-        // Flags: data-offset-present, sample-duration-present, sample-size-present
+                   // Flags: data-offset-present, sample-duration-present, sample-size-present
         w.extend_from_slice(&[0, 0x03, 0x01]); // Flags
         write_u32_be(w, sample_count); // Sample count
-        write_u32_be(w, 0); // Data offset (will be patched later if needed, or set to mdat start)
+        data_offset_pos = w.len();
+        write_u32_be(w, 0); // Data offset patched later
 
         for i in 0..sample_count as usize {
             write_u32_be(w, sample_durations[i]); // Sample duration
             write_u32_be(w, sample_sizes[i]); // Sample size
         }
         Ok(())
-    })
+    })?;
+    Ok(data_offset_pos)
 }
 
 /// Write traf box (track fragment)
-fn write_traf(writer: &mut Vec<u8>, track_id: u32, base_media_decode_time: u64, sample_sizes: &[u32], sample_durations: &[u32]) -> io::Result<()> {
+fn write_traf(
+    writer: &mut Vec<u8>,
+    track_id: u32,
+    base_media_decode_time: u64,
+    sample_sizes: &[u32],
+    sample_durations: &[u32],
+) -> io::Result<usize> {
+    let mut data_offset_pos = 0usize;
     write_box(writer, b"traf", |w| {
         write_tfhd(w, track_id)?;
         write_tfdt(w, base_media_decode_time)?;
-        write_trun(w, sample_sizes.len() as u32, sample_sizes, sample_durations)?;
+        data_offset_pos = write_trun(w, sample_sizes.len() as u32, sample_sizes, sample_durations)?;
         Ok(())
-    })
+    })?;
+    Ok(data_offset_pos)
 }
 
 /// Write moof box (movie fragment)
-fn write_moof(writer: &mut Vec<u8>, sequence_number: u32, track_id: u32, base_media_decode_time: u64, sample_sizes: &[u32], sample_durations: &[u32]) -> io::Result<()> {
+fn write_moof(
+    writer: &mut Vec<u8>,
+    sequence_number: u32,
+    track_id: u32,
+    base_media_decode_time: u64,
+    sample_sizes: &[u32],
+    sample_durations: &[u32],
+) -> io::Result<usize> {
+    let mut data_offset_pos = 0usize;
     write_box(writer, b"moof", |w| {
         write_mfhd(w, sequence_number)?;
-        write_traf(w, track_id, base_media_decode_time, sample_sizes, sample_durations)?;
+        data_offset_pos = write_traf(
+            w,
+            track_id,
+            base_media_decode_time,
+            sample_sizes,
+            sample_durations,
+        )?;
         Ok(())
-    })
+    })?;
+    Ok(data_offset_pos)
 }
 
 /// Write mdat box (media data)
@@ -391,7 +442,12 @@ fn write_mdat(writer: &mut Vec<u8>, data: &[u8]) -> io::Result<()> {
 }
 
 /// Generate fMP4 initialization segment (ftyp + moov)
-pub fn generate_init_segment(timescale: u32, track_id: u32, channel_count: u16, sample_rate: u32) -> Result<Vec<u8>, io::Error> {
+pub fn generate_init_segment(
+    timescale: u32,
+    track_id: u32,
+    channel_count: u16,
+    sample_rate: u32,
+) -> Result<Vec<u8>, io::Error> {
     let mut buffer = Vec::new();
     write_ftyp(&mut buffer)?;
     write_moov(&mut buffer, timescale, track_id, channel_count, sample_rate)?;
@@ -427,7 +483,22 @@ pub fn generate_media_segment(
         media_data.extend_from_slice(packet);
     }
 
-    write_moof(&mut buffer, sequence_number, track_id, base_media_decode_time, &sample_sizes, &sample_durations)?;
+    let data_offset_pos = write_moof(
+        &mut buffer,
+        sequence_number,
+        track_id,
+        base_media_decode_time,
+        &sample_sizes,
+        &sample_durations,
+    )?;
+
+    // Patch trun data offset so decoders know where media starts relative to this moof
+    let moof_size = buffer.len();
+    let data_offset = (moof_size + 8) as u32; // mdat header is 8 bytes
+    if data_offset_pos + 4 <= buffer.len() {
+        buffer[data_offset_pos..data_offset_pos + 4].copy_from_slice(&data_offset.to_be_bytes());
+    }
+
     write_mdat(&mut buffer, &media_data)?;
 
     Ok(buffer)

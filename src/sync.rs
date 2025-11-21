@@ -47,7 +47,6 @@ struct SectionData {
     start_timestamp_ms: i64,
 }
 
-
 /// Main entry point for syncing multiple shows
 pub fn sync_shows(
     remote_url: String,
@@ -60,8 +59,13 @@ pub fn sync_shows(
 
     // Acquire exclusive lock to prevent multiple sync instances
     let lock_path = local_dir.join(".sync.lock");
-    let _lock_file = File::create(&lock_path)
-        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path.display(), e))?;
+    let _lock_file = File::create(&lock_path).map_err(|e| {
+        format!(
+            "Failed to create lock file '{}': {}",
+            lock_path.display(),
+            e
+        )
+    })?;
     _lock_file.try_lock_exclusive().map_err(|_| {
         format!(
             "Another sync is already running. Lock file: {}",
@@ -82,11 +86,8 @@ pub fn sync_shows(
         .json()
         .map_err(|e| format!("Failed to parse shows list response: {}", e))?;
 
-    let available_shows: HashSet<String> = shows_list
-        .shows
-        .iter()
-        .map(|s| s.name.clone())
-        .collect();
+    let available_shows: HashSet<String> =
+        shows_list.shows.iter().map(|s| s.name.clone()).collect();
 
     if available_shows.is_empty() {
         println!("No shows available on remote server");
@@ -131,12 +132,22 @@ pub fn sync_shows(
 
     // Process each show sequentially
     for (idx, show_name) in show_names.iter().enumerate() {
-        println!("\n[{}/{}] Syncing show: {}", idx + 1, show_names.len(), show_name);
+        println!(
+            "\n[{}/{}] Syncing show: {}",
+            idx + 1,
+            show_names.len(),
+            show_name
+        );
 
         // Sync single show - exit immediately on any error
         sync_single_show(&remote_url, &local_dir, show_name, chunk_size)?;
 
-        println!("[{}/{}] ✓ Show '{}' synced successfully", idx + 1, show_names.len(), show_name);
+        println!(
+            "[{}/{}] ✓ Show '{}' synced successfully",
+            idx + 1,
+            show_names.len(),
+            show_name
+        );
     }
 
     println!("\n✓ All {} show(s) synced successfully", show_names.len());
@@ -169,7 +180,10 @@ fn sync_single_show(
             )
         })?;
 
-    println!("  Remote: unique_id={}, min_id={}, max_id={}", metadata.unique_id, metadata.min_id, metadata.max_id);
+    println!(
+        "  Remote: unique_id={}, min_id={}, max_id={}",
+        metadata.unique_id, metadata.min_id, metadata.max_id
+    );
 
     // Validate remote version BEFORE doing anything else
     // This ensures we never sync from incompatible schema versions
@@ -390,11 +404,18 @@ fn sync_single_show(
     let mut current_id = start_id;
 
     if current_id > target_max_id {
-        println!("  Already up to date (local_id {} >= remote_max {})", current_id - 1, target_max_id);
+        println!(
+            "  Already up to date (local_id {} >= remote_max {})",
+            current_id - 1,
+            target_max_id
+        );
         return Ok(());
     }
 
-    println!("  Syncing segments {} to {} (chunk_size={})", current_id, target_max_id, chunk_size);
+    println!(
+        "  Syncing segments {} to {} (chunk_size={})",
+        current_id, target_max_id, chunk_size
+    );
 
     while current_id <= target_max_id {
         let end_id = std::cmp::min(current_id + chunk_size as i64 - 1, target_max_id);
@@ -474,7 +495,10 @@ fn sync_single_show(
         current_id = last_id + 1;
     }
 
-    println!("  ✓ Sync complete: {} segments", target_max_id - start_id + 1);
+    println!(
+        "  ✓ Sync complete: {} segments",
+        target_max_id - start_id + 1
+    );
     Ok(())
 }
 

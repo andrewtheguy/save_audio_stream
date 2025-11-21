@@ -11,7 +11,6 @@ pub fn create_opus_id_header(channels: u8, sample_rate: u32) -> Vec<u8> {
     header
 }
 
-
 pub fn create_opus_comment_header_with_duration(duration_secs: Option<f64>) -> Vec<u8> {
     let mut header = Vec::new();
     header.extend_from_slice(b"OpusTags");
