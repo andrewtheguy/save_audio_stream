@@ -41,6 +41,7 @@ const result = await esbuild.build({
   bundle: true,
   format: "esm",
   minify: true,
+  legalComments: "none",
   sourcemap: false,
   target: ["es2020"],
   platform: "browser",
@@ -56,10 +57,15 @@ const result = await esbuild.build({
 
 console.log("Build completed successfully!");
 
-// Copy CSS file to dist/assets/
-console.log("Copying CSS file...");
-const cssContent = await Deno.readTextFile("./src/style.css");
-await Deno.writeTextFile(`${assetsDir}/style.css`, cssContent);
+// Minify CSS file
+console.log("Minifying CSS file...");
+await esbuild.build({
+  entryPoints: ["./src/style.css"],
+  outfile: `${assetsDir}/style.css`,
+  bundle: true,
+  minify: true,
+  loader: { ".css": "css" },
+});
 
 // Generate index.html
 console.log("Generating index.html...");
