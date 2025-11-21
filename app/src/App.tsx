@@ -3,6 +3,7 @@ const { useEffect, useState } = React;
 import { AudioPlayer } from "./components/AudioPlayer.tsx";
 
 interface SessionInfo {
+  section_id: number;
   start_id: number;
   end_id: number;
   timestamp_ms: number;
@@ -39,6 +40,8 @@ function App() {
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [audioFormat, setAudioFormat] = useState<string>("opus");
   const [selectedSessionIndex, setSelectedSessionIndex] = useState<number | null>(null);
+  const [dbUniqueId, setDbUniqueId] = useState<string>("");
+  const [initialTime, setInitialTime] = useState<number | undefined>(undefined);
 
   useEffect(() => {
     Promise.all([
@@ -48,7 +51,33 @@ function App() {
       .then(([formatData, sessionsData]) => {
         setAudioFormat(formatData.format || "opus");
         setData(sessionsData);
-        setLoading(false);
+
+        // Fetch metadata to get database unique_id
+        return fetch(`/api/sync/shows/${sessionsData.name}/metadata`).then((r) => r.json())
+          .then((metadata) => {
+            setDbUniqueId(metadata.unique_id);
+
+            // Restore last playback session from localStorage
+            try {
+              const storageKey = `${metadata.unique_id}_lastPlayback`;
+              const stored = localStorage.getItem(storageKey);
+              if (stored) {
+                const { section_id, position } = JSON.parse(stored);
+                // Find the session with matching section_id
+                const sessionIndex = sessionsData.sessions.findIndex(
+                  (s: SessionInfo) => s.section_id === section_id
+                );
+                if (sessionIndex !== -1) {
+                  setSelectedSessionIndex(sessionIndex);
+                  setInitialTime(position);
+                }
+              }
+            } catch (err) {
+              console.error("Failed to restore last playback:", err);
+            }
+
+            setLoading(false);
+          });
       })
       .catch((err) => {
         console.error("Failed to load data:", err);
@@ -163,6 +192,9 @@ function App() {
                         startId={session.start_id}
                         endId={session.end_id}
                         sessionTimestamp={session.timestamp_ms}
+                        dbUniqueId={dbUniqueId}
+                        sectionId={session.section_id}
+                        initialTime={initialTime}
                       />
                     </div>
                   )}

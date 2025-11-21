@@ -1078,6 +1078,7 @@ struct SegmentRange {
 
 #[derive(Serialize)]
 struct SessionInfo {
+    section_id: i64,
     start_id: i64,
     end_id: i64,
     timestamp_ms: i64,
@@ -1738,7 +1739,7 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let boundaries: Vec<(i64, i64)> = match stmt.query_map([], |row| Ok((row.get(2)?, row.get(1)?)))
+    let boundaries: Vec<(i64, i64, i64)> = match stmt.query_map([], |row| Ok((row.get(0)?, row.get(2)?, row.get(1)?)))
     {
         Ok(rows) => rows.filter_map(Result::ok).collect(),
         Err(e) => {
@@ -1769,9 +1770,9 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
     // Build sessions by grouping segments between boundaries
     let mut sessions = Vec::new();
     for i in 0..boundaries.len() {
-        let (start_id, timestamp_ms) = boundaries[i];
+        let (section_id, start_id, timestamp_ms) = boundaries[i];
         let end_id = if i + 1 < boundaries.len() {
-            boundaries[i + 1].0 - 1
+            boundaries[i + 1].1 - 1
         } else {
             max_id
         };
@@ -1780,6 +1781,7 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         let duration_seconds = segment_count * split_interval;
 
         sessions.push(SessionInfo {
+            section_id,
             start_id,
             end_id,
             timestamp_ms,

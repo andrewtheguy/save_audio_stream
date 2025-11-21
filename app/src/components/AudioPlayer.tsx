@@ -6,6 +6,9 @@ interface AudioPlayerProps {
   startId: number;
   endId: number;
   sessionTimestamp: number;
+  dbUniqueId: string;
+  sectionId: number;
+  initialTime?: number;
 }
 
 function formatTime(seconds: number): string {
@@ -37,9 +40,10 @@ function formatAbsoluteTime(timestampMs: number, offsetSeconds: number): string 
   }
 }
 
-export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioPlayerProps) {
+export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const saveTimerRef = useRef<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -47,6 +51,20 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioP
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAbsoluteTime, setShowAbsoluteTime] = useState(true);
+
+  // Save playback position to localStorage
+  const savePlaybackPosition = (position: number) => {
+    try {
+      const storageKey = `${dbUniqueId}_lastPlayback`;
+      const data = {
+        section_id: sectionId,
+        position: position,
+      };
+      localStorage.setItem(storageKey, JSON.stringify(data));
+    } catch (err) {
+      console.error("Failed to save playback position:", err);
+    }
+  };
 
   const streamUrl =
     format === "aac"
@@ -69,15 +87,30 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioP
         if (data.fatal) {
           setError("Failed to load HLS stream");
           setIsLoading(false);
+          setIsPlaying(false);
+          if (audioRef.current) {
+            audioRef.current.pause();
+          }
         }
       });
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setIsLoading(false);
+        // Restore initial playback position if provided
+        if (initialTime !== undefined && audioRef.current) {
+          audioRef.current.currentTime = initialTime;
+        }
       });
     } else if (audioRef.current.canPlayType("application/vnd.apple.mpegurl")) {
       // Native HLS support (Safari)
       audioRef.current.src = streamUrl;
+      // Restore initial playback position after metadata loads
+      const handleLoadedMetadata = () => {
+        if (initialTime !== undefined && audioRef.current) {
+          audioRef.current.currentTime = initialTime;
+        }
+      };
+      audioRef.current.addEventListener("loadedmetadata", handleLoadedMetadata);
       setIsLoading(false);
     } else {
       setError("HLS is not supported in this browser");
@@ -95,12 +128,27 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioP
     const audio = audioRef.current;
     if (!audio) return;
 
-    const updateTime = () => setCurrentTime(audio.currentTime);
+    const updateTime = () => {
+      setCurrentTime(audio.currentTime);
+
+      // Debounced save to localStorage (every 2 seconds)
+      if (saveTimerRef.current !== null) {
+        clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = window.setTimeout(() => {
+        savePlaybackPosition(audio.currentTime);
+      }, 2000);
+    };
     const updateDuration = () => setDuration(audio.duration);
     const handlePlay = () => setIsPlaying(true);
     const handlePause = () => {
       setIsPlaying(false);
       setIsLoading(false);
+      // Save immediately on pause
+      if (saveTimerRef.current !== null) {
+        clearTimeout(saveTimerRef.current);
+      }
+      savePlaybackPosition(audio.currentTime);
     };
     const handleEnded = () => setIsPlaying(false);
     const handleWaiting = () => setIsLoading(true);
@@ -118,6 +166,12 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioP
     audio.addEventListener("canplay", handleCanPlay);
 
     return () => {
+      // Save position immediately on unmount
+      if (saveTimerRef.current !== null) {
+        clearTimeout(saveTimerRef.current);
+      }
+      savePlaybackPosition(audio.currentTime);
+
       audio.removeEventListener("timeupdate", updateTime);
       audio.removeEventListener("durationchange", updateDuration);
       audio.removeEventListener("loadedmetadata", updateDuration);
@@ -128,7 +182,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioP
       audio.removeEventListener("playing", handlePlaying);
       audio.removeEventListener("canplay", handleCanPlay);
     };
-  }, []);
+  }, [dbUniqueId, sectionId]);
 
   const togglePlayPause = () => {
     if (!audioRef.current) return;
@@ -141,6 +195,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioP
         console.error("Play error:", err);
         setError("Failed to play audio");
         setIsLoading(false);
+        setIsPlaying(false);
       });
     }
   };
