@@ -27,6 +27,7 @@ use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
+use crate::constants::EXPECTED_DB_VERSION;
 use crate::webm::{write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string, write_ebml_uint};
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
@@ -140,10 +141,10 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
         )
         .map_err(|_| "Database is missing version in metadata")?;
 
-    if db_version != "1" {
+    if db_version != EXPECTED_DB_VERSION {
         return Err(format!(
-            "Unsupported database version: '{}'. This application only supports version '1'",
-            db_version
+            "Unsupported database version: '{}'. This application only supports version '{}'",
+            db_version, EXPECTED_DB_VERSION
         )
         .into());
     }
@@ -764,16 +765,26 @@ async fn mpd_handler(
     let total_duration = segment_count as f64 * split_interval;
     let duration_ms = (split_interval * 1000.0) as u32;
 
-    // Build segment list with explicit URLs for each chunk
+    // Build segment list with explicit URLs and timeline for each chunk
     let mut segment_list = String::new();
-    for chunk_id in &chunk_ids {
+    let mut segment_timeline = String::new();
+    let base_chunk_id = chunk_ids[0]; // Use first chunk ID as base
+
+    for (index, chunk_id) in chunk_ids.iter().enumerate() {
         segment_list.push_str(&format!(
-            "        <SegmentURL media=\"webm/segment/{}\" />\n",
-            chunk_id
+            "          <SegmentURL media=\"webm/segment/{}?base={}\" />\n",
+            chunk_id, base_chunk_id
+        ));
+
+        // Each segment has explicit start time in the timeline
+        let start_time = index as u64 * duration_ms as u64;
+        segment_timeline.push_str(&format!(
+            "            <S t=\"{}\" d=\"{}\" />\n",
+            start_time, duration_ms
         ));
     }
 
-    // Build DASH MPD with SegmentList instead of SegmentTemplate
+    // Build DASH MPD with SegmentList and explicit SegmentTimeline
     let mpd = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
@@ -785,8 +796,10 @@ async fn mpd_handler(
     <AdaptationSet mimeType="audio/webm" codecs="opus" lang="en">
       <Representation id="audio" bandwidth="{}" audioSamplingRate="{}">
         <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
-        <SegmentList timescale="1000" duration="{}">
+        <SegmentList timescale="1000">
           <Initialization sourceURL="init.webm" />
+          <SegmentTimeline>
+{}          </SegmentTimeline>
 {}        </SegmentList>
       </Representation>
     </AdaptationSet>
@@ -796,7 +809,7 @@ async fn mpd_handler(
         total_duration,
         bandwidth,
         sample_rate,
-        duration_ms,
+        segment_timeline,
         segment_list
     );
 
@@ -1723,12 +1736,13 @@ struct SyncSegmentsQuery {
 }
 
 #[derive(Serialize)]
-struct SegmentData {
+struct ChunkData {
     id: i64,
     timestamp_ms: i64,
     is_timestamp_from_source: i32,
     #[serde(with = "serde_bytes")]
     audio_data: Vec<u8>,
+    segment_id: i64,
 }
 
 async fn sync_show_segments_handler(
@@ -1782,7 +1796,7 @@ async fn sync_show_segments_handler(
     // Fetch chunks
     let limit = query.limit.unwrap_or(100);
     let mut stmt = match conn.prepare(
-        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data FROM chunks WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
+        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data, segment_id FROM chunks WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
     ) {
         Ok(stmt) => stmt,
         Err(e) => {
@@ -1797,11 +1811,12 @@ async fn sync_show_segments_handler(
     let segments_iter = match stmt.query_map(
         rusqlite::params![query.start_id, query.end_id, limit],
         |row| {
-            Ok(SegmentData {
+            Ok(ChunkData {
                 id: row.get(0)?,
                 timestamp_ms: row.get(1)?,
                 is_timestamp_from_source: row.get(2)?,
                 audio_data: row.get(3)?,
+                segment_id: row.get(4)?,
             })
         },
     ) {
