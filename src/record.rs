@@ -306,6 +306,47 @@ fn run_connection_loop(
             ).into());
         }
 
+        // Validate AAC gapless metadata matches encoder
+        if matches!(audio_format, AudioFormat::Aac) {
+            let db_encoder_delay: Option<String> = conn
+                .query_row("SELECT value FROM metadata WHERE key = 'aac_encoder_delay'", [], |row| row.get(0))
+                .ok();
+            let db_frame_size: Option<String> = conn
+                .query_row("SELECT value FROM metadata WHERE key = 'aac_frame_size'", [], |row| row.get(0))
+                .ok();
+
+            let aac_bitrate = if db_bitrate_val == 0 { 32000 } else { db_bitrate_val * 1000 };
+            let params = fdk_aac::enc::EncoderParams {
+                bit_rate: fdk_aac::enc::BitRate::Cbr(aac_bitrate),
+                sample_rate: 16000,
+                channels: fdk_aac::enc::ChannelMode::Mono,
+                transport: fdk_aac::enc::Transport::Adts,
+                audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
+            };
+            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params) {
+                if let Ok(info) = encoder.info() {
+                    if let Some(db_delay) = db_encoder_delay {
+                        let db_delay_val: u32 = db_delay.parse().unwrap_or(0);
+                        if db_delay_val != info.nDelay {
+                            return Err(format!(
+                                "AAC encoder mismatch: database has encoder_delay '{}' but encoder reports '{}'",
+                                db_delay_val, info.nDelay
+                            ).into());
+                        }
+                    }
+                    if let Some(db_frame) = db_frame_size {
+                        let db_frame_val: u32 = db_frame.parse().unwrap_or(0);
+                        if db_frame_val != info.frameLength {
+                            return Err(format!(
+                                "AAC encoder mismatch: database has frame_size '{}' but encoder reports '{}'",
+                                db_frame_val, info.frameLength
+                            ).into());
+                        }
+                    }
+                }
+            }
+        }
+
         println!("Session ID: {}", db_unique_id);
     } else {
         // Determine bitrate and sample rate for new database
@@ -354,6 +395,30 @@ fn run_connection_loop(
             "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'false')",
             [],
         )?;
+
+        // Add AAC gapless metadata from encoder info
+        if matches!(audio_format, AudioFormat::Aac) {
+            let aac_bitrate = if bitrate_to_store == 0 { 32000 } else { bitrate_to_store * 1000 };
+            let params = fdk_aac::enc::EncoderParams {
+                bit_rate: fdk_aac::enc::BitRate::Cbr(aac_bitrate),
+                sample_rate: 16000,
+                channels: fdk_aac::enc::ChannelMode::Mono,
+                transport: fdk_aac::enc::Transport::Adts,
+                audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
+            };
+            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params) {
+                if let Ok(info) = encoder.info() {
+                    conn.execute(
+                        "INSERT INTO metadata (key, value) VALUES ('aac_encoder_delay', ?1)",
+                        [&info.nDelay.to_string()],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO metadata (key, value) VALUES ('aac_frame_size', ?1)",
+                        [&info.frameLength.to_string()],
+                    )?;
+                }
+            }
+        }
 
         println!("Session ID: {}", session_unique_id);
     }

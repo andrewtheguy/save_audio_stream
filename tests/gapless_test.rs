@@ -355,6 +355,10 @@ fn test_aac_gapless_split() {
     let test_dir = "/tmp/save_audio_stream_test_aac";
     fs::create_dir_all(test_dir).unwrap();
 
+    // AAC-LC gapless metadata (same values stored in database)
+    const AAC_ENCODER_DELAY: usize = 2048; // Priming samples
+    const AAC_FRAME_SIZE: usize = 1024;
+
     // Generate 5 seconds of test audio at 16kHz
     let sample_rate = 16000u32;
     let duration = 5.0;
@@ -376,45 +380,42 @@ fn test_aac_gapless_split() {
     // Decode all files
     let decoded = decode_aac_files(&files).unwrap();
 
-    // Check total sample count
-    let frame_size = 1024;
-    let expected = expected_sample_count(samples.len(), frame_size);
-
-    println!("AAC Test:");
+    println!("AAC Gapless Test:");
     println!("  Input samples: {}", samples.len());
-    println!("  Expected output: {}", expected);
-    println!("  Actual output: {}", decoded.len());
+    println!("  Decoded samples: {}", decoded.len());
+    println!("  Encoder delay: {}", AAC_ENCODER_DELAY);
+    println!("  Frame size: {}", AAC_FRAME_SIZE);
     println!("  Files created: {}", files.len());
 
-    // Allow for AAC encoder/decoder delay (usually 1-2 frames)
-    // and padding due to frame alignment
-    let tolerance = frame_size * 10; // AAC has significant priming delay
+    // Note: When splitting AAC files, each segment introduces its own encoder delay.
+    // The global metadata (encoder_delay=2048, frame_size=1024) applies per-segment.
+    // For true gapless across splits, a player would need to skip encoder_delay
+    // at the start of EACH segment, not just the first file.
+    let expected_loss_per_segment = AAC_ENCODER_DELAY;
+    let expected_total_loss = expected_loss_per_segment * files.len();
+    let actual_loss = samples.len() as i64 - decoded.len() as i64;
+
+    println!("  Expected loss ({} segments * {} delay): {}", files.len(), AAC_ENCODER_DELAY, expected_total_loss);
+    println!("  Actual sample loss: {}", actual_loss);
+
+    // Verify the loss is approximately what we'd expect from encoder delay per segment
+    let loss_tolerance = AAC_FRAME_SIZE as i64 * files.len() as i64 * 2;
     assert!(
-        decoded.len() >= expected / 2, // At least half the expected samples
-        "Sample count too low: expected at least {}, got {}",
-        expected / 2,
+        (actual_loss - expected_total_loss as i64).abs() < loss_tolerance,
+        "Sample loss ({}) doesn't match expected encoder delay loss ({}) within tolerance ({})",
+        actual_loss,
+        expected_total_loss,
+        loss_tolerance
+    );
+
+    // Verify we got audio data in each file
+    assert!(
+        decoded.len() > samples.len() / 2,
+        "Decoded samples ({}) too low",
         decoded.len()
     );
 
-    // Note: AAC has encoder priming delay that causes gaps between split files.
-    // True gapless AAC playback requires iTunSMPB metadata which we don't generate.
-    // For this test, we just verify that the files were created and contain audio data.
-
-    // Verify we have a reasonable amount of audio data
-    if decoded.len() > 0 {
-        let mut max_diff = 0i32;
-        for i in 1..decoded.len() {
-            let diff = (decoded[i] as i32 - decoded[i - 1] as i32).abs();
-            if diff > max_diff {
-                max_diff = diff;
-            }
-        }
-        println!("  Max sample diff: {}", max_diff);
-        // AAC will have gaps due to priming delay, so we use a higher threshold
-        // The important thing is that we got multiple files with audio data
-    }
-
-    println!("  AAC splitting test passed (note: AAC has inherent priming delay gaps)");
+    println!("  AAC gapless test passed");
 
     // Cleanup
     for file in files {
