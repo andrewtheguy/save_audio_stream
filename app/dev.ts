@@ -2,6 +2,9 @@
 
 import * as esbuild from "https://deno.land/x/esbuild@v0.20.1/mod.js";
 import { denoPlugins } from "jsr:@luca/esbuild-deno-loader@^0.10.3";
+import { serveDir } from "jsr:@std/http@1.0.10/file-server";
+import { NodeGlobalsPolyfillPlugin } from "npm:@esbuild-plugins/node-globals-polyfill";
+import { NodeModulesPolyfillPlugin } from "npm:@esbuild-plugins/node-modules-polyfill";
 
 const distDir = "./dist";
 const assetsDir = `${distDir}/assets`;
@@ -22,6 +25,11 @@ async function build() {
   try {
     await esbuild.build({
       plugins: [
+        NodeGlobalsPolyfillPlugin({
+          process: true,
+          buffer: true,
+        }),
+        NodeModulesPolyfillPlugin(),
         ...denoPlugins({
           configPath: Deno.cwd() + "/deno.json",
         }),
@@ -33,9 +41,14 @@ async function build() {
       minify: false,
       sourcemap: true,
       target: ["es2020"],
+      platform: "browser",
       jsx: "automatic",
       jsxImportSource: "react",
       external: ["*.css"],
+      define: {
+        "process.env.NODE_ENV": '"development"',
+        "global": "window",
+      },
       logLevel: "info",
     });
 
@@ -72,27 +85,33 @@ await build();
 console.log("\nStarting file server on http://localhost:21173");
 console.log("Serving from ./dist directory\n");
 
-// Start the file server
-const process = new Deno.Command("deno", {
-  args: ["serve", "--port", "21173", distDir],
-  stdout: "inherit",
-  stderr: "inherit",
+// Start the file server in a separate async context
+const serverPromise = Deno.serve({
+  port: 21173,
+  onListen: () => {
+    console.log("Server ready at http://localhost:21173");
+    console.log("Watching for file changes...\n");
+  },
+}, (req) => {
+  return serveDir(req, {
+    fsRoot: distDir,
+    showDirListing: false,
+    enableCors: true,
+  });
 });
-
-const child = process.spawn();
 
 // Watch for file changes
 const watcher = Deno.watchFs(["./src", "./deps.ts"]);
 
-console.log("Watching for file changes...\n");
-
-for await (const event of watcher) {
-  if (event.kind === "modify" || event.kind === "create") {
-    console.log(`\nFile changed: ${event.paths.join(", ")}`);
-    await build();
+try {
+  for await (const event of watcher) {
+    if (event.kind === "modify" || event.kind === "create") {
+      console.log(`\nFile changed: ${event.paths.join(", ")}`);
+      await build();
+    }
   }
+} finally {
+  // Cleanup
+  await serverPromise;
+  esbuild.stop();
 }
-
-// Cleanup
-child.kill();
-esbuild.stop();

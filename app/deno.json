@@ -8,6 +8,7 @@
     "hls.js": "https://esm.sh/hls.js@1.6.15",
     "@/": "./src/"
   },
+  "nodeModulesDir": "auto",
   "compilerOptions": {
     "jsx": "react-jsx",
     "jsxImportSource": "react",

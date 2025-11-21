@@ -2,6 +2,8 @@
 
 import * as esbuild from "https://deno.land/x/esbuild@v0.20.1/mod.js";
 import { denoPlugins } from "jsr:@luca/esbuild-deno-loader@^0.10.3";
+import { NodeGlobalsPolyfillPlugin } from "npm:@esbuild-plugins/node-globals-polyfill";
+import { NodeModulesPolyfillPlugin } from "npm:@esbuild-plugins/node-modules-polyfill";
 
 const distDir = "./dist";
 const assetsDir = `${distDir}/assets`;
@@ -21,6 +23,11 @@ console.log("Building React application with esbuild...");
 // Bundle the React application
 const result = await esbuild.build({
   plugins: [
+    NodeGlobalsPolyfillPlugin({
+      process: true,
+      buffer: true,
+    }),
+    NodeModulesPolyfillPlugin(),
     ...denoPlugins({
       configPath: Deno.cwd() + "/deno.json",
     }),
@@ -32,9 +39,14 @@ const result = await esbuild.build({
   minify: true,
   sourcemap: true,
   target: ["es2020"],
+  platform: "browser",
   jsx: "automatic",
   jsxImportSource: "react",
   external: ["*.css"],
+  define: {
+    "process.env.NODE_ENV": '"production"',
+    "global": "window",
+  },
   logLevel: "info",
 });
 
