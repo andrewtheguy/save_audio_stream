@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import dashjs from "dashjs";
-import Hls from "hls.js";
+import { React, dashjs, Hls } from "../../deps.ts";
+const { useEffect, useRef, useState } = React;
 
 interface AudioPlayerProps {
   format: string;

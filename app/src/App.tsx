@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { AudioPlayer } from "./components/AudioPlayer";
+import { React } from "../deps.ts";
+const { useEffect, useState } = React;
+import { AudioPlayer } from "./components/AudioPlayer.tsx";
 
 interface SessionInfo {
   start_id: number;

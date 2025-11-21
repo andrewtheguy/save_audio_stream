@@ -31,9 +31,13 @@ use crate::constants::EXPECTED_DB_VERSION;
 use crate::webm::{write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string, write_ebml_uint};
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
-#[derive(rust_embed::RustEmbed)]
-#[folder = "app/dist/"]
-struct Asset;
+const INDEX_HTML: &[u8] = include_bytes!("../app/dist/index.html");
+
+#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+const STYLE_CSS: &[u8] = include_bytes!("../app/dist/assets/style.css");
+
+#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+const MAIN_JS: &[u8] = include_bytes!("../app/dist/assets/main.js");
 
 // State for axum handlers
 struct AudioSession {
@@ -1482,14 +1486,14 @@ async fn proxy_to_vite(path: &str) -> Response {
                     response
                 }
                 Err(_) => {
-                    (StatusCode::BAD_GATEWAY, "Failed to read response from Vite").into_response()
+                    (StatusCode::BAD_GATEWAY, "Failed to read response from dev server").into_response()
                 }
             }
         }
         Err(_) => {
             (
                 StatusCode::BAD_GATEWAY,
-                format!("Failed to connect to Vite dev server at {}. Make sure to run 'npm run dev' in the app/ directory.", VITE_DEV_SERVER)
+                format!("Failed to connect to dev server at {}. Make sure to run 'deno task dev' in the app/ directory.", VITE_DEV_SERVER)
             ).into_response()
         }
     }
@@ -1532,19 +1536,12 @@ async fn vite_node_modules_handler(Path(path): Path<String>) -> Response {
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 async fn index_handler_release() -> Response {
-    match Asset::get("index.html") {
-        Some(content) => {
-            let mut response = Response::new(Body::from(content.data.into_owned()));
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/html"),
-            );
-            response
-        }
-        None => {
-            (StatusCode::NOT_FOUND, "index.html not found").into_response()
-        }
-    }
+    let mut response = Response::new(Body::from(INDEX_HTML));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html"),
+    );
+    response
 }
 
 #[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
@@ -1554,25 +1551,20 @@ async fn index_handler_release() -> Response {
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 async fn assets_handler_release(Path(path): Path<String>) -> Response {
-    let file_path = format!("assets/{}", path);
-
-    match Asset::get(&file_path) {
-        Some(content) => {
-            let mime_type = mime_guess::from_path(&file_path)
-                .first_or_octet_stream()
-                .to_string();
-
-            let mut response = Response::new(Body::from(content.data.into_owned()));
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_str(&mime_type).unwrap(),
-            );
-            response
+    let (content, mime_type): (&[u8], &str) = match path.as_str() {
+        "style.css" => (STYLE_CSS, "text/css"),
+        "main.js" => (MAIN_JS, "application/javascript"),
+        _ => {
+            return (StatusCode::NOT_FOUND, "Asset not found").into_response();
         }
-        None => {
-            (StatusCode::NOT_FOUND, "Asset not found").into_response()
-        }
-    }
+    };
+
+    let mut response = Response::new(Body::from(content));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(mime_type),
+    );
+    response
 }
 
 #[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]

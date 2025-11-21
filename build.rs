@@ -10,36 +10,21 @@ fn main() {
     if profile == "release" && has_web_frontend {
         println!("cargo:warning=Building frontend assets for release...");
 
-        // Check if npm is available
-        let npm_check = Command::new("npm")
+        // Check if deno is available
+        let deno_check = Command::new("deno")
             .arg("--version")
             .output();
 
-        if npm_check.is_err() {
-            println!("cargo:warning=npm not found. Skipping frontend build.");
-            println!("cargo:warning=Install Node.js and npm to build frontend assets.");
+        if deno_check.is_err() {
+            println!("cargo:warning=deno not found. Skipping frontend build.");
+            println!("cargo:warning=Install Deno to build frontend assets: https://deno.land");
             return;
         }
 
-        // Run npm install
-        let install_status = Command::new("npm")
+        // Run deno task build
+        let build_status = Command::new("deno")
             .current_dir("app")
-            .arg("install")
-            .status();
-
-        match install_status {
-            Ok(status) if status.success() => {
-                println!("cargo:warning=npm install completed");
-            }
-            _ => {
-                println!("cargo:warning=npm install failed. Frontend may not build correctly.");
-            }
-        }
-
-        // Run npm run build
-        let build_status = Command::new("npm")
-            .current_dir("app")
-            .arg("run")
+            .arg("task")
             .arg("build")
             .status();
 
@@ -52,7 +37,7 @@ fn main() {
                 panic!("Frontend build failed");
             }
             Err(e) => {
-                println!("cargo:warning=Failed to run npm build: {}", e);
+                println!("cargo:warning=Failed to run deno build: {}", e);
                 panic!("Frontend build failed: {}", e);
             }
         }
@@ -62,6 +47,7 @@ fn main() {
     println!("cargo:rerun-if-changed=app/");
     println!("cargo:rerun-if-changed=app/src/");
     println!("cargo:rerun-if-changed=app/index.html");
-    println!("cargo:rerun-if-changed=app/vite.config.ts");
-    println!("cargo:rerun-if-changed=app/package.json");
+    println!("cargo:rerun-if-changed=app/deno.json");
+    println!("cargo:rerun-if-changed=app/build.ts");
+    println!("cargo:rerun-if-changed=app/deps.ts");
 }
