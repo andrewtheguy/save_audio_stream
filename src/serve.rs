@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
 use crate::constants::EXPECTED_DB_VERSION;
+use crate::fmp4::{generate_init_segment, generate_media_segment};
 use crate::webm::{write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string, write_ebml_uint};
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
@@ -190,6 +191,8 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
         println!("  GET /manifest.mpd?start_id=<N>&end_id=<N>  - DASH MPD");
         println!("  GET /init.webm  - WebM initialization segment");
         println!("  GET /segment/:id  - WebM audio segment");
+        println!("  GET /opus-playlist.m3u8?start_id=<N>&end_id=<N>  - HLS/fMP4 playlist");
+        println!("  GET /opus-segment/:id.m4s  - fMP4 audio segment");
     } else if audio_format == "aac" {
         println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
         println!("  GET /aac-segment/:id.aac  - AAC audio segment");
@@ -256,7 +259,9 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
                 .route("/audio/session/{id}", get(session_handler))
                 .route("/manifest.mpd", get(mpd_handler))
                 .route("/init.webm", get(init_handler))
-                .route("/segment/{id}", get(segment_handler));
+                .route("/segment/{id}", get(segment_handler))
+                .route("/opus-playlist.m3u8", get(opus_hls_playlist_handler))
+                .route("/opus-segment/{filename}", get(opus_segment_handler));
         } else if audio_format == "aac" {
             api_routes = api_routes
                 .route("/playlist.m3u8", get(hls_playlist_handler))
@@ -1266,6 +1271,311 @@ async fn aac_segment_handler(
             ),
         ],
         audio_data,
+    )
+        .into_response()
+}
+
+/// Parse Opus packets from audio data and return both packet count and packet data
+/// Opus packets are stored as 2-byte little-endian length followed by packet data
+fn parse_opus_packets(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    let mut packets = Vec::new();
+    let mut pos = 0;
+
+    while pos + 2 <= data.len() {
+        // Read 2-byte little-endian length
+        let len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2;
+
+        if pos + len > data.len() {
+            break;
+        }
+
+        packets.push(data[pos..pos + len].to_vec());
+        pos += len;
+    }
+
+    if packets.is_empty() {
+        return Err("No valid Opus packets found".to_string());
+    }
+
+    Ok(packets)
+}
+
+// HLS playlist handler for Opus format
+async fn opus_hls_playlist_handler(
+    State(state): State<StdArc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    // Get sample rate (Opus is 48kHz)
+    let sample_rate: u32 = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'sample_rate'",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(sr) => sr.parse().unwrap_or(48000),
+        Err(_) => 48000,
+    };
+
+    // Opus frame size is always 960 samples at 48kHz (20ms)
+    let samples_per_packet = 960u32;
+
+    // Determine segment range
+    let start_id: i64 = params
+        .get("start_id")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+
+    let end_id: i64 = if let Some(end_str) = params.get("end_id") {
+        end_str.parse().unwrap_or(i64::MAX)
+    } else {
+        match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+            Ok(id) => id,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to determine max segment ID",
+                )
+                    .into_response()
+            }
+        }
+    };
+
+    // Query segments and calculate durations
+    let mut stmt = match conn.prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let segments_iter = match stmt.query_map([start_id, end_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+    }) {
+        Ok(iter) => iter,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:7\n");
+    let mut max_duration = 0.0f64;
+    let mut segment_durations = Vec::new();
+
+    for segment_result in segments_iter {
+        let (seg_id, audio_data) = match segment_result {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let packets = match parse_opus_packets(&audio_data) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        // Each Opus packet is 20ms (960 samples at 48kHz)
+        let duration = (packets.len() as f64 * samples_per_packet as f64) / sample_rate as f64;
+        if duration > max_duration {
+            max_duration = duration;
+        }
+
+        segment_durations.push((seg_id, duration));
+    }
+
+    playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
+    playlist.push_str("#EXT-X-MAP:URI=\"/opus-segment/init.mp4\"\n");
+
+    for (seg_id, duration) in segment_durations {
+        playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
+        playlist.push_str(&format!("/opus-segment/{}.m4s\n", seg_id));
+    }
+
+    playlist.push_str("#EXT-X-ENDLIST\n");
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+        playlist,
+    )
+        .into_response()
+}
+
+// Opus fMP4 segment handler for HLS
+async fn opus_segment_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(filename): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Handle init segment request
+    if filename == "init.mp4" {
+        let timescale = 48000u32;
+        let track_id = 1u32;
+        let channel_count = 1u16; // Mono
+        let sample_rate = 48000u32;
+
+        let init_segment = match generate_init_segment(timescale, track_id, channel_count, sample_rate) {
+            Ok(data) => data,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to generate init segment: {}", e),
+                )
+                    .into_response()
+            }
+        };
+
+        return (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static("video/mp4")),
+                (
+                    header::CONTENT_LENGTH,
+                    HeaderValue::from_str(&init_segment.len().to_string()).unwrap(),
+                ),
+            ],
+            init_segment,
+        )
+            .into_response();
+    }
+
+    // Parse segment ID from filename (strip .m4s extension)
+    let seg_id: i64 = match filename.strip_suffix(".m4s").and_then(|s| s.parse().ok()) {
+        Some(id) => id,
+        None => {
+            return (StatusCode::BAD_REQUEST, "Invalid segment filename").into_response();
+        }
+    };
+
+    let conn = match Connection::open(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let audio_data: Vec<u8> = match conn.query_row(
+        "SELECT audio_data FROM segments WHERE id = ?1",
+        [seg_id],
+        |row| row.get(0),
+    ) {
+        Ok(data) => data,
+        Err(_) => {
+            return (StatusCode::NOT_FOUND, "Segment not found").into_response();
+        }
+    };
+
+    // Parse Opus packets
+    let opus_packets = match parse_opus_packets(&audio_data) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to parse Opus packets: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    // Generate fMP4 media segment
+    let timescale = 48000u32;
+    let track_id = 1u32;
+    let samples_per_packet = 960u32; // 20ms at 48kHz
+
+    // Calculate base media decode time (for simplicity, use segment_id * average_duration)
+    // In a real implementation, you might want to track cumulative time
+    let base_media_decode_time = ((seg_id - 1) as u64) * (opus_packets.len() as u64 * samples_per_packet as u64);
+
+    let media_segment = match generate_media_segment(
+        seg_id as u32,
+        track_id,
+        base_media_decode_time,
+        &opus_packets,
+        timescale,
+        samples_per_packet,
+    ) {
+        Ok(data) => data,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to generate media segment: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let total_len = media_segment.len() as u64;
+
+    // Handle Range requests
+    if let Some(range_header) = headers.get(header::RANGE) {
+        if let Ok(range_str) = range_header.to_str() {
+            if let Some(range) = range_str.strip_prefix("bytes=") {
+                let parts: Vec<&str> = range.split('-').collect();
+                if parts.len() == 2 {
+                    let start: u64 = parts[0].parse().unwrap_or(0);
+                    let end: u64 = if parts[1].is_empty() {
+                        total_len - 1
+                    } else {
+                        parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
+                    };
+
+                    if start < total_len {
+                        let range_data = media_segment[start as usize..=(end as usize)].to_vec();
+                        return (
+                            StatusCode::PARTIAL_CONTENT,
+                            [
+                                (header::CONTENT_TYPE, HeaderValue::from_static("video/mp4")),
+                                (
+                                    header::CONTENT_RANGE,
+                                    HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len))
+                                        .unwrap(),
+                                ),
+                                (
+                                    header::CONTENT_LENGTH,
+                                    HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
+                                ),
+                            ],
+                            range_data,
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        }
+    }
+
+    // Return full segment
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static("video/mp4")),
+            (
+                header::CONTENT_LENGTH,
+                HeaderValue::from_str(&total_len.to_string()).unwrap(),
+            ),
+        ],
+        media_segment,
     )
         .into_response()
 }
