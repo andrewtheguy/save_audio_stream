@@ -1482,14 +1482,14 @@ async fn proxy_to_vite(path: &str) -> Response {
                     response
                 }
                 Err(_) => {
-                    (StatusCode::BAD_GATEWAY, "Failed to read response from Vite").into_response()
+                    (StatusCode::BAD_GATEWAY, "Failed to read response from dev server").into_response()
                 }
             }
         }
         Err(_) => {
             (
                 StatusCode::BAD_GATEWAY,
-                format!("Failed to connect to Vite dev server at {}. Make sure to run 'npm run dev' in the app/ directory.", VITE_DEV_SERVER)
+                format!("Failed to connect to dev server at {}. Make sure to run 'deno task dev' in the app/ directory.", VITE_DEV_SERVER)
             ).into_response()
         }
     }
