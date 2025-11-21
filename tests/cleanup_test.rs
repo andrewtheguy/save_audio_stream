@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Import the cleanup functions from the library
 use save_audio_stream::record::{cleanup_old_segments_with_params, cleanup_old_segments_with_retention};
@@ -19,7 +20,8 @@ fn create_test_database() -> Connection {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
-            audio_data BLOB NOT NULL
+            audio_data BLOB NOT NULL,
+            segment_id INTEGER NOT NULL
         )",
         [],
     )
@@ -43,9 +45,16 @@ fn insert_segment_with_timestamp(
     is_boundary: bool,
     data: &[u8],
 ) -> i64 {
+    // For testing purposes, use a microsecond timestamp as segment_id
+    // In real implementation, this would be set based on session boundaries
+    let segment_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as i64;
+
     conn.execute(
-        "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3)",
-        rusqlite::params![timestamp_ms, is_boundary as i32, data],
+        "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![timestamp_ms, is_boundary as i32, data, segment_id],
     )
     .unwrap();
 

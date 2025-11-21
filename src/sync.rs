@@ -36,6 +36,7 @@ struct ChunkData {
     is_timestamp_from_source: i32,
     #[serde(with = "serde_bytes")]
     audio_data: Vec<u8>,
+    segment_id: i64,
 }
 
 
@@ -236,7 +237,8 @@ fn sync_single_show(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp_ms INTEGER NOT NULL,
                 is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
-                audio_data BLOB NOT NULL
+                audio_data BLOB NOT NULL,
+                segment_id INTEGER NOT NULL
             )",
             [],
         )?;
@@ -340,8 +342,8 @@ fn sync_single_show(
                 }
 
                 tx.execute(
-                    "INSERT INTO chunks (id, timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![chunk.id, chunk.timestamp_ms, chunk.is_timestamp_from_source, &chunk.audio_data],
+                    "INSERT INTO chunks (id, timestamp_ms, is_timestamp_from_source, audio_data, segment_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![chunk.id, chunk.timestamp_ms, chunk.is_timestamp_from_source, &chunk.audio_data, chunk.segment_id],
                 )?;
 
                 prev_id = Some(chunk.id);

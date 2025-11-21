@@ -15,7 +15,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
@@ -139,7 +139,8 @@ fn run_connection_loop(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
-            audio_data BLOB NOT NULL
+            audio_data BLOB NOT NULL,
+            segment_id INTEGER NOT NULL
         )",
         [],
     )?;
@@ -211,9 +212,9 @@ fn run_connection_loop(
     if is_existing_db {
         // Validate version first
         let db_version = existing_version.ok_or("Database is missing version in metadata")?;
-        if db_version != "1" {
+        if db_version != "2" {
             return Err(format!(
-                "Unsupported database version: '{}'. This application only supports version '1'",
+                "Unsupported database version: '{}'. This application only supports version '2'",
                 db_version
             ).into());
         }
@@ -291,7 +292,7 @@ fn run_connection_loop(
             .map(char::from)
             .collect::<String>());
         conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('version', '1')",
+            "INSERT INTO metadata (key, value) VALUES ('version', '2')",
             [],
         )?;
         conn.execute(
@@ -588,15 +589,22 @@ fn run_connection_loop(
     let mut segment_samples: u64 = 0;
     let mut segment_start_samples: u64 = 0;
 
+    // Create new segment_id for this connection (session boundary)
+    let connection_segment_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as i64;
+
     // Helper to insert segment into SQLite
     let insert_segment = |conn: &Connection,
                           timestamp_ms: i64,
                           is_from_source: bool,
+                          segment_id: i64,
                           data: &[u8]|
      -> Result<(), Box<dyn std::error::Error>> {
         conn.execute(
-            "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3)",
-            rusqlite::params![timestamp_ms, is_from_source as i32, data],
+            "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, segment_id, audio_data) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![timestamp_ms, is_from_source as i32, segment_id, data],
         )?;
         Ok(())
     };
@@ -685,6 +693,7 @@ fn run_connection_loop(
                                                         &conn,
                                                         timestamp_ms,
                                                         segment_number == 0,
+                                                        connection_segment_id,
                                                         &segment_buffer,
                                                     )?;
                                                     debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
@@ -728,6 +737,7 @@ fn run_connection_loop(
                                                         &conn,
                                                         timestamp_ms,
                                                         segment_number == 0,
+                                                        connection_segment_id,
                                                         &segment_buffer,
                                                     )?;
                                                     debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
@@ -761,6 +771,7 @@ fn run_connection_loop(
                                             &conn,
                                             timestamp_ms,
                                             segment_number == 0,
+                                            connection_segment_id,
                                             &segment_buffer,
                                         )?;
                                         debug!(
@@ -845,7 +856,7 @@ fn run_connection_loop(
     if !segment_buffer.is_empty() {
         let timestamp_ms = base_timestamp_ms
             + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
-        insert_segment(&conn, timestamp_ms, segment_number == 0, &segment_buffer)?;
+        insert_segment(&conn, timestamp_ms, segment_number == 0, connection_segment_id, &segment_buffer)?;
         println!(
             "\nInserted final segment {} ({} bytes)",
             segment_number,

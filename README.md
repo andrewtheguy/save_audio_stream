@@ -226,14 +226,21 @@ CREATE TABLE metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
--- Keys: unique_id, name, audio_format, split_interval
+-- Keys: version (schema version, currently "2"),
+--       unique_id, name, audio_format, split_interval, bitrate, sample_rate,
+--       is_recipient (for sync databases)
 
 -- Audio chunks
 CREATE TABLE chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp_ms INTEGER NOT NULL,  -- Unix timestamp in milliseconds
-    audio_data BLOB NOT NULL
+    timestamp_ms INTEGER NOT NULL,            -- Unix timestamp in milliseconds
+    is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,  -- 1 for session boundaries
+    audio_data BLOB NOT NULL,
+    segment_id INTEGER NOT NULL               -- Microsecond timestamp identifying the session/segment
 );
+
+-- Index for efficient cleanup queries
+CREATE INDEX idx_chunks_boundary ON chunks(is_timestamp_from_source, timestamp_ms);
 ```
 
 **Note:** Files can be generated from the database if needed. The database format provides better reliability and supports incremental syncing.
