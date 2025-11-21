@@ -188,7 +188,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
         println!("  GET /segment/:id  - WebM audio segment");
     } else if audio_format == "aac" {
         println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
-        println!("  GET /segment/:id.aac  - AAC audio segment");
+        println!("  GET /aac-segment/:id.aac  - AAC audio segment");
     }
     println!("  GET /api/sync/shows  - List available shows for syncing");
 
@@ -235,6 +235,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
             .allow_headers(Any);
 
         let mut api_routes = Router::new()
+            .route("/api/format", get(format_handler))
             .route("/api/segments/range", get(segments_range_handler))
             .route("/api/sessions", get(sessions_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
@@ -253,7 +254,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
         } else if audio_format == "aac" {
             api_routes = api_routes
                 .route("/playlist.m3u8", get(hls_playlist_handler))
-                .route("/segment/{id}.aac", get(aac_segment_handler));
+                .route("/aac-segment/{filename}", get(aac_segment_handler));
         }
 
         #[cfg(debug_assertions)]
@@ -1159,7 +1160,7 @@ async fn hls_playlist_handler(
 
     for (seg_id, duration) in segment_durations {
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        playlist.push_str(&format!("/segment/{}.aac\n", seg_id));
+        playlist.push_str(&format!("/aac-segment/{}.aac\n", seg_id));
     }
 
     playlist.push_str("#EXT-X-ENDLIST\n");
@@ -1175,14 +1176,14 @@ async fn hls_playlist_handler(
 // AAC segment handler for HLS
 async fn aac_segment_handler(
     State(state): State<StdArc<AppState>>,
-    Path(segment_path): Path<String>,
+    Path(filename): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    // Extract segment ID from path (remove .aac extension)
-    let seg_id: i64 = match segment_path.strip_suffix(".aac").and_then(|s| s.parse().ok()) {
+    // Parse segment ID from filename (strip .aac extension)
+    let seg_id: i64 = match filename.strip_suffix(".aac").and_then(|s| s.parse().ok()) {
         Some(id) => id,
         None => {
-            return (StatusCode::BAD_REQUEST, "Invalid segment ID").into_response();
+            return (StatusCode::BAD_REQUEST, "Invalid segment filename").into_response();
         }
     };
 
@@ -1261,6 +1262,22 @@ async fn aac_segment_handler(
         audio_data,
     )
         .into_response()
+}
+
+#[derive(Serialize)]
+struct FormatResponse {
+    format: String,
+}
+
+async fn format_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&FormatResponse {
+            format: state.audio_format.clone(),
+        })
+        .unwrap(),
+    )
 }
 
 async fn segments_range_handler(

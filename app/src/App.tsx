@@ -36,23 +36,22 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SessionsResponse | null>(null);
+  const [audioFormat, setAudioFormat] = useState<string>("opus");
 
   useEffect(() => {
-    fetch("/api/sessions")
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-      })
-      .then((data: SessionsResponse) => {
-        setData(data);
+    Promise.all([
+      fetch("/api/format").then((r) => r.json()),
+      fetch("/api/sessions").then((r) => r.json()),
+    ])
+      .then(([formatData, sessionsData]) => {
+        setAudioFormat(formatData.format || "opus");
+        setData(sessionsData);
         setLoading(false);
       })
       .catch((err) => {
-        console.error("Failed to load sessions:", err);
+        console.error("Failed to load data:", err);
         setError(
-          `Error loading sessions: ${err instanceof Error ? err.message : String(err)}`
+          `Error loading data: ${err instanceof Error ? err.message : String(err)}`
         );
         setLoading(false);
       });
@@ -102,19 +101,21 @@ function App() {
                 </div>
                 <div className="session-content">
                   <AudioPlayer
-                    manifestUrl={`/manifest.mpd?start_id=${session.start_id}&end_id=${session.end_id}`}
+                    format={audioFormat}
                     startId={session.start_id}
                     endId={session.end_id}
                   />
-                  <div className="url-row">
-                    <span className="url-label">Audio:</span>
-                    <a
-                      href={`/audio?start_id=${session.start_id}&end_id=${session.end_id}`}
-                      className="url-link"
-                    >
-                      /audio?start_id={session.start_id}&end_id={session.end_id}
-                    </a>
-                  </div>
+                  {audioFormat === "opus" && (
+                    <div className="url-row">
+                      <span className="url-label">Audio:</span>
+                      <a
+                        href={`/audio?start_id=${session.start_id}&end_id=${session.end_id}`}
+                        className="url-link"
+                      >
+                        /audio?start_id={session.start_id}&end_id={session.end_id}
+                      </a>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

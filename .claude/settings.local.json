@@ -8,7 +8,9 @@
       "Bash(cargo test:*)",
       "Bash(cargo check:*)",
       "Bash(find:*)",
-      "mcp__context7__resolve-library-id"
+      "mcp__context7__resolve-library-id",
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)"
     ],
     "deny": [],
     "ask": []
