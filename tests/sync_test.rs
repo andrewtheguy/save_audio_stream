@@ -39,19 +39,19 @@ struct ShowsList {
 }
 
 #[derive(Debug, Serialize)]
-struct SegmentInfo {
+struct SectionInfo {
     id: i64,
     start_timestamp_ms: i64,
 }
 
 #[derive(Debug, Serialize)]
-struct ChunkData {
+struct SegmentData {
     id: i64,
     timestamp_ms: i64,
     is_timestamp_from_source: i32,
     #[serde(with = "serde_bytes")]
     audio_data: Vec<u8>,
-    segment_id: i64,
+    section_id: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,8 +71,8 @@ struct TestServerState {
 fn create_source_database(
     show_name: &str,
     unique_id: &str,
-    num_segments: usize,
-    chunks_per_segment: usize,
+    num_sections: usize,
+    segments_per_section: usize,
 ) -> Connection {
     let mut conn = Connection::open_in_memory().unwrap();
 
@@ -83,7 +83,7 @@ fn create_source_database(
     )
     .unwrap();
     conn.execute(
-        "CREATE TABLE segments (
+        "CREATE TABLE sections (
             id INTEGER PRIMARY KEY,
             start_timestamp_ms INTEGER NOT NULL
         )",
@@ -91,12 +91,12 @@ fn create_source_database(
     )
     .unwrap();
     conn.execute(
-        "CREATE TABLE chunks (
+        "CREATE TABLE segments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            segment_id INTEGER NOT NULL REFERENCES segments(id)
+            section_id INTEGER NOT NULL REFERENCES sections(id)
         )",
         [],
     )
@@ -104,17 +104,17 @@ fn create_source_database(
 
     // Create indexes
     conn.execute(
-        "CREATE INDEX idx_chunks_boundary ON chunks(is_timestamp_from_source, timestamp_ms)",
+        "CREATE INDEX idx_segments_boundary ON segments(is_timestamp_from_source, timestamp_ms)",
         [],
     )
     .unwrap();
     conn.execute(
-        "CREATE INDEX idx_chunks_segment_id ON chunks(segment_id)",
+        "CREATE INDEX idx_segments_section_id ON segments(section_id)",
         [],
     )
     .unwrap();
     conn.execute(
-        "CREATE INDEX idx_segments_start_timestamp ON segments(start_timestamp_ms)",
+        "CREATE INDEX idx_sections_start_timestamp ON sections(start_timestamp_ms)",
         [],
     )
     .unwrap();
@@ -159,31 +159,31 @@ fn create_source_database(
     )
     .unwrap();
 
-    // Insert test segments and chunks
+    // Insert test sections and segments
     let base_timestamp_ms = 1700000000000i64; // Some timestamp
     let tx = conn.transaction().unwrap();
     {
-        for seg_idx in 0..num_segments {
-            let segment_id = (base_timestamp_ms + seg_idx as i64 * 1000000) * 1000; // microseconds
-            let segment_timestamp_ms = base_timestamp_ms + seg_idx as i64 * 300000; // 5 min intervals
+        for sec_idx in 0..num_sections {
+            let section_id = (base_timestamp_ms + sec_idx as i64 * 1000000) * 1000; // microseconds
+            let section_timestamp_ms = base_timestamp_ms + sec_idx as i64 * 300000; // 5 min intervals
 
-            // Insert segment
+            // Insert section
             tx.execute(
-                "INSERT INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
-                rusqlite::params![segment_id, segment_timestamp_ms],
+                "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
+                rusqlite::params![section_id, section_timestamp_ms],
             )
             .unwrap();
 
-            // Insert chunks for this segment
-            for chunk_idx in 0..chunks_per_segment {
-                let is_boundary = if chunk_idx == 0 { 1 } else { 0 };
-                let chunk_timestamp_ms = segment_timestamp_ms + chunk_idx as i64 * 1000;
-                let audio_data = format!("audio_data_seg{}_chunk{}", seg_idx, chunk_idx).into_bytes();
+            // Insert segments for this section
+            for seg_idx in 0..segments_per_section {
+                let is_boundary = if seg_idx == 0 { 1 } else { 0 };
+                let segment_timestamp_ms = section_timestamp_ms + seg_idx as i64 * 1000;
+                let audio_data = format!("audio_data_sec{}_seg{}", sec_idx, seg_idx).into_bytes();
 
                 tx.execute(
-                    "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id)
+                    "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, audio_data, section_id)
                      VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![chunk_timestamp_ms, is_boundary, audio_data, segment_id],
+                    rusqlite::params![segment_timestamp_ms, is_boundary, audio_data, section_id],
                 )
                 .unwrap();
             }
@@ -259,12 +259,12 @@ async fn get_metadata_handler(
         .query_row("SELECT value FROM metadata WHERE key = 'version'", [], |row| row.get(0))
         .unwrap();
 
-    // Get min/max chunk IDs
+    // Get min/max segment IDs
     let min_id: i64 = conn
-        .query_row("SELECT MIN(id) FROM chunks", [], |row| row.get(0))
+        .query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
         .unwrap_or(0);
     let max_id: i64 = conn
-        .query_row("SELECT MAX(id) FROM chunks", [], |row| row.get(0))
+        .query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0))
         .unwrap_or(0);
 
     let metadata = ShowMetadata {
@@ -282,8 +282,8 @@ async fn get_metadata_handler(
     Json(metadata).into_response()
 }
 
-/// API handler: Get segments
-async fn get_segments_handler(
+/// API handler: Get sections
+async fn get_sections_handler(
     State(state): State<Arc<TestServerState>>,
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
@@ -295,12 +295,12 @@ async fn get_segments_handler(
     };
 
     let mut stmt = conn
-        .prepare("SELECT id, start_timestamp_ms FROM segments ORDER BY id")
+        .prepare("SELECT id, start_timestamp_ms FROM sections ORDER BY id")
         .unwrap();
 
-    let segments: Vec<SegmentInfo> = stmt
+    let sections: Vec<SectionInfo> = stmt
         .query_map([], |row| {
-            Ok(SegmentInfo {
+            Ok(SectionInfo {
                 id: row.get(0)?,
                 start_timestamp_ms: row.get(1)?,
             })
@@ -309,11 +309,11 @@ async fn get_segments_handler(
         .map(|r| r.unwrap())
         .collect();
 
-    Json(segments).into_response()
+    Json(sections).into_response()
 }
 
-/// API handler: Get chunks in range
-async fn get_chunks_handler(
+/// API handler: Get segments in range
+async fn get_segments_handler(
     State(state): State<Arc<TestServerState>>,
     Path(show_name): Path<String>,
     Query(params): Query<SegmentQueryParams>,
@@ -327,23 +327,23 @@ async fn get_chunks_handler(
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data, segment_id
-             FROM chunks
+            "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data, section_id
+             FROM segments
              WHERE id >= ?1 AND id <= ?2
              ORDER BY id",
         )
         .unwrap();
 
-    let chunks: Vec<ChunkData> = stmt
+    let segments: Vec<SegmentData> = stmt
         .query_map(
             rusqlite::params![params.start_id, params.end_id],
             |row| {
-                Ok(ChunkData {
+                Ok(SegmentData {
                     id: row.get(0)?,
                     timestamp_ms: row.get(1)?,
                     is_timestamp_from_source: row.get(2)?,
                     audio_data: row.get(3)?,
-                    segment_id: row.get(4)?,
+                    section_id: row.get(4)?,
                 })
             },
         )
@@ -351,7 +351,7 @@ async fn get_chunks_handler(
         .map(|r| r.unwrap())
         .collect();
 
-    Json(chunks).into_response()
+    Json(segments).into_response()
 }
 
 /// Start a test HTTP server
@@ -365,8 +365,8 @@ async fn start_test_server(
     let app = Router::new()
         .route("/api/sync/shows", get(list_shows_handler))
         .route("/api/sync/shows/{show}/metadata", get(get_metadata_handler))
+        .route("/api/sync/shows/{show}/sections", get(get_sections_handler))
         .route("/api/sync/shows/{show}/segments", get(get_segments_handler))
-        .route("/api/sync/shows/{show}/chunks", get(get_chunks_handler))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -388,8 +388,8 @@ fn verify_destination_db(
     db_path: &std::path::Path,
     expected_show_name: &str,
     expected_source_unique_id: &str,
-    expected_num_chunks: usize,
     expected_num_segments: usize,
+    expected_num_sections: usize,
 ) {
     let conn = Connection::open(db_path).unwrap();
 
@@ -417,24 +417,24 @@ fn verify_destination_db(
         .unwrap();
     assert_eq!(is_recipient, "true");
 
-    // Verify chunk count
-    let chunk_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(chunk_count, expected_num_chunks as i64);
-
     // Verify segment count
     let segment_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM segments", [], |row| row.get(0))
         .unwrap();
     assert_eq!(segment_count, expected_num_segments as i64);
+
+    // Verify section count
+    let section_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sections", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(section_count, expected_num_sections as i64);
 }
 
 #[tokio::test]
 async fn test_sync_new_show() {
     let temp_dir = tempfile::tempdir().unwrap();
 
-    // Create source database with 3 segments, 5 chunks each
+    // Create source database with 3 sections, 5 segments each
     let source_db = create_source_database("test_show", "source_unique_123", 3, 5);
 
     // Start test server
@@ -611,19 +611,19 @@ async fn test_sync_rejects_old_version() {
     // Create source database with old version (version "2" instead of "3")
     let conn = Connection::open_in_memory().unwrap();
 
-    // Create old schema (version 2 - without segments table)
+    // Create old schema (version 2 - without sections table)
     conn.execute(
         "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
         [],
     )
     .unwrap();
     conn.execute(
-        "CREATE TABLE chunks (
+        "CREATE TABLE segments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            segment_id INTEGER NOT NULL
+            section_id INTEGER NOT NULL
         )",
         [],
     )
@@ -668,7 +668,7 @@ async fn test_sync_rejects_old_version() {
 
     // Insert some test data
     conn.execute(
-        "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id)
+        "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, audio_data, section_id)
          VALUES (1700000000000, 1, 'test_data', 1)",
         [],
     )
@@ -731,12 +731,12 @@ async fn test_sync_rejects_old_version_on_resume() {
         .unwrap();
     old_conn
         .execute(
-            "CREATE TABLE chunks (
+            "CREATE TABLE segments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp_ms INTEGER NOT NULL,
                 is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
                 audio_data BLOB NOT NULL,
-                segment_id INTEGER NOT NULL
+                section_id INTEGER NOT NULL
             )",
             [],
         )
@@ -778,7 +778,7 @@ async fn test_sync_rejects_old_version_on_resume() {
         .unwrap();
     old_conn
         .execute(
-            "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id)
+            "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, audio_data, section_id)
              VALUES (1700000000000, 1, 'test', 1)",
             [],
         )
@@ -820,12 +820,12 @@ async fn test_sync_rejects_local_old_version() {
     )
     .unwrap();
     conn.execute(
-        "CREATE TABLE chunks (
+        "CREATE TABLE segments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            segment_id INTEGER NOT NULL
+            section_id INTEGER NOT NULL
         )",
         [],
     )
@@ -1057,7 +1057,7 @@ async fn test_sync_rejects_recipient_database() {
     )
     .unwrap();
     conn.execute(
-        "CREATE TABLE segments (
+        "CREATE TABLE sections (
             id INTEGER PRIMARY KEY,
             start_timestamp_ms INTEGER NOT NULL
         )",
@@ -1065,12 +1065,12 @@ async fn test_sync_rejects_recipient_database() {
     )
     .unwrap();
     conn.execute(
-        "CREATE TABLE chunks (
+        "CREATE TABLE segments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            segment_id INTEGER NOT NULL REFERENCES segments(id)
+            section_id INTEGER NOT NULL REFERENCES sections(id)
         )",
         [],
     )
@@ -1118,18 +1118,18 @@ async fn test_sync_rejects_recipient_database() {
     )
     .unwrap();
 
-    // Insert test segment and chunk
-    let segment_id = 1700000000000i64 * 1000;
+    // Insert test section and segment
+    let section_id = 1700000000000i64 * 1000;
     conn.execute(
-        "INSERT INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
-        rusqlite::params![segment_id, 1700000000000i64],
+        "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
+        rusqlite::params![section_id, 1700000000000i64],
     )
     .unwrap();
     let audio_data = b"test_audio_data";
     conn.execute(
-        "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id)
+        "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, audio_data, section_id)
          VALUES (1700000000000, 1, ?1, ?2)",
-        rusqlite::params![&audio_data[..], segment_id],
+        rusqlite::params![&audio_data[..], section_id],
     )
     .unwrap();
 

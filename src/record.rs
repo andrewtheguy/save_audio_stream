@@ -30,7 +30,7 @@ use crate::schedule::{
 };
 use crate::streaming::StreamingSource;
 
-// Retention period for recorded segments (in hours)
+// Retention period for recorded sections (in hours)
 // For testing: set to 1 (1 hour), 24 (1 day), or 168 (1 week)
 const RETENTION_HOURS: i64 = 168; // ~1 week
 
@@ -45,18 +45,18 @@ fn get_backoff_ms(elapsed_secs: u64) -> u64 {
     }
 }
 
-/// Clean up old segments from database, keeping data starting from a natural boundary
+/// Clean up old sections from database, keeping data starting from a natural boundary
 ///
 /// For testing, pass a specific retention_hours value and optionally a fixed reference_time.
-pub fn cleanup_old_segments_with_retention(
+pub fn cleanup_old_sections_with_retention(
     conn: &Connection,
     retention_hours: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    cleanup_old_segments_with_params(conn, retention_hours, None)
+    cleanup_old_sections_with_params(conn, retention_hours, None)
 }
 
-/// Clean up old segments with explicit reference time (for testing)
-pub fn cleanup_old_segments_with_params(
+/// Clean up old sections with explicit reference time (for testing)
+pub fn cleanup_old_sections_with_params(
     conn: &Connection,
     retention_hours: i64,
     reference_time: Option<DateTime<Utc>>,
@@ -67,58 +67,58 @@ pub fn cleanup_old_segments_with_params(
     let cutoff_ms = cutoff.timestamp_millis();
 
     println!(
-        "Checking for segments older than {} hours (cutoff: {})",
+        "Checking for sections older than {} hours (cutoff: {})",
         retention_hours,
         cutoff.format("%Y-%m-%d %H:%M:%S UTC")
     );
 
-    // Find the last complete segment BEFORE the cutoff
+    // Find the last complete section BEFORE the cutoff
     // This ensures we keep complete sessions and don't break playback continuity
-    let last_keeper_segment: Option<i64> = conn
+    let last_keeper_section: Option<i64> = conn
         .query_row(
-            "SELECT MAX(id) FROM segments WHERE start_timestamp_ms < ?1",
+            "SELECT MAX(id) FROM sections WHERE start_timestamp_ms < ?1",
             [cutoff_ms],
             |row| row.get(0),
         )
         .ok();
 
-    // If we found a segment to keep, delete all older segments and their chunks
-    if let Some(keeper_segment_id) = last_keeper_segment {
-        // Delete chunks from segments that are both:
+    // If we found a section to keep, delete all older sections and their segments
+    if let Some(keeper_section_id) = last_keeper_section {
+        // Delete segments from sections that are both:
         // 1. Timestamped before the cutoff
-        // 2. Have IDs less than the keeper (to preserve the last complete segment)
-        let deleted_chunks = conn.execute(
-            "DELETE FROM chunks WHERE segment_id IN (
-                SELECT id FROM segments
+        // 2. Have IDs less than the keeper (to preserve the last complete section)
+        let deleted_segments = conn.execute(
+            "DELETE FROM segments WHERE section_id IN (
+                SELECT id FROM sections
                 WHERE start_timestamp_ms < ?1 AND id < ?2
             )",
-            rusqlite::params![cutoff_ms, keeper_segment_id],
+            rusqlite::params![cutoff_ms, keeper_section_id],
         )?;
 
-        // Delete segments that are timestamped before cutoff and older than keeper
-        let deleted_segments = conn.execute(
-            "DELETE FROM segments WHERE start_timestamp_ms < ?1 AND id < ?2",
-            rusqlite::params![cutoff_ms, keeper_segment_id],
+        // Delete sections that are timestamped before cutoff and older than keeper
+        let deleted_sections = conn.execute(
+            "DELETE FROM sections WHERE start_timestamp_ms < ?1 AND id < ?2",
+            rusqlite::params![cutoff_ms, keeper_section_id],
         )?;
 
-        if deleted_chunks > 0 || deleted_segments > 0 {
+        if deleted_segments > 0 || deleted_sections > 0 {
             println!(
-                "Cleaned up {} chunks and {} segments (keeping segment_id={} and newer)",
-                deleted_chunks, deleted_segments, keeper_segment_id
+                "Cleaned up {} segments and {} sections (keeping section_id={} and newer)",
+                deleted_segments, deleted_sections, keeper_section_id
             );
         } else {
-            println!("No old segments to clean up");
+            println!("No old sections to clean up");
         }
     } else {
-        println!("No old segments to clean up (no segments found before cutoff)");
+        println!("No old sections to clean up (no sections found before cutoff)");
     }
 
     Ok(())
 }
 
-/// Clean up old segments using the default RETENTION_HOURS constant
-fn cleanup_old_segments(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
-    cleanup_old_segments_with_retention(conn, RETENTION_HOURS)
+/// Clean up old sections using the default RETENTION_HOURS constant
+fn cleanup_old_sections(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    cleanup_old_sections_with_retention(conn, RETENTION_HOURS)
 }
 
 /// Open database connection with WAL mode enabled
@@ -149,37 +149,37 @@ fn run_connection_loop(
         [],
     )?;
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS segments (
+        "CREATE TABLE IF NOT EXISTS sections (
             id INTEGER PRIMARY KEY,
             start_timestamp_ms INTEGER NOT NULL
         )",
         [],
     )?;
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS chunks (
+        "CREATE TABLE IF NOT EXISTS segments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            segment_id INTEGER NOT NULL REFERENCES segments(id)
+            section_id INTEGER NOT NULL REFERENCES sections(id)
         )",
         [],
     )?;
 
     // Create indexes for efficient queries
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_chunks_boundary
-         ON chunks(is_timestamp_from_source, timestamp_ms)",
+        "CREATE INDEX IF NOT EXISTS idx_segments_boundary
+         ON segments(is_timestamp_from_source, timestamp_ms)",
         [],
     )?;
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_chunks_segment_id
-         ON chunks(segment_id)",
+        "CREATE INDEX IF NOT EXISTS idx_segments_section_id
+         ON segments(section_id)",
         [],
     )?;
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_segments_start_timestamp
-         ON segments(start_timestamp_ms)",
+        "CREATE INDEX IF NOT EXISTS idx_sections_start_timestamp
+         ON sections(start_timestamp_ms)",
         [],
     )?;
 
@@ -620,28 +620,28 @@ fn run_connection_loop(
     let mut segment_samples: u64 = 0;
     let mut segment_start_samples: u64 = 0;
 
-    // Create new segment_id for this connection (session boundary)
-    let connection_segment_id = SystemTime::now()
+    // Create new section_id for this connection (session boundary)
+    let connection_section_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_micros() as i64;
 
-    // Insert new segment into segments table
+    // Insert new section into sections table
     conn.execute(
-        "INSERT INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
-        rusqlite::params![connection_segment_id, base_timestamp_ms],
+        "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
+        rusqlite::params![connection_section_id, base_timestamp_ms],
     )?;
 
     // Helper to insert segment into SQLite
     let insert_segment = |conn: &Connection,
                           timestamp_ms: i64,
                           is_from_source: bool,
-                          segment_id: i64,
+                          section_id: i64,
                           data: &[u8]|
      -> Result<(), Box<dyn std::error::Error>> {
         conn.execute(
-            "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, segment_id, audio_data) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![timestamp_ms, is_from_source as i32, segment_id, data],
+            "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, section_id, audio_data) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![timestamp_ms, is_from_source as i32, section_id, data],
         )?;
         Ok(())
     };
@@ -730,7 +730,7 @@ fn run_connection_loop(
                                                         &conn,
                                                         timestamp_ms,
                                                         segment_number == 0,
-                                                        connection_segment_id,
+                                                        connection_section_id,
                                                         &segment_buffer,
                                                     )?;
                                                     debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
@@ -774,7 +774,7 @@ fn run_connection_loop(
                                                         &conn,
                                                         timestamp_ms,
                                                         segment_number == 0,
-                                                        connection_segment_id,
+                                                        connection_section_id,
                                                         &segment_buffer,
                                                     )?;
                                                     debug!("Inserted segment {} ({} bytes)", segment_number, segment_buffer.len());
@@ -808,7 +808,7 @@ fn run_connection_loop(
                                             &conn,
                                             timestamp_ms,
                                             segment_number == 0,
-                                            connection_segment_id,
+                                            connection_section_id,
                                             &segment_buffer,
                                         )?;
                                         debug!(
@@ -893,7 +893,7 @@ fn run_connection_loop(
     if !segment_buffer.is_empty() {
         let timestamp_ms = base_timestamp_ms
             + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
-        insert_segment(&conn, timestamp_ms, segment_number == 0, connection_segment_id, &segment_buffer)?;
+        insert_segment(&conn, timestamp_ms, segment_number == 0, connection_section_id, &segment_buffer)?;
         println!(
             "\nInserted final segment {} ({} bytes)",
             segment_number,
@@ -1057,10 +1057,10 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
 
         println!("\nRecording window complete. Next window starts at {} UTC.", config.schedule.record_start);
 
-        // Run cleanup of old segments - recreate connection for cleanup
+        // Run cleanup of old sections - recreate connection for cleanup
         if let Ok(cleanup_conn) = open_database_connection(&output_dir, &name) {
-            if let Err(e) = cleanup_old_segments(&cleanup_conn) {
-                eprintln!("Warning: Failed to clean up old segments: {}", e);
+            if let Err(e) = cleanup_old_sections(&cleanup_conn) {
+                eprintln!("Warning: Failed to clean up old sections: {}", e);
             }
         }
 

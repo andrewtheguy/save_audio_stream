@@ -2,9 +2,9 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
 // Import the cleanup functions from the library
-use save_audio_stream::record::{cleanup_old_segments_with_params, cleanup_old_segments_with_retention};
+use save_audio_stream::record::{cleanup_old_sections_with_params, cleanup_old_sections_with_retention};
 
-/// Helper function to create a test database with chunks
+/// Helper function to create a test database with segments
 fn create_test_database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
 
@@ -15,7 +15,7 @@ fn create_test_database() -> Connection {
     )
     .unwrap();
     conn.execute(
-        "CREATE TABLE segments (
+        "CREATE TABLE sections (
             id INTEGER PRIMARY KEY,
             start_timestamp_ms INTEGER NOT NULL
         )",
@@ -23,12 +23,12 @@ fn create_test_database() -> Connection {
     )
     .unwrap();
     conn.execute(
-        "CREATE TABLE chunks (
+        "CREATE TABLE segments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            segment_id INTEGER NOT NULL REFERENCES segments(id)
+            section_id INTEGER NOT NULL REFERENCES sections(id)
         )",
         [],
     )
@@ -36,20 +36,20 @@ fn create_test_database() -> Connection {
 
     // Create indexes
     conn.execute(
-        "CREATE INDEX idx_chunks_boundary
-         ON chunks(is_timestamp_from_source, timestamp_ms)",
+        "CREATE INDEX idx_segments_boundary
+         ON segments(is_timestamp_from_source, timestamp_ms)",
         [],
     )
     .unwrap();
     conn.execute(
-        "CREATE INDEX idx_chunks_segment_id
-         ON chunks(segment_id)",
+        "CREATE INDEX idx_segments_section_id
+         ON segments(section_id)",
         [],
     )
     .unwrap();
     conn.execute(
-        "CREATE INDEX idx_segments_start_timestamp
-         ON segments(start_timestamp_ms)",
+        "CREATE INDEX idx_sections_start_timestamp
+         ON sections(start_timestamp_ms)",
         [],
     )
     .unwrap();
@@ -64,42 +64,42 @@ fn insert_segment_with_timestamp(
     is_boundary: bool,
     data: &[u8],
 ) -> i64 {
-    // Generate segment_id based on boundaries:
-    // - If is_boundary=true, create a new segment_id (using timestamp_ms for uniqueness)
-    // - If is_boundary=false, use the most recent segment_id from the database
-    let segment_id = if is_boundary {
-        // New segment: use timestamp_ms as base (convert to microseconds range)
-        let new_segment_id = timestamp_ms * 1000;
+    // Generate section_id based on boundaries:
+    // - If is_boundary=true, create a new section_id (using timestamp_ms for uniqueness)
+    // - If is_boundary=false, use the most recent section_id from the database
+    let section_id = if is_boundary {
+        // New section: use timestamp_ms as base (convert to microseconds range)
+        let new_section_id = timestamp_ms * 1000;
 
-        // Insert into segments table
+        // Insert into sections table
         conn.execute(
-            "INSERT INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
-            rusqlite::params![new_segment_id, timestamp_ms],
+            "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
+            rusqlite::params![new_section_id, timestamp_ms],
         )
         .unwrap();
 
-        new_segment_id
+        new_section_id
     } else {
-        // Continuation: get the most recent segment_id
+        // Continuation: get the most recent section_id
         conn.query_row(
-            "SELECT segment_id FROM chunks ORDER BY id DESC LIMIT 1",
+            "SELECT section_id FROM segments ORDER BY id DESC LIMIT 1",
             [],
             |row| row.get(0)
         )
         .unwrap_or_else(|_| {
-            // No existing chunks - create a default segment
-            let default_segment_id = timestamp_ms * 1000;
+            // No existing segments - create a default section
+            let default_section_id = timestamp_ms * 1000;
             conn.execute(
-                "INSERT INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
-                rusqlite::params![default_segment_id, timestamp_ms],
+                "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
+                rusqlite::params![default_section_id, timestamp_ms],
             ).unwrap();
-            default_segment_id
+            default_section_id
         })
     };
 
     conn.execute(
-        "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![timestamp_ms, is_boundary as i32, data, segment_id],
+        "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, audio_data, section_id) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![timestamp_ms, is_boundary as i32, data, section_id],
     )
     .unwrap();
 
@@ -132,34 +132,34 @@ fn insert_segment_relative_to(
     insert_segment_with_timestamp(conn, timestamp_ms, is_boundary, data)
 }
 
-/// Helper to count chunks
+/// Helper to count segments
 fn count_segments(conn: &Connection) -> i64 {
-    conn.query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+    conn.query_row("SELECT COUNT(*) FROM segments", [], |row| row.get(0))
         .unwrap()
 }
 
-/// Helper to get min and max chunk IDs
+/// Helper to get min and max segment IDs
 fn get_segment_range(conn: &Connection) -> (Option<i64>, Option<i64>) {
     let min: Option<i64> = conn
-        .query_row("SELECT MIN(id) FROM chunks", [], |row| row.get(0))
+        .query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
         .ok();
     let max: Option<i64> = conn
-        .query_row("SELECT MAX(id) FROM chunks", [], |row| row.get(0))
+        .query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0))
         .ok();
     (min, max)
 }
 
-/// Helper to check if a chunk exists
+/// Helper to check if a segment exists
 fn segment_exists(conn: &Connection, id: i64) -> bool {
-    conn.query_row("SELECT 1 FROM chunks WHERE id = ?1", [id], |_| Ok(()))
+    conn.query_row("SELECT 1 FROM segments WHERE id = ?1", [id], |_| Ok(()))
         .is_ok()
 }
 
-/// Helper to dump all chunks for debugging
+/// Helper to dump all segments for debugging
 #[allow(dead_code)]
 fn dump_segments(conn: &Connection) {
     let mut stmt = conn
-        .prepare("SELECT id, timestamp_ms, is_timestamp_from_source FROM chunks ORDER BY id")
+        .prepare("SELECT id, timestamp_ms, is_timestamp_from_source FROM segments ORDER BY id")
         .unwrap();
     let rows = stmt
         .query_map([], |row| {
@@ -214,7 +214,7 @@ fn test_cleanup_deletes_old_segments_before_boundary() {
     assert_eq!(count_segments(&conn), 9);
 
     // Run cleanup with 168 hour retention (~7 days) using the same reference time
-    cleanup_old_segments_with_params(&conn, 168, Some(now)).unwrap();
+    cleanup_old_sections_with_params(&conn, 168, Some(now)).unwrap();
 
     // Should have deleted segments before the keeper boundary (300h boundary + 2 segments)
     // Should keep: keeper boundary (175h) + 2 segments + recent boundary (50h) + 2 segments = 6 segments
@@ -244,7 +244,7 @@ fn test_cleanup_preserves_all_recent_data() {
     assert_eq!(count_segments(&conn), 6);
 
     // Run cleanup with 168 hour retention
-    cleanup_old_segments_with_retention(&conn, 168).unwrap();
+    cleanup_old_sections_with_retention(&conn, 168).unwrap();
 
     // All segments should be preserved
     assert_eq!(count_segments(&conn), 6);
@@ -263,7 +263,7 @@ fn test_cleanup_with_no_old_data() {
     assert_eq!(count_segments(&conn), 3);
 
     // Run cleanup with 168 hour retention
-    cleanup_old_segments_with_retention(&conn, 168).unwrap();
+    cleanup_old_sections_with_retention(&conn, 168).unwrap();
 
     // Nothing should be deleted
     assert_eq!(count_segments(&conn), 3);
@@ -283,7 +283,7 @@ fn test_cleanup_with_no_boundaries() {
     assert_eq!(count_segments(&conn), 4);
 
     // Run cleanup with 168 hour retention
-    cleanup_old_segments_with_retention(&conn, 168).unwrap();
+    cleanup_old_sections_with_retention(&conn, 168).unwrap();
 
     // Nothing should be deleted (no boundaries to anchor deletion)
     assert_eq!(count_segments(&conn), 4);
@@ -314,7 +314,7 @@ fn test_cleanup_keeps_at_least_one_week_of_data() {
     assert_eq!(count_segments(&conn), 8);
 
     // Run cleanup with 168 hour (7 day) retention
-    cleanup_old_segments_with_retention(&conn, 168).unwrap();
+    cleanup_old_sections_with_retention(&conn, 168).unwrap();
 
     // Should delete segments before the 14-day-old boundary
     // Should keep: boundary at 14d + segment at 13d + boundary at 5d + segment at 4d + 2 recent = 6 segments
@@ -354,7 +354,7 @@ fn test_cleanup_with_multiple_old_boundaries() {
     assert_eq!(count_segments(&conn), 10);
 
     // Run cleanup with 168 hour retention using the same reference time
-    cleanup_old_segments_with_params(&conn, 168, Some(now)).unwrap();
+    cleanup_old_sections_with_params(&conn, 168, Some(now)).unwrap();
 
     // Should delete all segments before the keeper boundary at 175h
     // Should keep: keeper (175h) + 1 segment + recent boundary + 1 segment = 4 segments
@@ -385,7 +385,7 @@ fn test_cleanup_boundary_exactly_at_cutoff() {
     assert_eq!(count_segments(&conn), 4);
 
     // Run cleanup with 168 hour retention
-    cleanup_old_segments_with_retention(&conn, 168).unwrap();
+    cleanup_old_sections_with_retention(&conn, 168).unwrap();
 
     // Boundary exactly at cutoff should be preserved as it's not strictly less than cutoff
     // All 4 segments should remain
@@ -401,7 +401,7 @@ fn test_cleanup_empty_database() {
     assert_eq!(count_segments(&conn), 0);
 
     // Run cleanup - should not error
-    cleanup_old_segments_with_retention(&conn, 168).unwrap();
+    cleanup_old_sections_with_retention(&conn, 168).unwrap();
 
     // Still empty
     assert_eq!(count_segments(&conn), 0);
@@ -426,7 +426,7 @@ fn test_cleanup_verifies_sequential_deletion() {
     assert_eq!(max_before, Some(7));
 
     // Run cleanup
-    cleanup_old_segments_with_retention(&conn, 168).unwrap();
+    cleanup_old_sections_with_retention(&conn, 168).unwrap();
 
     // After cleanup, min_id should be the keeper boundary
     let (min_after, max_after) = get_segment_range(&conn);
