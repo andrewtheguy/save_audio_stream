@@ -217,6 +217,25 @@ async fn get_metadata_handler(
         None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Show not found"}))).into_response(),
     };
 
+    // Check is_recipient flag - reject if true
+    let is_recipient: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'is_recipient'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(is_recipient) = &is_recipient {
+        if is_recipient == "true" {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Cannot sync from a recipient database"})),
+            )
+                .into_response();
+        }
+    }
+
     // Fetch metadata
     let unique_id: String = conn
         .query_row("SELECT value FROM metadata WHERE key = 'unique_id'", [], |row| row.get(0))
@@ -1029,7 +1048,7 @@ async fn test_sync_rejects_recipient_database() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Create source database marked as recipient (sync target)
-    let mut conn = Connection::open_in_memory().unwrap();
+    let conn = Connection::open_in_memory().unwrap();
 
     // Create schema
     conn.execute(
