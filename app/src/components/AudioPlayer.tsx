@@ -110,8 +110,14 @@ export function AudioPlayer({ format, startId, endId }: AudioPlayerProps) {
     const updateTime = () => setCurrentTime(audio.currentTime);
     const updateDuration = () => setDuration(audio.duration);
     const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
+    const handlePause = () => {
+      setIsPlaying(false);
+      setIsLoading(false);
+    };
     const handleEnded = () => setIsPlaying(false);
+    const handleWaiting = () => setIsLoading(true);
+    const handlePlaying = () => setIsLoading(false);
+    const handleCanPlay = () => setIsLoading(false);
 
     audio.addEventListener("timeupdate", updateTime);
     audio.addEventListener("durationchange", updateDuration);
@@ -119,6 +125,9 @@ export function AudioPlayer({ format, startId, endId }: AudioPlayerProps) {
     audio.addEventListener("play", handlePlay);
     audio.addEventListener("pause", handlePause);
     audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("waiting", handleWaiting);
+    audio.addEventListener("playing", handlePlaying);
+    audio.addEventListener("canplay", handleCanPlay);
 
     return () => {
       audio.removeEventListener("timeupdate", updateTime);
@@ -127,6 +136,9 @@ export function AudioPlayer({ format, startId, endId }: AudioPlayerProps) {
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
       audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("waiting", handleWaiting);
+      audio.removeEventListener("playing", handlePlaying);
+      audio.removeEventListener("canplay", handleCanPlay);
     };
   }, []);
 
