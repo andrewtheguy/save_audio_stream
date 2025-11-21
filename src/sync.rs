@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
 
+use crate::constants::EXPECTED_DB_VERSION;
+
 #[derive(Debug, Deserialize)]
 struct ShowInfo {
     name: String,
@@ -18,7 +20,7 @@ struct ShowsList {
 
 #[derive(Debug, Deserialize)]
 struct ShowMetadata {
-    uuid: String,
+    unique_id: String,
     name: String,
     audio_format: String,
     split_interval: String,
@@ -36,6 +38,13 @@ struct SegmentData {
     is_timestamp_from_source: i32,
     #[serde(with = "serde_bytes")]
     audio_data: Vec<u8>,
+    section_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SectionData {
+    id: i64,
+    start_timestamp_ms: i64,
 }
 
 
@@ -151,45 +160,82 @@ fn sync_single_show(
         .send()
         .map_err(|e| format!("Network error fetching metadata: {}", e))?
         .json()
-        .map_err(|e| format!("Failed to parse metadata JSON: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to parse metadata JSON: {}. \
+                 This may indicate the remote server is running incompatible old code. \
+                 Please upgrade the remote server.",
+                e
+            )
+        })?;
 
-    println!("  Remote: uuid={}, min_id={}, max_id={}", metadata.uuid, metadata.min_id, metadata.max_id);
+    println!("  Remote: unique_id={}, min_id={}, max_id={}", metadata.unique_id, metadata.min_id, metadata.max_id);
+
+    // Validate remote version BEFORE doing anything else
+    // This ensures we never sync from incompatible schema versions
+    if metadata.version != EXPECTED_DB_VERSION {
+        return Err(format!(
+            "Remote database has unsupported schema version '{}' (expected '{}'). \
+             Cannot sync from incompatible versions. Please upgrade the remote server.",
+            metadata.version, EXPECTED_DB_VERSION
+        )
+        .into());
+    }
 
     // Open or create local database
     let local_db_path = local_dir.join(format!("{}.sqlite", show_name));
     let mut conn = Connection::open(&local_db_path)?;
 
     // Check if database exists (has metadata)
-    let existing_uuid: Option<String> = conn
+    let existing_unique_id: Option<String> = conn
         .query_row(
-            "SELECT value FROM metadata WHERE key = 'uuid'",
+            "SELECT value FROM metadata WHERE key = 'unique_id'",
             [],
             |row| row.get(0),
         )
         .ok();
 
-    let start_id = if let Some(_existing_uuid) = existing_uuid {
+    let start_id = if let Some(_existing_unique_id) = existing_unique_id {
         // Existing database - validate and resume
         println!("  Found existing local database");
 
-        // Validate source_session_id matches remote uuid
-        let source_session_id: String = conn
+        // Validate local version matches expected version
+        let local_version: String = conn
             .query_row(
-                "SELECT value FROM metadata WHERE key = 'source_session_id'",
+                "SELECT value FROM metadata WHERE key = 'version'",
                 [],
                 |row| row.get(0),
             )
-            .map_err(|_| "Local database missing source_session_id")?;
+            .map_err(|_| "Local database missing version")?;
 
-        if source_session_id != metadata.uuid {
+        if local_version != EXPECTED_DB_VERSION {
             return Err(format!(
-                "Source mismatch: local expects '{}', remote is '{}'",
-                source_session_id, metadata.uuid
+                "Local database has unsupported schema version '{}' (expected '{}'). \
+                 Cannot sync with incompatible local database. Please delete and re-sync.",
+                local_version, EXPECTED_DB_VERSION
             )
             .into());
         }
 
-        // Validate metadata matches
+        // Validate source_unique_id matches remote unique_id
+        let source_unique_id: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'source_unique_id'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Local database missing source_unique_id")?;
+
+        if source_unique_id != metadata.unique_id {
+            return Err(format!(
+                "Source mismatch: local expects '{}', remote is '{}'",
+                source_unique_id, metadata.unique_id
+            )
+            .into());
+        }
+
+        // Validate metadata matches (audio_format, split_interval, bitrate)
+        // Version is already validated above
         validate_metadata(&conn, &metadata)?;
 
         // Get last synced ID
@@ -232,12 +278,37 @@ fn sync_single_show(
             [],
         )?;
         conn.execute(
+            "CREATE TABLE IF NOT EXISTS sections (
+                id INTEGER PRIMARY KEY,
+                start_timestamp_ms INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS segments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp_ms INTEGER NOT NULL,
                 is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
-                audio_data BLOB NOT NULL
+                audio_data BLOB NOT NULL,
+                section_id INTEGER NOT NULL REFERENCES sections(id)
             )",
+            [],
+        )?;
+
+        // Create indexes for efficient queries
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_segments_boundary
+             ON segments(is_timestamp_from_source, timestamp_ms)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_segments_section_id
+             ON segments(section_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sections_start_timestamp
+             ON sections(start_timestamp_ms)",
             [],
         )?;
 
@@ -250,8 +321,8 @@ fn sync_single_show(
             [&metadata.version],
         )?;
         conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
-            [&existing_uuid.unwrap_or_else(|| format!("local_{}", uuid::Uuid::new_v4()))],
+            "INSERT INTO metadata (key, value) VALUES ('unique_id', ?1)",
+            [&existing_unique_id.unwrap_or_else(|| format!("local_{}", uuid::Uuid::new_v4()))],
         )?;
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
@@ -278,8 +349,8 @@ fn sync_single_show(
             [],
         )?;
         conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('source_session_id', ?1)",
-            [&metadata.uuid],
+            "INSERT INTO metadata (key, value) VALUES ('source_unique_id', ?1)",
+            [&metadata.unique_id],
         )?;
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('last_synced_id', '0')",
@@ -290,11 +361,31 @@ fn sync_single_show(
             [],
         )?;
 
-        println!("  Initialized with source_session_id={}", metadata.uuid);
+        println!("  Initialized with source_unique_id={}", metadata.unique_id);
         metadata.min_id
     };
 
-    // Sync segments in chunks
+    // Sync sections table first
+    println!("  Syncing sections metadata...");
+    let sections_url = format!("{}/api/sync/shows/{}/sections", remote_url, show_name);
+    let sections: Vec<SectionData> = client
+        .get(&sections_url)
+        .send()
+        .map_err(|e| format!("Network error fetching sections: {}", e))?
+        .json()
+        .map_err(|e| format!("Failed to parse sections JSON: {}", e))?;
+
+    // Insert sections into local database
+    let sections_count = sections.len();
+    for section in sections {
+        conn.execute(
+            "INSERT OR REPLACE INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
+            rusqlite::params![section.id, section.start_timestamp_ms],
+        )?;
+    }
+    println!("  Synced {} sections", sections_count);
+
+    // Sync segments in batches
     let target_max_id = metadata.max_id;
     let mut current_id = start_id;
 
@@ -329,21 +420,26 @@ fn sync_single_show(
         let tx = conn.transaction()?;
         let mut last_boundary_end_id: Option<i64> = None;
         {
+            let mut prev_section_id: Option<i64> = None;
             let mut prev_id: Option<i64> = None;
+
             for segment in &segments {
-                // Check if current segment is a boundary (new session start)
-                // If so, previous segment is the end of a complete session
-                if segment.is_timestamp_from_source == 1 {
-                    if let Some(prev) = prev_id {
-                        last_boundary_end_id = Some(prev);
+                // Check if we're starting a new section
+                // If so, the previous segment is the end of a complete section
+                if let Some(prev_sec_id) = prev_section_id {
+                    if segment.section_id != prev_sec_id {
+                        if let Some(prev) = prev_id {
+                            last_boundary_end_id = Some(prev);
+                        }
                     }
                 }
 
                 tx.execute(
-                    "INSERT INTO segments (id, timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![segment.id, segment.timestamp_ms, segment.is_timestamp_from_source, &segment.audio_data],
+                    "INSERT INTO segments (id, timestamp_ms, is_timestamp_from_source, audio_data, section_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![segment.id, segment.timestamp_ms, segment.is_timestamp_from_source, &segment.audio_data, segment.section_id],
                 )?;
 
+                prev_section_id = Some(segment.section_id);
                 prev_id = Some(segment.id);
             }
 
@@ -387,6 +483,22 @@ fn validate_metadata(
     conn: &Connection,
     remote: &ShowMetadata,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate version
+    let local_version: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Local database missing version")?;
+    if local_version != remote.version {
+        return Err(format!(
+            "Version mismatch: local='{}', remote='{}'. Cannot sync between different schema versions.",
+            local_version, remote.version
+        )
+        .into());
+    }
+
     // Validate audio_format
     let local_format: String = conn
         .query_row(

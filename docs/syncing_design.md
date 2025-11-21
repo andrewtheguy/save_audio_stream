@@ -85,7 +85,7 @@ save_audio_stream sync \
 - **Fail-Fast**: Exits immediately on any network error or metadata mismatch
 - **No Retry**: Network errors are not retried - run the command again to resume
 - **Validation**: Validates metadata compatibility (format, bitrate, split_interval) on resume
-- **Chunked Transfer**: Fetches segments in batches to handle large datasets efficiently
+- **Chunked Transfer**: Fetches chunks in batches to handle large datasets efficiently
 - **Progress Tracking**: Uses `last_synced_id` metadata instead of `max(id)` for reliable resume
 
 ## Database Protection
@@ -113,13 +113,14 @@ The sender (recording server) exposes these endpoints for synchronization:
 |----------|-------------|
 | `GET /api/sync/shows` | List all available shows (databases) |
 | `GET /api/sync/shows/:name/metadata` | Get show metadata and segment range |
+| `GET /api/sync/shows/:name/sections` | Get sections metadata (id, start_timestamp_ms) |
 | `GET /api/sync/shows/:name/segments?start_id=N&end_id=N&limit=N` | Fetch segment batch |
 
 ### Metadata Response
 
 ```json
 {
-  "uuid": "550e8400-e29b-41d4-a716-446655440000",
+  "unique_id": "db_a1b2c3d4e5f6",
   "name": "myradio",
   "audio_format": "opus",
   "split_interval": "300",
@@ -157,7 +158,7 @@ The sender (recording server) exposes these endpoints for synchronization:
 ### Metadata Validation
 
 When resuming a sync, the following metadata fields are validated to ensure compatibility:
-- `source_session_id`: Must match remote `uuid`
+- `source_unique_id`: Must match remote `unique_id`
 - `audio_format`: Must match (e.g., "opus")
 - `split_interval`: Must match (e.g., "300")
 - `bitrate`: Must match (e.g., "16")
@@ -170,7 +171,7 @@ When resuming a sync, the following metadata fields are validated to ensure comp
 
 ### Automatic Cleanup
 
-Recording mode automatically cleans up old segments to prevent unbound database growth:
+Recording mode automatically cleans up old sections to prevent unbound database growth:
 
 - **Retention Period**: Configurable via `RETENTION_HOURS` constant in `src/record.rs` (default: 168 hours / ~1 week)
 - **Boundary Preservation**: Always keeps complete sessions by deleting only before natural boundaries (segments with `is_timestamp_from_source = 1`)
@@ -179,9 +180,9 @@ Recording mode automatically cleans up old segments to prevent unbound database 
 
 **How it works:**
 1. Calculates cutoff timestamp (current time - RETENTION_HOURS)
-2. Finds the last boundary segment before cutoff
-3. Deletes all segments with id < boundary_id
-4. Logs the number of segments deleted
+2. Finds the last boundary section before cutoff
+3. Deletes all segments with section_id < boundary_section_id
+4. Logs the number of segments and sections deleted
 
 This ensures:
 - At least ~1 week of data is always retained

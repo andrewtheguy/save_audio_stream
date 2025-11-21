@@ -9,3 +9,4 @@
 tmp/
 app/node_modules/
 app/dist/
+.idea/

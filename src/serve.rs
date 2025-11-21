@@ -27,6 +27,7 @@ use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
+use crate::constants::EXPECTED_DB_VERSION;
 use crate::webm::{write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string, write_ebml_uint};
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
@@ -58,6 +59,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
     println!("  GET /health  - Health check");
     println!("  GET /api/sync/shows  - List available shows");
     println!("  GET /api/sync/shows/:name/metadata  - Show metadata");
+    println!("  GET /api/sync/shows/:name/sections  - Show sections metadata");
     println!("  GET /api/sync/shows/:name/segments  - Show segments");
 
     // Create tokio runtime and run server
@@ -105,6 +107,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
             .route("/health", get(health_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
+            .route("/api/sync/shows/{show_name}/sections", get(db_sections_handler))
             .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
 
         let app = api_routes
@@ -138,10 +141,10 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
         )
         .map_err(|_| "Database is missing version in metadata")?;
 
-    if db_version != "1" {
+    if db_version != EXPECTED_DB_VERSION {
         return Err(format!(
-            "Unsupported database version: '{}'. This application only supports version '1'",
-            db_version
+            "Unsupported database version: '{}'. This application only supports version '{}'",
+            db_version, EXPECTED_DB_VERSION
         )
         .into());
     }
@@ -232,6 +235,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
             .route("/api/sessions", get(sessions_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
+            .route("/api/sync/shows/{show_name}/sections", get(db_sections_handler))
             .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
 
         #[cfg(debug_assertions)]
@@ -732,7 +736,7 @@ async fn mpd_handler(
     let duration_ms = (split_interval * 1000.0) as u32;
     let repeat_count = segment_count.saturating_sub(1);
 
-    // Build DASH MPD
+    // Build DASH MPD with SegmentTemplate
     let mpd = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
@@ -1081,9 +1085,13 @@ async fn sessions_handler(
     // connection) vs. which come from different recording attempts after reconnection
     // or schedule breaks.
 
-    // Get all boundary segments (is_timestamp_from_source = 1)
+    // Get all sections with their start id and timestamp from sections table
     let mut stmt = match conn.prepare(
-        "SELECT id, timestamp_ms FROM segments WHERE is_timestamp_from_source = 1 ORDER BY id"
+        "SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id
+         FROM sections s
+         JOIN segments seg ON seg.section_id = s.id
+         GROUP BY s.id
+         ORDER BY s.id"
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -1096,7 +1104,7 @@ async fn sessions_handler(
     };
 
     let boundaries: Vec<(i64, i64)> = match stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map([], |row| Ok((row.get(2)?, row.get(1)?)))
     {
         Ok(rows) => rows.filter_map(Result::ok).collect(),
         Err(e) => {
@@ -1307,8 +1315,73 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 #[derive(Serialize)]
+struct SectionInfo {
+    id: i64,
+    start_timestamp_ms: i64,
+}
+
+#[derive(Serialize)]
 struct ShowsList {
     shows: Vec<ShowInfo>,
+}
+
+async fn db_sections_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    // Construct database path
+    let db_path = format!("{}/{}.sqlite", state.output_dir, name);
+    let path = std::path::Path::new(&db_path);
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": format!("Database '{}' not found", name)})),
+        )
+            .into_response();
+    }
+
+    // Open database
+    let conn = match Connection::open(path) {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Fetch all sections
+    let mut stmt = match conn.prepare("SELECT id, start_timestamp_ms FROM sections ORDER BY id") {
+        Ok(stmt) => stmt,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to prepare query: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let sections: Result<Vec<SectionInfo>, _> = stmt
+        .query_map([], |row| {
+            Ok(SectionInfo {
+                id: row.get(0)?,
+                start_timestamp_ms: row.get(1)?,
+            })
+        })
+        .and_then(|rows| rows.collect());
+
+    match sections {
+        Ok(sections) => axum::Json(sections).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": format!("Failed to fetch sections: {}", e)})),
+        )
+            .into_response(),
+    }
 }
 
 async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
@@ -1415,7 +1488,7 @@ async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl 
 
 #[derive(Serialize)]
 struct ShowMetadata {
-    uuid: String,
+    unique_id: String,
     name: String,
     audio_format: String,
     split_interval: String,
@@ -1475,8 +1548,8 @@ async fn sync_show_metadata_handler(
     }
 
     // Fetch all required metadata
-    let uuid: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'uuid'",
+    let unique_id: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'unique_id'",
         [],
         |row| row.get(0),
     ) {
@@ -1484,7 +1557,7 @@ async fn sync_show_metadata_handler(
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "Missing uuid metadata"})),
+                axum::Json(serde_json::json!({"error": "Missing unique_id metadata"})),
             )
                 .into_response();
         }
@@ -1597,7 +1670,7 @@ async fn sync_show_metadata_handler(
     };
 
     let metadata = ShowMetadata {
-        uuid,
+        unique_id,
         name,
         audio_format,
         split_interval,
@@ -1626,6 +1699,7 @@ struct SegmentData {
     is_timestamp_from_source: i32,
     #[serde(with = "serde_bytes")]
     audio_data: Vec<u8>,
+    section_id: i64,
 }
 
 async fn sync_show_segments_handler(
@@ -1679,7 +1753,7 @@ async fn sync_show_segments_handler(
     // Fetch segments
     let limit = query.limit.unwrap_or(100);
     let mut stmt = match conn.prepare(
-        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
+        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data, section_id FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
     ) {
         Ok(stmt) => stmt,
         Err(e) => {
@@ -1699,6 +1773,7 @@ async fn sync_show_segments_handler(
                 timestamp_ms: row.get(1)?,
                 is_timestamp_from_source: row.get(2)?,
                 audio_data: row.get(3)?,
+                section_id: row.get(4)?,
             })
         },
     ) {
