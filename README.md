@@ -226,7 +226,7 @@ CREATE TABLE metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
--- Keys: uuid, name, audio_format, split_interval
+-- Keys: unique_id, name, audio_format, split_interval
 
 -- Audio segments
 CREATE TABLE segments (

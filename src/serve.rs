@@ -1415,7 +1415,7 @@ async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl 
 
 #[derive(Serialize)]
 struct ShowMetadata {
-    uuid: String,
+    unique_id: String,
     name: String,
     audio_format: String,
     split_interval: String,
@@ -1475,8 +1475,8 @@ async fn sync_show_metadata_handler(
     }
 
     // Fetch all required metadata
-    let uuid: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'uuid'",
+    let unique_id: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'unique_id'",
         [],
         |row| row.get(0),
     ) {
@@ -1484,7 +1484,7 @@ async fn sync_show_metadata_handler(
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "Missing uuid metadata"})),
+                axum::Json(serde_json::json!({"error": "Missing unique_id metadata"})),
             )
                 .into_response();
         }
@@ -1597,7 +1597,7 @@ async fn sync_show_metadata_handler(
     };
 
     let metadata = ShowMetadata {
-        uuid,
+        unique_id,
         name,
         audio_format,
         split_interval,

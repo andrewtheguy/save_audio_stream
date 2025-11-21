@@ -18,7 +18,7 @@ struct ShowsList {
 
 #[derive(Debug, Deserialize)]
 struct ShowMetadata {
-    uuid: String,
+    unique_id: String,
     name: String,
     audio_format: String,
     split_interval: String,
@@ -153,38 +153,38 @@ fn sync_single_show(
         .json()
         .map_err(|e| format!("Failed to parse metadata JSON: {}", e))?;
 
-    println!("  Remote: uuid={}, min_id={}, max_id={}", metadata.uuid, metadata.min_id, metadata.max_id);
+    println!("  Remote: unique_id={}, min_id={}, max_id={}", metadata.unique_id, metadata.min_id, metadata.max_id);
 
     // Open or create local database
     let local_db_path = local_dir.join(format!("{}.sqlite", show_name));
     let mut conn = Connection::open(&local_db_path)?;
 
     // Check if database exists (has metadata)
-    let existing_uuid: Option<String> = conn
+    let existing_unique_id: Option<String> = conn
         .query_row(
-            "SELECT value FROM metadata WHERE key = 'uuid'",
+            "SELECT value FROM metadata WHERE key = 'unique_id'",
             [],
             |row| row.get(0),
         )
         .ok();
 
-    let start_id = if let Some(_existing_uuid) = existing_uuid {
+    let start_id = if let Some(_existing_unique_id) = existing_unique_id {
         // Existing database - validate and resume
         println!("  Found existing local database");
 
-        // Validate source_session_id matches remote uuid
-        let source_session_id: String = conn
+        // Validate source_unique_id matches remote unique_id
+        let source_unique_id: String = conn
             .query_row(
-                "SELECT value FROM metadata WHERE key = 'source_session_id'",
+                "SELECT value FROM metadata WHERE key = 'source_unique_id'",
                 [],
                 |row| row.get(0),
             )
-            .map_err(|_| "Local database missing source_session_id")?;
+            .map_err(|_| "Local database missing source_unique_id")?;
 
-        if source_session_id != metadata.uuid {
+        if source_unique_id != metadata.unique_id {
             return Err(format!(
                 "Source mismatch: local expects '{}', remote is '{}'",
-                source_session_id, metadata.uuid
+                source_unique_id, metadata.unique_id
             )
             .into());
         }
@@ -250,8 +250,8 @@ fn sync_single_show(
             [&metadata.version],
         )?;
         conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
-            [&existing_uuid.unwrap_or_else(|| format!("local_{}", uuid::Uuid::new_v4()))],
+            "INSERT INTO metadata (key, value) VALUES ('unique_id', ?1)",
+            [&existing_unique_id.unwrap_or_else(|| format!("local_{}", uuid::Uuid::new_v4()))],
         )?;
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
@@ -278,8 +278,8 @@ fn sync_single_show(
             [],
         )?;
         conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('source_session_id', ?1)",
-            [&metadata.uuid],
+            "INSERT INTO metadata (key, value) VALUES ('source_unique_id', ?1)",
+            [&metadata.unique_id],
         )?;
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('last_synced_id', '0')",
@@ -290,7 +290,7 @@ fn sync_single_show(
             [],
         )?;
 
-        println!("  Initialized with source_session_id={}", metadata.uuid);
+        println!("  Initialized with source_unique_id={}", metadata.unique_id);
         metadata.min_id
     };
 

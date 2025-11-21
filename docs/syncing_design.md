@@ -119,7 +119,7 @@ The sender (recording server) exposes these endpoints for synchronization:
 
 ```json
 {
-  "uuid": "550e8400-e29b-41d4-a716-446655440000",
+  "unique_id": "db_a1b2c3d4e5f6",
   "name": "myradio",
   "audio_format": "opus",
   "split_interval": "300",
@@ -157,7 +157,7 @@ The sender (recording server) exposes these endpoints for synchronization:
 ### Metadata Validation
 
 When resuming a sync, the following metadata fields are validated to ensure compatibility:
-- `source_session_id`: Must match remote `uuid`
+- `source_unique_id`: Must match remote `unique_id`
 - `audio_format`: Must match (e.g., "opus")
 - `split_interval`: Must match (e.g., "300")
 - `bitrate`: Must match (e.g., "16")

@@ -158,8 +158,8 @@ fn run_connection_loop(
         AudioFormat::Wav => "wav",
     };
 
-    let existing_uuid: Option<String> = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'uuid'", [], |row| {
+    let existing_unique_id: Option<String> = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'unique_id'", [], |row| {
             row.get(0)
         })
         .ok();
@@ -226,7 +226,7 @@ fn run_connection_loop(
         }
 
         // Existing database must have all required metadata
-        let db_uuid = existing_uuid.ok_or("Database is missing uuid in metadata")?;
+        let db_unique_id = existing_unique_id.ok_or("Database is missing unique_id in metadata")?;
         let db_name = existing_name.ok_or("Database is missing name in metadata")?;
         let db_format =
             existing_format.ok_or("Database is missing audio_format in metadata")?;
@@ -274,7 +274,7 @@ fn run_connection_loop(
             ).into());
         }
 
-        println!("Session ID: {}", db_uuid);
+        println!("Session ID: {}", db_unique_id);
     } else {
         // Determine bitrate and sample rate for new database
         let (output_sample_rate, _, default_bitrate) = match audio_format {
@@ -284,8 +284,8 @@ fn run_connection_loop(
         };
         let bitrate_to_store = if bitrate_kbps == 0 { default_bitrate } else { bitrate_kbps };
 
-        // New database - insert metadata with new uuid
-        let session_uuid: String = format!("db_{}", rand::thread_rng()
+        // New database - insert metadata with new unique_id
+        let session_unique_id: String = format!("db_{}", rand::thread_rng()
             .sample_iter(&rand::distributions::Alphanumeric)
             .take(12)
             .map(char::from)
@@ -295,8 +295,8 @@ fn run_connection_loop(
             [],
         )?;
         conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('uuid', ?1)",
-            [&session_uuid],
+            "INSERT INTO metadata (key, value) VALUES ('unique_id', ?1)",
+            [&session_unique_id],
         )?;
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
@@ -323,7 +323,7 @@ fn run_connection_loop(
             [],
         )?;
 
-        println!("Session ID: {}", session_uuid);
+        println!("Session ID: {}", session_unique_id);
     }
 
     // Retry configuration
