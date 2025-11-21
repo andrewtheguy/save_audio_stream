@@ -1,4 +1,4 @@
-import { React, dashjs, Hls } from "../../deps.ts";
+import { React, Hls } from "../../deps.ts";
 const { useEffect, useRef, useState } = React;
 
 interface AudioPlayerProps {
@@ -39,7 +39,6 @@ function formatAbsoluteTime(timestampMs: number, offsetSeconds: number): string 
 
 export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const dashPlayerRef = useRef<dashjs.MediaPlayerClass | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -52,69 +51,39 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp }: AudioP
   const streamUrl =
     format === "aac"
       ? `/playlist.m3u8?start_id=${startId}&end_id=${endId}`
-      : `/manifest.mpd?start_id=${startId}&end_id=${endId}`;
+      : `/opus-playlist.m3u8?start_id=${startId}&end_id=${endId}`;
 
   useEffect(() => {
     if (!audioRef.current) return;
 
-    if (format === "aac") {
-      // Use HLS for AAC
-      if (Hls.isSupported()) {
-        const hls = new Hls();
-        hlsRef.current = hls;
+    // Use HLS for all formats (both AAC and Opus)
+    if (Hls.isSupported()) {
+      const hls = new Hls();
+      hlsRef.current = hls;
 
-        hls.loadSource(streamUrl);
-        hls.attachMedia(audioRef.current);
+      hls.loadSource(streamUrl);
+      hls.attachMedia(audioRef.current);
 
-        hls.on(Hls.Events.ERROR, (event, data) => {
-          console.error("HLS error:", data);
-          if (data.fatal) {
-            setError("Failed to load HLS stream");
-            setIsLoading(false);
-          }
-        });
-
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        console.error("HLS error:", data);
+        if (data.fatal) {
+          setError("Failed to load HLS stream");
           setIsLoading(false);
-        });
-      } else if (audioRef.current.canPlayType("application/vnd.apple.mpegurl")) {
-        // Native HLS support (Safari)
-        audioRef.current.src = streamUrl;
+        }
+      });
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setIsLoading(false);
-      } else {
-        setError("HLS is not supported in this browser");
-      }
+      });
+    } else if (audioRef.current.canPlayType("application/vnd.apple.mpegurl")) {
+      // Native HLS support (Safari)
+      audioRef.current.src = streamUrl;
+      setIsLoading(false);
     } else {
-      // Use DASH for Opus
-      const player = dashjs.MediaPlayer().create();
-      dashPlayerRef.current = player;
-
-      player.initialize(audioRef.current, streamUrl, false);
-
-      player.on(dashjs.MediaPlayer.events.ERROR, (e: any) => {
-        console.error("DASH error:", e);
-        setError("Failed to load audio stream");
-        setIsLoading(false);
-      });
-
-      player.on(dashjs.MediaPlayer.events.PLAYBACK_STARTED, () => {
-        setIsLoading(false);
-      });
-
-      player.on(dashjs.MediaPlayer.events.PLAYBACK_WAITING, () => {
-        setIsLoading(true);
-      });
-
-      player.on(dashjs.MediaPlayer.events.PLAYBACK_PLAYING, () => {
-        setIsLoading(false);
-      });
+      setError("HLS is not supported in this browser");
     }
 
     return () => {
-      if (dashPlayerRef.current) {
-        dashPlayerRef.current.destroy();
-        dashPlayerRef.current = null;
-      }
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;

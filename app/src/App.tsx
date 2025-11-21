@@ -124,14 +124,12 @@ function App() {
                       </div>
                     )}
                     <div className="url-row">
-                      <span className="url-label">
-                        {audioFormat === "aac" ? "HLS:" : "DASH:"}
-                      </span>
+                      <span className="url-label">HLS:</span>
                       <a
                         href={
                           audioFormat === "aac"
                             ? `/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
-                            : `/manifest.mpd?start_id=${session.start_id}&end_id=${session.end_id}`
+                            : `/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
                         }
                         className="url-link"
                         onClick={(e) => e.stopPropagation()}
@@ -140,20 +138,20 @@ function App() {
                       >
                         {audioFormat === "aac"
                           ? `/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
-                          : `/manifest.mpd?start_id=${session.start_id}&end_id=${session.end_id}`}
+                          : `/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`}
                       </a>
                     </div>
                     {audioFormat === "opus" && (
                       <div className="url-row">
-                        <span className="url-label">HLS:</span>
+                        <span className="url-label">DASH:</span>
                         <a
-                          href={`/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`}
+                          href={`/manifest.mpd?start_id=${session.start_id}&end_id=${session.end_id}`}
                           className="url-link"
                           onClick={(e) => e.stopPropagation()}
                           target="_blank"
                           rel="noopener noreferrer"
                         >
-                          /opus-playlist.m3u8?start_id={session.start_id}&end_id={session.end_id}
+                          /manifest.mpd?start_id={session.start_id}&end_id={session.end_id}
                         </a>
                       </div>
                     )}
