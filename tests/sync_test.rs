@@ -1106,10 +1106,11 @@ async fn test_sync_rejects_recipient_database() {
         rusqlite::params![segment_id, 1700000000000i64],
     )
     .unwrap();
+    let audio_data = b"test_audio_data";
     conn.execute(
         "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id)
-         VALUES (1700000000000, 1, 'test', ?1)",
-        [segment_id],
+         VALUES (1700000000000, 1, ?1, ?2)",
+        rusqlite::params![&audio_data[..], segment_id],
     )
     .unwrap();
 
