@@ -5,7 +5,7 @@
 config_type = 'sync'
 
 # Required: URL of remote recording server
-remote_url = 'http://localhost:17000'
+remote_url = 'http://private.hpmp.net:17000'
 
 # Required: Local base directory for synced databases
 local_dir = './tmp/synced'
