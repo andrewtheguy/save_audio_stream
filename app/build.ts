@@ -8,11 +8,15 @@ import { NodeModulesPolyfillPlugin } from "npm:@esbuild-plugins/node-modules-pol
 const distDir = "./dist";
 const assetsDir = `${distDir}/assets`;
 
-// Clean dist directory
+// Clean dist directory, only catch not NotFound error
 try {
   await Deno.remove(distDir, { recursive: true });
-} catch {
-  // Directory might not exist
+} catch (err) {
+  if (err instanceof Deno.errors.NotFound) {
+    // do nothing
+  } else {
+    throw err;
+  }
 }
 
 // Create dist and assets directories
