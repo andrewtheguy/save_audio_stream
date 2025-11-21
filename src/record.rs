@@ -75,7 +75,7 @@ pub fn cleanup_old_segments_with_params(
     // This ensures we keep complete sessions and don't break playback continuity
     let last_keeper_boundary: Option<i64> = conn
         .query_row(
-            "SELECT MAX(id) FROM segments
+            "SELECT MAX(id) FROM chunks
              WHERE is_timestamp_from_source = 1
              AND timestamp_ms < ?1",
             [cutoff_ms],
@@ -85,7 +85,7 @@ pub fn cleanup_old_segments_with_params(
 
     // If we found a boundary to keep, delete everything before it
     if let Some(boundary_id) = last_keeper_boundary {
-        let deleted = conn.execute("DELETE FROM segments WHERE id < ?1", [boundary_id])?;
+        let deleted = conn.execute("DELETE FROM chunks WHERE id < ?1", [boundary_id])?;
 
         if deleted > 0 {
             println!(
@@ -135,7 +135,7 @@ fn run_connection_loop(
         [],
     )?;
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS segments (
+        "CREATE TABLE IF NOT EXISTS chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
@@ -146,8 +146,8 @@ fn run_connection_loop(
 
     // Create indexes for efficient cleanup queries
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_segments_boundary
-         ON segments(is_timestamp_from_source, timestamp_ms)",
+        "CREATE INDEX IF NOT EXISTS idx_chunks_boundary
+         ON chunks(is_timestamp_from_source, timestamp_ms)",
         [],
     )?;
 
@@ -595,7 +595,7 @@ fn run_connection_loop(
                           data: &[u8]|
      -> Result<(), Box<dyn std::error::Error>> {
         conn.execute(
-            "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3)",
+            "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3)",
             rusqlite::params![timestamp_ms, is_from_source as i32, data],
         )?;
         Ok(())

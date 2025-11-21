@@ -30,7 +30,7 @@ struct ShowMetadata {
 }
 
 #[derive(Debug, Deserialize)]
-struct SegmentData {
+struct ChunkData {
     id: i64,
     timestamp_ms: i64,
     is_timestamp_from_source: i32,
@@ -232,7 +232,7 @@ fn sync_single_show(
             [],
         )?;
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS segments (
+            "CREATE TABLE IF NOT EXISTS chunks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp_ms INTEGER NOT NULL,
                 is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
@@ -294,7 +294,7 @@ fn sync_single_show(
         metadata.min_id
     };
 
-    // Sync segments in chunks
+    // Sync chunks in batches
     let target_max_id = metadata.max_id;
     let mut current_id = start_id;
 
@@ -303,52 +303,52 @@ fn sync_single_show(
         return Ok(());
     }
 
-    println!("  Syncing segments {} to {} (chunk_size={})", current_id, target_max_id, chunk_size);
+    println!("  Syncing chunks {} to {} (chunk_size={})", current_id, target_max_id, chunk_size);
 
     while current_id <= target_max_id {
         let end_id = std::cmp::min(current_id + chunk_size as i64 - 1, target_max_id);
 
-        // Fetch segments (no retry on network error)
+        // Fetch chunks (no retry on network error)
         let segments_url = format!(
             "{}/api/sync/shows/{}/segments?start_id={}&end_id={}&limit={}",
             remote_url, show_name, current_id, end_id, chunk_size
         );
 
-        let segments: Vec<SegmentData> = client
+        let chunks: Vec<ChunkData> = client
             .get(&segments_url)
             .send()
-            .map_err(|e| format!("Network error fetching segments: {}", e))?
+            .map_err(|e| format!("Network error fetching chunks: {}", e))?
             .json()
-            .map_err(|e| format!("Failed to parse segments JSON: {}", e))?;
+            .map_err(|e| format!("Failed to parse chunks JSON: {}", e))?;
 
-        if segments.is_empty() {
-            return Err(format!("No segments returned for range {}-{}", current_id, end_id).into());
+        if chunks.is_empty() {
+            return Err(format!("No chunks returned for range {}-{}", current_id, end_id).into());
         }
 
-        // Insert segments into local database (all operations in one transaction)
+        // Insert chunks into local database (all operations in one transaction)
         let tx = conn.transaction()?;
         let mut last_boundary_end_id: Option<i64> = None;
         {
             let mut prev_id: Option<i64> = None;
-            for segment in &segments {
-                // Check if current segment is a boundary (new session start)
-                // If so, previous segment is the end of a complete session
-                if segment.is_timestamp_from_source == 1 {
+            for chunk in &chunks {
+                // Check if current chunk is a boundary (new session start)
+                // If so, previous chunk is the end of a complete session
+                if chunk.is_timestamp_from_source == 1 {
                     if let Some(prev) = prev_id {
                         last_boundary_end_id = Some(prev);
                     }
                 }
 
                 tx.execute(
-                    "INSERT INTO segments (id, timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![segment.id, segment.timestamp_ms, segment.is_timestamp_from_source, &segment.audio_data],
+                    "INSERT INTO chunks (id, timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![chunk.id, chunk.timestamp_ms, chunk.is_timestamp_from_source, &chunk.audio_data],
                 )?;
 
-                prev_id = Some(segment.id);
+                prev_id = Some(chunk.id);
             }
 
             // Update last_synced_id (in same transaction)
-            let last_id = segments.last().unwrap().id;
+            let last_id = chunks.last().unwrap().id;
             tx.execute(
                 "UPDATE metadata SET value = ?1 WHERE key = 'last_synced_id'",
                 [last_id.to_string()],
@@ -364,10 +364,10 @@ fn sync_single_show(
         }
         tx.commit()?;
 
-        let last_id = segments.last().unwrap().id;
+        let last_id = chunks.last().unwrap().id;
 
         println!(
-            "  Synced segments {} to {} ({}/{} segments, {:.1}% complete)",
+            "  Synced chunks {} to {} ({}/{} chunks, {:.1}% complete)",
             current_id,
             last_id,
             last_id - start_id + 1,
@@ -378,7 +378,7 @@ fn sync_single_show(
         current_id = last_id + 1;
     }
 
-    println!("  ✓ Sync complete: {} segments", target_max_id - start_id + 1);
+    println!("  ✓ Sync complete: {} chunks", target_max_id - start_id + 1);
     Ok(())
 }
 

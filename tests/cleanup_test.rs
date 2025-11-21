@@ -4,7 +4,7 @@ use rusqlite::Connection;
 // Import the cleanup functions from the library
 use save_audio_stream::record::{cleanup_old_segments_with_params, cleanup_old_segments_with_retention};
 
-/// Helper function to create a test database with segments
+/// Helper function to create a test database with chunks
 fn create_test_database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
 
@@ -15,7 +15,7 @@ fn create_test_database() -> Connection {
     )
     .unwrap();
     conn.execute(
-        "CREATE TABLE segments (
+        "CREATE TABLE chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
@@ -27,8 +27,8 @@ fn create_test_database() -> Connection {
 
     // Create index
     conn.execute(
-        "CREATE INDEX idx_segments_boundary
-         ON segments(is_timestamp_from_source, timestamp_ms)",
+        "CREATE INDEX idx_chunks_boundary
+         ON chunks(is_timestamp_from_source, timestamp_ms)",
         [],
     )
     .unwrap();
@@ -44,7 +44,7 @@ fn insert_segment_with_timestamp(
     data: &[u8],
 ) -> i64 {
     conn.execute(
-        "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3)",
+        "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data) VALUES (?1, ?2, ?3)",
         rusqlite::params![timestamp_ms, is_boundary as i32, data],
     )
     .unwrap();
@@ -78,34 +78,34 @@ fn insert_segment_relative_to(
     insert_segment_with_timestamp(conn, timestamp_ms, is_boundary, data)
 }
 
-/// Helper to count segments
+/// Helper to count chunks
 fn count_segments(conn: &Connection) -> i64 {
-    conn.query_row("SELECT COUNT(*) FROM segments", [], |row| row.get(0))
+    conn.query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
         .unwrap()
 }
 
-/// Helper to get min and max segment IDs
+/// Helper to get min and max chunk IDs
 fn get_segment_range(conn: &Connection) -> (Option<i64>, Option<i64>) {
     let min: Option<i64> = conn
-        .query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
+        .query_row("SELECT MIN(id) FROM chunks", [], |row| row.get(0))
         .ok();
     let max: Option<i64> = conn
-        .query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0))
+        .query_row("SELECT MAX(id) FROM chunks", [], |row| row.get(0))
         .ok();
     (min, max)
 }
 
-/// Helper to check if a segment exists
+/// Helper to check if a chunk exists
 fn segment_exists(conn: &Connection, id: i64) -> bool {
-    conn.query_row("SELECT 1 FROM segments WHERE id = ?1", [id], |_| Ok(()))
+    conn.query_row("SELECT 1 FROM chunks WHERE id = ?1", [id], |_| Ok(()))
         .is_ok()
 }
 
-/// Helper to dump all segments for debugging
+/// Helper to dump all chunks for debugging
 #[allow(dead_code)]
 fn dump_segments(conn: &Connection) {
     let mut stmt = conn
-        .prepare("SELECT id, timestamp_ms, is_timestamp_from_source FROM segments ORDER BY id")
+        .prepare("SELECT id, timestamp_ms, is_timestamp_from_source FROM chunks ORDER BY id")
         .unwrap();
     let rows = stmt
         .query_map([], |row| {

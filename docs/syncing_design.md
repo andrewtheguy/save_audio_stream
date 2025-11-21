@@ -22,7 +22,7 @@ Ideally the sender in recording mode should submit the recording data to a centr
 
 ### Sender (Recording Server)
 - Records audio streams to SQLite databases
-- Exposes HTTP API endpoints for listing shows and fetching segments
+- Exposes HTTP API endpoints for listing shows and fetching chunks
 - Each database has `is_recipient = false` in metadata (allows recording)
 
 ### Receiver (Sync Client)
@@ -85,7 +85,7 @@ save_audio_stream sync \
 - **Fail-Fast**: Exits immediately on any network error or metadata mismatch
 - **No Retry**: Network errors are not retried - run the command again to resume
 - **Validation**: Validates metadata compatibility (format, bitrate, split_interval) on resume
-- **Chunked Transfer**: Fetches segments in batches to handle large datasets efficiently
+- **Chunked Transfer**: Fetches chunks in batches to handle large datasets efficiently
 - **Progress Tracking**: Uses `last_synced_id` metadata instead of `max(id)` for reliable resume
 
 ## Database Protection
@@ -170,18 +170,18 @@ When resuming a sync, the following metadata fields are validated to ensure comp
 
 ### Automatic Cleanup
 
-Recording mode automatically cleans up old segments to prevent unbound database growth:
+Recording mode automatically cleans up old chunks to prevent unbound database growth:
 
 - **Retention Period**: Configurable via `RETENTION_HOURS` constant in `src/record.rs` (default: 168 hours / ~1 week)
-- **Boundary Preservation**: Always keeps complete sessions by deleting only before natural boundaries (segments with `is_timestamp_from_source = 1`)
+- **Boundary Preservation**: Always keeps complete sessions by deleting only before natural boundaries (chunks with `is_timestamp_from_source = 1`)
 - **Timing**: Runs once per day after each recording window completes
 - **Safety**: Non-destructive - if cleanup fails, recording continues normally with a warning
 
 **How it works:**
 1. Calculates cutoff timestamp (current time - RETENTION_HOURS)
-2. Finds the last boundary segment before cutoff
-3. Deletes all segments with id < boundary_id
-4. Logs the number of segments deleted
+2. Finds the last boundary chunk before cutoff
+3. Deletes all chunks with id < boundary_id
+4. Logs the number of chunks deleted
 
 This ensures:
 - At least ~1 week of data is always retained

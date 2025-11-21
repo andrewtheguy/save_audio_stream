@@ -278,7 +278,7 @@ fn write_ogg_stream<W: Write>(
     writer: W,
 ) -> Result<W, std::io::Error> {
     let mut stmt = conn
-        .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
+        .prepare("SELECT id, audio_data FROM chunks WHERE id >= ?1 AND id <= ?2 ORDER BY id")
         .map_err(map_to_io_error)?;
     let mut rows = stmt.query([start_id, end_id]).map_err(map_to_io_error)?;
 
@@ -368,9 +368,9 @@ async fn audio_handler(
     };
 
     // Get max id
-    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM chunks", [], |row| row.get(0)) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::NOT_FOUND, "No segments in database").into_response(),
+        Err(_) => return (StatusCode::NOT_FOUND, "No chunks in database").into_response(),
     };
 
     // Validate end_id
@@ -671,9 +671,9 @@ async fn mpd_handler(
     };
 
     // Validate end_id
-    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM chunks", [], |row| row.get(0)) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::NOT_FOUND, "No segments in database").into_response(),
+        Err(_) => return (StatusCode::NOT_FOUND, "No chunks in database").into_response(),
     };
 
     if query.end_id > max_id {
@@ -905,7 +905,7 @@ async fn segment_handler(
 
     // Get the segment
     let segment: Vec<u8> = match conn.query_row(
-        "SELECT audio_data FROM segments WHERE id = ?1",
+        "SELECT audio_data FROM chunks WHERE id = ?1",
         [actual_id],
         |row| row.get(0),
     ) {
@@ -932,7 +932,7 @@ async fn segment_handler(
     let base_id = if let Some(base) = query.base {
         base
     } else {
-        conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
+        conn.query_row("SELECT MIN(id) FROM chunks", [], |row| row.get(0))
             .unwrap_or(1)
     };
 
@@ -1011,8 +1011,8 @@ async fn segments_range_handler(
         }
     };
 
-    let min_id: Result<i64, _> = conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0));
-    let max_id: Result<i64, _> = conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0));
+    let min_id: Result<i64, _> = conn.query_row("SELECT MIN(id) FROM chunks", [], |row| row.get(0));
+    let max_id: Result<i64, _> = conn.query_row("SELECT MAX(id) FROM chunks", [], |row| row.get(0));
 
     match (min_id, max_id) {
         (Ok(min), Ok(max)) => {
@@ -1029,7 +1029,7 @@ async fn segments_range_handler(
         }
         _ => (
             StatusCode::NOT_FOUND,
-            "No segments found in database",
+            "No chunks found in database",
         )
             .into_response(),
     }
@@ -1081,9 +1081,9 @@ async fn sessions_handler(
     // connection) vs. which come from different recording attempts after reconnection
     // or schedule breaks.
 
-    // Get all boundary segments (is_timestamp_from_source = 1)
+    // Get all boundary chunks (is_timestamp_from_source = 1)
     let mut stmt = match conn.prepare(
-        "SELECT id, timestamp_ms FROM segments WHERE is_timestamp_from_source = 1 ORDER BY id"
+        "SELECT id, timestamp_ms FROM chunks WHERE is_timestamp_from_source = 1 ORDER BY id"
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -1116,13 +1116,13 @@ async fn sessions_handler(
             .into_response();
     }
 
-    // Get max segment ID to handle the last session
-    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+    // Get max chunk ID to handle the last session
+    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM chunks", [], |row| row.get(0)) {
         Ok(id) => id,
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to get max segment ID",
+                "Failed to get max chunk ID",
             )
                 .into_response()
         }
@@ -1391,10 +1391,10 @@ async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl 
             None => continue,
         };
 
-        // Get min/max segment IDs
+        // Get min/max chunk IDs
         let (min_id, max_id): (Option<i64>, Option<i64>) = conn
             .query_row(
-                "SELECT MIN(id), MAX(id) FROM segments",
+                "SELECT MIN(id), MAX(id) FROM chunks",
                 [],
                 |row| Ok((row.get(0).ok(), row.get(1).ok())),
             )
@@ -1580,9 +1580,9 @@ async fn sync_show_metadata_handler(
         }
     };
 
-    // Get min/max segment IDs
+    // Get min/max chunk IDs
     let (min_id, max_id): (i64, i64) = match conn.query_row(
-        "SELECT MIN(id), MAX(id) FROM segments",
+        "SELECT MIN(id), MAX(id) FROM chunks",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     ) {
@@ -1590,7 +1590,7 @@ async fn sync_show_metadata_handler(
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "No segments found"})),
+                axum::Json(serde_json::json!({"error": "No chunks found"})),
             )
                 .into_response();
         }
@@ -1676,10 +1676,10 @@ async fn sync_show_segments_handler(
         }
     }
 
-    // Fetch segments
+    // Fetch chunks
     let limit = query.limit.unwrap_or(100);
     let mut stmt = match conn.prepare(
-        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
+        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data FROM chunks WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
     ) {
         Ok(stmt) => stmt,
         Err(e) => {
@@ -1706,25 +1706,25 @@ async fn sync_show_segments_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to query segments: {}", e)})),
+                axum::Json(serde_json::json!({"error": format!("Failed to query chunks: {}", e)})),
             )
                 .into_response();
         }
     };
 
-    let mut segments = Vec::new();
-    for segment in segments_iter {
-        match segment {
-            Ok(seg) => segments.push(seg),
+    let mut chunks = Vec::new();
+    for chunk in segments_iter {
+        match chunk {
+            Ok(seg) => chunks.push(seg),
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": format!("Failed to fetch segment: {}", e)})),
+                    axum::Json(serde_json::json!({"error": format!("Failed to fetch chunk: {}", e)})),
                 )
                     .into_response();
             }
         }
     }
 
-    (StatusCode::OK, axum::Json(segments)).into_response()
+    (StatusCode::OK, axum::Json(chunks)).into_response()
 }

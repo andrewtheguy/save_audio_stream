@@ -135,7 +135,7 @@ local_dir = './synced'              # Local directory for synced databases
 
 # Optional
 shows = ['show1', 'show2']  # Show names to sync (omit to sync all shows from remote)
-chunk_size = 100            # default: 100 (batch size for fetching segments)
+chunk_size = 100            # default: 100 (batch size for fetching chunks)
 ```
 
 ### Config Options
@@ -165,7 +165,7 @@ chunk_size = 100            # default: 100 (batch size for fetching segments)
 | `record_end` | Recording end time in UTC (HH:MM) | - | Yes |
 | `audio_format` | Audio encoding: `aac`, `opus`, or `wav` | opus | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
-| `split_interval` | Split segments every N seconds (0 = no split) | 0 | No |
+| `split_interval` | Split chunks every N seconds (0 = no split) | 0 | No |
 
 **Note:** The API server always runs in the main thread on the configured `api_port` (default: 3000). It provides synchronization endpoints for all shows being recorded, enabling remote access and database syncing while recording is in progress. The API server is required for sync functionality.
 
@@ -184,7 +184,7 @@ chunk_size = 100            # default: 100 (batch size for fetching segments)
 | Option | Description | Default |
 |--------|-------------|---------|
 | `shows` | Array of show names to sync (whitelist) | All shows from remote |
-| `chunk_size` | Batch size for fetching segments | 100 |
+| `chunk_size` | Batch size for fetching chunks | 100 |
 
 ### Examples
 
@@ -228,8 +228,8 @@ CREATE TABLE metadata (
 );
 -- Keys: unique_id, name, audio_format, split_interval
 
--- Audio segments
-CREATE TABLE segments (
+-- Audio chunks
+CREATE TABLE chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp_ms INTEGER NOT NULL,  -- Unix timestamp in milliseconds
     audio_data BLOB NOT NULL
