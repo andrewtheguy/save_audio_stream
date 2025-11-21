@@ -232,7 +232,8 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
             .route("/api/sessions", get(sessions_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route("/api/sync/shows/{show_name}/metadata", get(sync_show_metadata_handler))
-            .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler));
+            .route("/api/sync/shows/{show_name}/segments", get(sync_show_segments_handler))
+            .route("/api/db/{name}/segments", get(db_segments_handler));
 
         #[cfg(debug_assertions)]
         let app = api_routes
@@ -1081,9 +1082,13 @@ async fn sessions_handler(
     // connection) vs. which come from different recording attempts after reconnection
     // or schedule breaks.
 
-    // Get all boundary chunks (is_timestamp_from_source = 1)
+    // Get all segments with their start id and timestamp from segments table
     let mut stmt = match conn.prepare(
-        "SELECT id, timestamp_ms FROM chunks WHERE is_timestamp_from_source = 1 ORDER BY id"
+        "SELECT s.id, s.start_timestamp_ms, MIN(c.id) as start_chunk_id
+         FROM segments s
+         JOIN chunks c ON c.segment_id = s.id
+         GROUP BY s.id
+         ORDER BY s.id"
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -1096,7 +1101,7 @@ async fn sessions_handler(
     };
 
     let boundaries: Vec<(i64, i64)> = match stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map([], |row| Ok((row.get(2)?, row.get(1)?)))
     {
         Ok(rows) => rows.filter_map(Result::ok).collect(),
         Err(e) => {
@@ -1307,8 +1312,73 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 #[derive(Serialize)]
+struct SegmentInfo {
+    id: i64,
+    start_timestamp_ms: i64,
+}
+
+#[derive(Serialize)]
 struct ShowsList {
     shows: Vec<ShowInfo>,
+}
+
+async fn db_segments_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    // Construct database path
+    let db_path = format!("{}/{}.sqlite", state.output_dir, name);
+    let path = std::path::Path::new(&db_path);
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": format!("Database '{}' not found", name)})),
+        )
+            .into_response();
+    }
+
+    // Open database
+    let conn = match Connection::open(path) {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Fetch all segments
+    let mut stmt = match conn.prepare("SELECT id, start_timestamp_ms FROM segments ORDER BY id") {
+        Ok(stmt) => stmt,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to prepare query: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let segments: Result<Vec<SegmentInfo>, _> = stmt
+        .query_map([], |row| {
+            Ok(SegmentInfo {
+                id: row.get(0)?,
+                start_timestamp_ms: row.get(1)?,
+            })
+        })
+        .and_then(|rows| rows.collect());
+
+    match segments {
+        Ok(segments) => axum::Json(segments).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": format!("Failed to fetch segments: {}", e)})),
+        )
+            .into_response(),
+    }
 }
 
 async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {

@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // Import the cleanup functions from the library
 use save_audio_stream::record::{cleanup_old_segments_with_params, cleanup_old_segments_with_retention};
@@ -16,21 +15,41 @@ fn create_test_database() -> Connection {
     )
     .unwrap();
     conn.execute(
+        "CREATE TABLE segments (
+            id INTEGER PRIMARY KEY,
+            start_timestamp_ms INTEGER NOT NULL
+        )",
+        [],
+    )
+    .unwrap();
+    conn.execute(
         "CREATE TABLE chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            segment_id INTEGER NOT NULL
+            segment_id INTEGER NOT NULL REFERENCES segments(id)
         )",
         [],
     )
     .unwrap();
 
-    // Create index
+    // Create indexes
     conn.execute(
         "CREATE INDEX idx_chunks_boundary
          ON chunks(is_timestamp_from_source, timestamp_ms)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE INDEX idx_chunks_segment_id
+         ON chunks(segment_id)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE INDEX idx_segments_start_timestamp
+         ON segments(start_timestamp_ms)",
         [],
     )
     .unwrap();
@@ -45,12 +64,38 @@ fn insert_segment_with_timestamp(
     is_boundary: bool,
     data: &[u8],
 ) -> i64 {
-    // For testing purposes, use a microsecond timestamp as segment_id
-    // In real implementation, this would be set based on session boundaries
-    let segment_id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_micros() as i64;
+    // Generate segment_id based on boundaries:
+    // - If is_boundary=true, create a new segment_id (using timestamp_ms for uniqueness)
+    // - If is_boundary=false, use the most recent segment_id from the database
+    let segment_id = if is_boundary {
+        // New segment: use timestamp_ms as base (convert to microseconds range)
+        let new_segment_id = timestamp_ms * 1000;
+
+        // Insert into segments table
+        conn.execute(
+            "INSERT INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
+            rusqlite::params![new_segment_id, timestamp_ms],
+        )
+        .unwrap();
+
+        new_segment_id
+    } else {
+        // Continuation: get the most recent segment_id
+        conn.query_row(
+            "SELECT segment_id FROM chunks ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0)
+        )
+        .unwrap_or_else(|_| {
+            // No existing chunks - create a default segment
+            let default_segment_id = timestamp_ms * 1000;
+            conn.execute(
+                "INSERT INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
+                rusqlite::params![default_segment_id, timestamp_ms],
+            ).unwrap();
+            default_segment_id
+        })
+    };
 
     conn.execute(
         "INSERT INTO chunks (timestamp_ms, is_timestamp_from_source, audio_data, segment_id) VALUES (?1, ?2, ?3, ?4)",

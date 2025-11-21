@@ -71,32 +71,45 @@ pub fn cleanup_old_segments_with_params(
         cutoff.format("%Y-%m-%d %H:%M:%S UTC")
     );
 
-    // Find the last boundary segment BEFORE the cutoff
+    // Find the last complete segment BEFORE the cutoff
     // This ensures we keep complete sessions and don't break playback continuity
-    let last_keeper_boundary: Option<i64> = conn
+    let last_keeper_segment: Option<i64> = conn
         .query_row(
-            "SELECT MAX(id) FROM chunks
-             WHERE is_timestamp_from_source = 1
-             AND timestamp_ms < ?1",
+            "SELECT MAX(id) FROM segments WHERE start_timestamp_ms < ?1",
             [cutoff_ms],
             |row| row.get(0),
         )
         .ok();
 
-    // If we found a boundary to keep, delete everything before it
-    if let Some(boundary_id) = last_keeper_boundary {
-        let deleted = conn.execute("DELETE FROM chunks WHERE id < ?1", [boundary_id])?;
+    // If we found a segment to keep, delete all older segments and their chunks
+    if let Some(keeper_segment_id) = last_keeper_segment {
+        // Delete chunks from segments that are both:
+        // 1. Timestamped before the cutoff
+        // 2. Have IDs less than the keeper (to preserve the last complete segment)
+        let deleted_chunks = conn.execute(
+            "DELETE FROM chunks WHERE segment_id IN (
+                SELECT id FROM segments
+                WHERE start_timestamp_ms < ?1 AND id < ?2
+            )",
+            rusqlite::params![cutoff_ms, keeper_segment_id],
+        )?;
 
-        if deleted > 0 {
+        // Delete segments that are timestamped before cutoff and older than keeper
+        let deleted_segments = conn.execute(
+            "DELETE FROM segments WHERE start_timestamp_ms < ?1 AND id < ?2",
+            rusqlite::params![cutoff_ms, keeper_segment_id],
+        )?;
+
+        if deleted_chunks > 0 || deleted_segments > 0 {
             println!(
-                "Cleaned up {} old segments (keeping boundary at id={})",
-                deleted, boundary_id
+                "Cleaned up {} chunks and {} segments (keeping segment_id={} and newer)",
+                deleted_chunks, deleted_segments, keeper_segment_id
             );
         } else {
             println!("No old segments to clean up");
         }
     } else {
-        println!("No old segments to clean up (no boundaries found before cutoff)");
+        println!("No old segments to clean up (no segments found before cutoff)");
     }
 
     Ok(())
@@ -135,20 +148,37 @@ fn run_connection_loop(
         [],
     )?;
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS segments (
+            id INTEGER PRIMARY KEY,
+            start_timestamp_ms INTEGER NOT NULL
+        )",
+        [],
+    )?;
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            segment_id INTEGER NOT NULL
+            segment_id INTEGER NOT NULL REFERENCES segments(id)
         )",
         [],
     )?;
 
-    // Create indexes for efficient cleanup queries
+    // Create indexes for efficient queries
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chunks_boundary
          ON chunks(is_timestamp_from_source, timestamp_ms)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chunks_segment_id
+         ON chunks(segment_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_segments_start_timestamp
+         ON segments(start_timestamp_ms)",
         [],
     )?;
 
@@ -212,9 +242,9 @@ fn run_connection_loop(
     if is_existing_db {
         // Validate version first
         let db_version = existing_version.ok_or("Database is missing version in metadata")?;
-        if db_version != "2" {
+        if db_version != "3" {
             return Err(format!(
-                "Unsupported database version: '{}'. This application only supports version '2'",
+                "Unsupported database version: '{}'. This application only supports version '3'",
                 db_version
             ).into());
         }
@@ -292,7 +322,7 @@ fn run_connection_loop(
             .map(char::from)
             .collect::<String>());
         conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('version', '2')",
+            "INSERT INTO metadata (key, value) VALUES ('version', '3')",
             [],
         )?;
         conn.execute(
@@ -594,6 +624,12 @@ fn run_connection_loop(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_micros() as i64;
+
+    // Insert new segment into segments table
+    conn.execute(
+        "INSERT INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
+        rusqlite::params![connection_segment_id, base_timestamp_ms],
+    )?;
 
     // Helper to insert segment into SQLite
     let insert_segment = |conn: &Connection,

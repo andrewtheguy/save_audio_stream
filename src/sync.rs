@@ -39,6 +39,12 @@ struct ChunkData {
     segment_id: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct SegmentData {
+    id: i64,
+    start_timestamp_ms: i64,
+}
+
 
 /// Main entry point for syncing multiple shows
 pub fn sync_shows(
@@ -233,13 +239,37 @@ fn sync_single_show(
             [],
         )?;
         conn.execute(
+            "CREATE TABLE IF NOT EXISTS segments (
+                id INTEGER PRIMARY KEY,
+                start_timestamp_ms INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS chunks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp_ms INTEGER NOT NULL,
                 is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
                 audio_data BLOB NOT NULL,
-                segment_id INTEGER NOT NULL
+                segment_id INTEGER NOT NULL REFERENCES segments(id)
             )",
+            [],
+        )?;
+
+        // Create indexes for efficient queries
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunks_boundary
+             ON chunks(is_timestamp_from_source, timestamp_ms)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunks_segment_id
+             ON chunks(segment_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_segments_start_timestamp
+             ON segments(start_timestamp_ms)",
             [],
         )?;
 
@@ -296,6 +326,26 @@ fn sync_single_show(
         metadata.min_id
     };
 
+    // Sync segments table first
+    println!("  Syncing segments metadata...");
+    let segments_url = format!("{}/api/db/{}/segments", remote_url, show_name);
+    let segments: Vec<SegmentData> = client
+        .get(&segments_url)
+        .send()
+        .map_err(|e| format!("Network error fetching segments: {}", e))?
+        .json()
+        .map_err(|e| format!("Failed to parse segments JSON: {}", e))?;
+
+    // Insert segments into local database
+    let segments_count = segments.len();
+    for segment in segments {
+        conn.execute(
+            "INSERT OR REPLACE INTO segments (id, start_timestamp_ms) VALUES (?1, ?2)",
+            rusqlite::params![segment.id, segment.start_timestamp_ms],
+        )?;
+    }
+    println!("  Synced {} segments", segments_count);
+
     // Sync chunks in batches
     let target_max_id = metadata.max_id;
     let mut current_id = start_id;
@@ -331,13 +381,17 @@ fn sync_single_show(
         let tx = conn.transaction()?;
         let mut last_boundary_end_id: Option<i64> = None;
         {
+            let mut prev_segment_id: Option<i64> = None;
             let mut prev_id: Option<i64> = None;
+
             for chunk in &chunks {
-                // Check if current chunk is a boundary (new session start)
-                // If so, previous chunk is the end of a complete session
-                if chunk.is_timestamp_from_source == 1 {
-                    if let Some(prev) = prev_id {
-                        last_boundary_end_id = Some(prev);
+                // Check if we're starting a new segment
+                // If so, the previous chunk is the end of a complete segment
+                if let Some(prev_seg_id) = prev_segment_id {
+                    if chunk.segment_id != prev_seg_id {
+                        if let Some(prev) = prev_id {
+                            last_boundary_end_id = Some(prev);
+                        }
                     }
                 }
 
@@ -346,6 +400,7 @@ fn sync_single_show(
                     rusqlite::params![chunk.id, chunk.timestamp_ms, chunk.is_timestamp_from_source, &chunk.audio_data, chunk.segment_id],
                 )?;
 
+                prev_segment_id = Some(chunk.segment_id);
                 prev_id = Some(chunk.id);
             }
 
