@@ -13,7 +13,7 @@ storage_format = 'sqlite'   # default
 # This excludes 07:00 to 14:00 UTC
 [sessions.schedule]
 record_start = "14:00"
-record_end = "07:00"
+record_end = "11:00"
 
 [[sessions]]
 url = 'https://live.amperwave.net/manifest/audacy-knxamaac-imc'
