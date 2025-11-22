@@ -198,7 +198,7 @@ fn sync_single_show(
 
     // Open or create local database
     let local_db_path = local_dir.join(format!("{}.sqlite", show_name));
-    let mut conn = Connection::open(&local_db_path)?;
+    let mut conn = crate::db::open_database_connection(&local_db_path)?;
 
     // Check if database exists (has metadata)
     let existing_unique_id: Option<String> = conn
@@ -308,7 +308,7 @@ fn sync_single_show(
                 timestamp_ms INTEGER NOT NULL,
                 is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
                 audio_data BLOB NOT NULL,
-                section_id INTEGER NOT NULL REFERENCES sections(id)
+                section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE
             )",
             [],
         )?;
@@ -394,10 +394,12 @@ fn sync_single_show(
         .map_err(|e| format!("Failed to parse sections JSON: {}", e))?;
 
     // Insert sections into local database
+    // Use INSERT OR IGNORE to avoid replacing existing sections
+    // (REPLACE would trigger CASCADE delete of associated segments)
     let sections_count = sections.len();
     for section in sections {
         conn.execute(
-            "INSERT OR REPLACE INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
             rusqlite::params![section.id, section.start_timestamp_ms],
         )?;
     }
