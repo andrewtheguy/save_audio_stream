@@ -8,7 +8,7 @@ use save_audio_stream::record::{
 
 /// Helper function to create a test database with segments
 fn create_test_database() -> Connection {
-    let conn = Connection::open_in_memory().unwrap();
+    let conn = save_audio_stream::db::create_test_connection_in_memory();
 
     // Create tables
     conn.execute(
@@ -30,7 +30,7 @@ fn create_test_database() -> Connection {
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            section_id INTEGER NOT NULL REFERENCES sections(id)
+            section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE
         )",
         [],
     )

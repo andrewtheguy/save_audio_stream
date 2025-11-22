@@ -147,7 +147,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
         return Err(format!("Database file not found: {}", sqlite_file.display()).into());
     }
 
-    let conn = Connection::open(&sqlite_file)?;
+    let conn = crate::db::open_readonly_connection(&sqlite_file)?;
 
     // Check version first
     let db_version: String = conn
@@ -441,7 +441,7 @@ async fn audio_handler(
     State(state): State<StdArc<AppState>>,
     Query(query): Query<AudioQuery>,
 ) -> impl IntoResponse {
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -748,7 +748,7 @@ async fn mpd_handler(
     State(state): State<StdArc<AppState>>,
     Query(query): Query<MpdQuery>,
 ) -> impl IntoResponse {
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -865,7 +865,7 @@ async fn mpd_handler(
 
 // Initialization segment handler
 async fn init_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -981,7 +981,7 @@ async fn segment_handler(
         id
     };
 
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1096,7 +1096,7 @@ async fn hls_playlist_handler(
     State(state): State<StdArc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1231,7 +1231,7 @@ async fn aac_segment_handler(
         }
     };
 
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1342,7 +1342,7 @@ async fn opus_hls_playlist_handler(
     State(state): State<StdArc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1508,7 +1508,7 @@ async fn opus_segment_handler(
         }
     };
 
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1645,7 +1645,7 @@ async fn format_handler(State(state): State<StdArc<AppState>>) -> impl IntoRespo
 }
 
 async fn segments_range_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1679,7 +1679,7 @@ async fn segments_range_handler(State(state): State<StdArc<AppState>>) -> impl I
 }
 
 async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
-    let conn = match Connection::open(&state.db_path) {
+    let conn = match crate::db::open_readonly_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1968,7 +1968,7 @@ async fn db_sections_handler(
     }
 
     // Open database
-    let conn = match Connection::open(path) {
+    let conn = match crate::db::open_readonly_connection(path) {
         Ok(conn) => conn,
         Err(e) => {
             return (
@@ -2060,7 +2060,7 @@ async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl 
         }
 
         // Open database and check if it's a recording database (not recipient)
-        let conn = match Connection::open(&path) {
+        let conn = match crate::db::open_readonly_connection(&path) {
             Ok(conn) => conn,
             Err(_) => continue,
         };
@@ -2143,7 +2143,7 @@ async fn sync_show_metadata_handler(
     }
 
     // Open database
-    let conn = match Connection::open(path) {
+    let conn = match crate::db::open_readonly_connection(path) {
         Ok(conn) => conn,
         Err(e) => {
             return (
@@ -2344,7 +2344,7 @@ async fn sync_show_segments_handler(
     }
 
     // Open database
-    let conn = match Connection::open(path) {
+    let conn = match crate::db::open_readonly_connection(path) {
         Ok(conn) => conn,
         Err(e) => {
             return (

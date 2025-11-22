@@ -81,29 +81,22 @@ pub fn cleanup_old_sections_with_params(
         )
         .ok();
 
-    // If we found a section to keep, delete all older sections and their segments
+    // If we found a section to keep, delete all older sections
+    // Segments will be automatically deleted via ON DELETE CASCADE
     if let Some(keeper_section_id) = last_keeper_section {
-        // Delete segments from sections that are both:
+        // Delete sections that are both:
         // 1. Timestamped before the cutoff
         // 2. Have IDs less than the keeper (to preserve the last complete section)
-        let deleted_segments = conn.execute(
-            "DELETE FROM segments WHERE section_id IN (
-                SELECT id FROM sections
-                WHERE start_timestamp_ms < ?1 AND id < ?2
-            )",
-            rusqlite::params![cutoff_ms, keeper_section_id],
-        )?;
-
-        // Delete sections that are timestamped before cutoff and older than keeper
+        // The foreign key ON DELETE CASCADE will automatically delete associated segments
         let deleted_sections = conn.execute(
             "DELETE FROM sections WHERE start_timestamp_ms < ?1 AND id < ?2",
             rusqlite::params![cutoff_ms, keeper_section_id],
         )?;
 
-        if deleted_segments > 0 || deleted_sections > 0 {
+        if deleted_sections > 0 {
             println!(
-                "Cleaned up {} segments and {} sections (keeping section_id={} and newer)",
-                deleted_segments, deleted_sections, keeper_section_id
+                "Cleaned up {} sections and their associated segments (keeping section_id={} and newer)",
+                deleted_sections, keeper_section_id
             );
         } else {
             println!("No old sections to clean up");
@@ -120,17 +113,6 @@ fn cleanup_old_sections(conn: &Connection) -> Result<(), Box<dyn std::error::Err
     cleanup_old_sections_with_retention(conn, RETENTION_HOURS)
 }
 
-/// Open database connection with WAL mode enabled
-fn open_database_connection(
-    output_dir: &str,
-    name: &str,
-) -> Result<Connection, Box<dyn std::error::Error>> {
-    let db_path = format!("{}/{}.sqlite", output_dir, name);
-    let conn = Connection::open(&db_path)?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    println!("SQLite database: {}", db_path);
-    Ok(conn)
-}
 
 /// Run the connection loop and handle recording with retries
 fn run_connection_loop(
@@ -143,7 +125,7 @@ fn run_connection_loop(
     duration: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize database once before the connection loop with WAL mode enabled
-    let conn = open_database_connection(output_dir, name)?;
+    let conn = crate::db::open_database_connection(output_dir, name)?;
 
     // Create tables
     conn.execute(
@@ -163,7 +145,7 @@ fn run_connection_loop(
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            section_id INTEGER NOT NULL REFERENCES sections(id)
+            section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE
         )",
         [],
     )?;
@@ -1177,7 +1159,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         );
 
         // Run cleanup of old sections - recreate connection for cleanup
-        if let Ok(cleanup_conn) = open_database_connection(&output_dir, &name) {
+        if let Ok(cleanup_conn) = crate::db::open_database_connection(&output_dir, &name) {
             if let Err(e) = cleanup_old_sections(&cleanup_conn) {
                 eprintln!("Warning: Failed to clean up old sections: {}", e);
             }

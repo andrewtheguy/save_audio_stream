@@ -4,6 +4,7 @@
 pub mod audio;
 pub mod config;
 pub mod constants;
+pub mod db;
 pub mod fmp4;
 pub mod record;
 pub mod schedule;

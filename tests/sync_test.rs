@@ -74,7 +74,7 @@ fn create_source_database(
     num_sections: usize,
     segments_per_section: usize,
 ) -> Connection {
-    let mut conn = Connection::open_in_memory().unwrap();
+    let mut conn = save_audio_stream::db::create_test_connection_in_memory();
 
     // Create schema
     conn.execute(
@@ -96,7 +96,7 @@ fn create_source_database(
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            section_id INTEGER NOT NULL REFERENCES sections(id)
+            section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE
         )",
         [],
     )
@@ -119,8 +119,8 @@ fn create_source_database(
     )
     .unwrap();
 
-    // Enable WAL mode
-    conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+    // Enable WAL mode and foreign keys
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
 
     // Insert metadata
     conn.execute(
@@ -432,7 +432,7 @@ fn verify_destination_db(
     expected_num_segments: usize,
     expected_num_sections: usize,
 ) {
-    let conn = Connection::open(db_path).unwrap();
+    let conn = save_audio_stream::db::open_test_connection(db_path);
 
     // Verify metadata
     let source_unique_id: String = conn
@@ -622,7 +622,7 @@ async fn test_sync_metadata_validation() {
 
     // Manually tamper with destination metadata to cause validation failure
     let dest_db_path = temp_dir.path().join("test_show.sqlite");
-    let conn = Connection::open(&dest_db_path).unwrap();
+    let conn = save_audio_stream::db::open_test_connection(&dest_db_path);
     conn.execute(
         "UPDATE metadata SET value = 'aac' WHERE key = 'audio_format'",
         [],
@@ -646,7 +646,7 @@ async fn test_sync_rejects_old_version() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Create source database with old version (version "2" instead of "3")
-    let conn = Connection::open_in_memory().unwrap();
+    let conn = save_audio_stream::db::create_test_connection_in_memory();
 
     // Create old schema (version 2 - without sections table)
     conn.execute(
@@ -660,7 +660,7 @@ async fn test_sync_rejects_old_version() {
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            section_id INTEGER NOT NULL
+            section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE
         )",
         [],
     )
@@ -759,7 +759,7 @@ async fn test_sync_rejects_old_version_on_resume() {
     // Now simulate remote server being downgraded to old version
     // (In reality this would be a server restart with old code)
     // Create old version database
-    let old_conn = Connection::open_in_memory().unwrap();
+    let old_conn = save_audio_stream::db::create_test_connection_in_memory();
     old_conn
         .execute(
             "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -773,7 +773,7 @@ async fn test_sync_rejects_old_version_on_resume() {
                 timestamp_ms INTEGER NOT NULL,
                 is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
                 audio_data BLOB NOT NULL,
-                section_id INTEGER NOT NULL
+                section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE
             )",
             [],
         )
@@ -858,7 +858,7 @@ async fn test_sync_rejects_local_old_version() {
 
     // Create destination database with old version (simulating old local sync target)
     let dest_db_path = temp_dir.path().join("test_show.sqlite");
-    let conn = Connection::open(&dest_db_path).unwrap();
+    let conn = save_audio_stream::db::open_test_connection(&dest_db_path);
 
     conn.execute(
         "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -978,7 +978,7 @@ async fn test_sync_rejects_split_interval_mismatch() {
 
     // Tamper with split_interval
     let dest_db_path = temp_dir.path().join("test_show.sqlite");
-    let conn = Connection::open(&dest_db_path).unwrap();
+    let conn = save_audio_stream::db::open_test_connection(&dest_db_path);
     conn.execute(
         "UPDATE metadata SET value = '600' WHERE key = 'split_interval'",
         [],
@@ -1026,7 +1026,7 @@ async fn test_sync_rejects_bitrate_mismatch() {
 
     // Tamper with bitrate
     let dest_db_path = temp_dir.path().join("test_show.sqlite");
-    let conn = Connection::open(&dest_db_path).unwrap();
+    let conn = save_audio_stream::db::open_test_connection(&dest_db_path);
     conn.execute("UPDATE metadata SET value = '32' WHERE key = 'bitrate'", [])
         .unwrap();
     drop(conn);
@@ -1071,7 +1071,7 @@ async fn test_sync_rejects_source_unique_id_mismatch() {
 
     // Tamper with source_unique_id (simulating pointing to different source)
     let dest_db_path = temp_dir.path().join("test_show.sqlite");
-    let conn = Connection::open(&dest_db_path).unwrap();
+    let conn = save_audio_stream::db::open_test_connection(&dest_db_path);
     conn.execute(
         "UPDATE metadata SET value = 'different_source' WHERE key = 'source_unique_id'",
         [],
@@ -1100,7 +1100,7 @@ async fn test_sync_rejects_recipient_database() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Create source database marked as recipient (sync target)
-    let conn = Connection::open_in_memory().unwrap();
+    let conn = save_audio_stream::db::create_test_connection_in_memory();
 
     // Create schema
     conn.execute(
