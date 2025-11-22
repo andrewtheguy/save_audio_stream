@@ -198,7 +198,7 @@ fn sync_single_show(
 
     // Open or create local database
     let local_db_path = local_dir.join(format!("{}.sqlite", show_name));
-    let mut conn = crate::db::open_database_with_path(&local_db_path)?;
+    let mut conn = crate::db::open_database_connection(&local_db_path)?;
 
     // Check if database exists (has metadata)
     let existing_unique_id: Option<String> = conn

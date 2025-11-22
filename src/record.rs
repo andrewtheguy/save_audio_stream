@@ -124,9 +124,11 @@ fn run_connection_loop(
     split_interval: u64,
     duration: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize database once before the connection loop with WAL mode enabled
-    let conn = crate::db::open_database_connection(output_dir, name)?;
 
+    let db_path = crate::db::get_db_path(output_dir, name);
+
+    // Initialize database once before the connection loop with WAL mode enabled
+    let conn = crate::db::open_database_connection(&std::path::Path::new(&db_path))?;
     // Create tables
     conn.execute(
         "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -1159,7 +1161,8 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         );
 
         // Run cleanup of old sections - recreate connection for cleanup
-        if let Ok(cleanup_conn) = crate::db::open_database_connection(&output_dir, &name) {
+        let db_path = crate::db::get_db_path(&output_dir, &name);
+        if let Ok(cleanup_conn) = crate::db::open_database_connection(&std::path::Path::new(&db_path)) {
             if let Err(e) = cleanup_old_sections(&cleanup_conn) {
                 eprintln!("Warning: Failed to clean up old sections: {}", e);
             }

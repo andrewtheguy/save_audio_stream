@@ -1956,7 +1956,7 @@ async fn db_sections_handler(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     // Construct database path
-    let db_path = format!("{}/{}.sqlite", state.output_dir, name);
+    let db_path = crate::db::get_db_path(&state.output_dir, &name);
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
@@ -2131,7 +2131,7 @@ async fn sync_show_metadata_handler(
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
     // Construct database path
-    let db_path = format!("{}/{}.sqlite", state.output_dir, show_name);
+    let db_path = crate::db::get_db_path(&state.output_dir, &show_name);
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
@@ -2332,7 +2332,7 @@ async fn sync_show_segments_handler(
     Query(query): Query<SyncSegmentsQuery>,
 ) -> impl IntoResponse {
     // Construct database path
-    let db_path = format!("{}/{}.sqlite", state.output_dir, show_name);
+    let db_path = crate::db::get_db_path(&state.output_dir, &show_name);
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
