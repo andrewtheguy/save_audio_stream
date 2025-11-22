@@ -32,7 +32,7 @@ pub fn open_readonly_connection(
 
 /// Create an in-memory database connection for testing
 /// Enables foreign keys for CASCADE delete testing
-#[cfg(test)]
+#[doc(hidden)]
 pub fn create_test_connection_in_memory() -> Connection {
     let conn = Connection::open_in_memory().expect("Failed to create in-memory database");
     conn.execute("PRAGMA foreign_keys = ON", [])
@@ -42,7 +42,7 @@ pub fn create_test_connection_in_memory() -> Connection {
 
 /// Open a file-based database connection for test verification
 /// Enables foreign keys for verification queries
-#[cfg(test)]
+#[doc(hidden)]
 pub fn open_test_connection(db_path: &Path) -> Connection {
     let conn = Connection::open(db_path).expect("Failed to open test database");
     conn.execute("PRAGMA foreign_keys = ON", [])
