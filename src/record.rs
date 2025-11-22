@@ -80,7 +80,9 @@ pub fn cleanup_old_sections_with_params(
             [],
             |row| {
                 let value: String = row.get(0)?;
-                value.parse::<i64>().map_err(|_| rusqlite::Error::InvalidQuery)
+                value
+                    .parse::<i64>()
+                    .map_err(|_| rusqlite::Error::InvalidQuery)
             },
         )
         .ok()
@@ -146,7 +148,6 @@ fn cleanup_old_sections(conn: &Connection) -> Result<(), Box<dyn std::error::Err
     cleanup_old_sections_with_retention(conn, RETENTION_HOURS)
 }
 
-
 /// Run the connection loop and handle recording with retries
 fn run_connection_loop(
     url: &str,
@@ -157,7 +158,6 @@ fn run_connection_loop(
     split_interval: u64,
     duration: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
     let db_path = crate::db::get_db_path(output_dir, name);
 
     // Initialize database once before the connection loop with WAL mode enabled
@@ -749,7 +749,11 @@ fn run_connection_loop(
                 "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
                 rusqlite::params![connection_section_id, base_timestamp_ms],
             )?;
-            db::upsert_metadata(&tx, "pending_section_id", &connection_section_id.to_string())?;
+            db::upsert_metadata(
+                &tx,
+                "pending_section_id",
+                &connection_section_id.to_string(),
+            )?;
             tx.commit()?;
         }
 
@@ -1200,7 +1204,9 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
 
         // Run cleanup of old sections - recreate connection for cleanup
         let db_path = crate::db::get_db_path(&output_dir, &name);
-        if let Ok(cleanup_conn) = crate::db::open_database_connection(&std::path::Path::new(&db_path)) {
+        if let Ok(cleanup_conn) =
+            crate::db::open_database_connection(&std::path::Path::new(&db_path))
+        {
             if let Err(e) = cleanup_old_sections(&cleanup_conn) {
                 eprintln!("Warning: Failed to clean up old sections: {}", e);
             }

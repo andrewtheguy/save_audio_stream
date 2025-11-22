@@ -379,7 +379,7 @@ fn sync_single_show(
             "INSERT INTO metadata (key, value) VALUES ('last_boundary_end_id', '0')",
             [],
         )?;
-        
+
         metadata.min_id
     };
 

@@ -1,5 +1,6 @@
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
+use url::Url;
 
 /// Get the database path for a given output directory and name
 pub fn get_db_path(output_dir: &str, name: &str) -> String {
@@ -8,9 +9,7 @@ pub fn get_db_path(output_dir: &str, name: &str) -> String {
 
 /// Open a database connection with a full path (for read-write access)
 /// Enables WAL mode and foreign keys
-pub fn open_database_connection(
-    db_path: &Path,
-) -> Result<Connection, Box<dyn std::error::Error>> {
+pub fn open_database_connection(db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     let conn = Connection::open(db_path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -20,13 +19,18 @@ pub fn open_database_connection(
 /// Open a read-only database connection (for web server handlers)
 /// Uses explicit read-only mode for safety
 /// Foreign keys are not enabled as no modifications are allowed
+/// mode=ro and immutable=1 are needed to open the database from network filesystems
 pub fn open_readonly_connection(
     db_path: impl AsRef<Path>,
 ) -> Result<Connection, Box<dyn std::error::Error>> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let mut uri = Url::from_file_path(db_path.as_ref())
+        .map_err(|_| format!("unable to convert path {:?} to file URI", db_path.as_ref()))?;
+    uri.query_pairs_mut()
+        .append_pair("mode", "ro")
+        .append_pair("immutable", "1");
+
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+    let conn = Connection::open_with_flags(uri.as_str(), flags)?;
     Ok(conn)
 }
 

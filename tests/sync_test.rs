@@ -120,7 +120,8 @@ fn create_source_database(
     .unwrap();
 
     // Enable WAL mode and foreign keys
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+        .unwrap();
 
     // Insert metadata
     conn.execute(

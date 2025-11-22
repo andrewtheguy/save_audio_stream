@@ -1739,17 +1739,17 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let boundaries: Vec<(i64, i64, i64)> = match stmt.query_map([], |row| Ok((row.get(0)?, row.get(2)?, row.get(1)?)))
-    {
-        Ok(rows) => rows.filter_map(Result::ok).collect(),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Query error: {}", e),
-            )
-                .into_response()
-        }
-    };
+    let boundaries: Vec<(i64, i64, i64)> =
+        match stmt.query_map([], |row| Ok((row.get(0)?, row.get(2)?, row.get(1)?))) {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Query error: {}", e),
+                )
+                    .into_response()
+            }
+        };
 
     if boundaries.is_empty() {
         return (StatusCode::NOT_FOUND, "No recording sessions found").into_response();
