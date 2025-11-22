@@ -89,7 +89,7 @@ pub fn cleanup_old_sections_with_params(
         // 2. Have IDs less than the keeper (to preserve the last complete section)
         // The foreign key ON DELETE CASCADE will automatically delete associated segments
         let deleted_sections = conn.execute(
-            "DELETE FROM sections WHERE start_timestamp_ms < ?1 AND id < ?2",
+            "DELETE FROM sections WHERE start_timestamp_ms < ?1 AND id != ?2",
             rusqlite::params![cutoff_ms, keeper_section_id],
         )?;
 
