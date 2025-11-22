@@ -385,7 +385,7 @@ fn run_connection_loop(
             }
         }
 
-        println!("Session ID: {}", db_unique_id);
+        println!("Session ID existing db: {}", db_unique_id);
     } else {
         // Determine bitrate and sample rate for new database
         let (output_sample_rate, _, default_bitrate) = match audio_format {
@@ -462,7 +462,7 @@ fn run_connection_loop(
             }
         }
 
-        println!("Session ID: {}", session_unique_id);
+        println!("Session ID new db: {}", session_unique_id);
     }
 
     // Retry configuration
