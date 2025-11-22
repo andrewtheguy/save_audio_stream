@@ -209,9 +209,10 @@ fn sync_single_show(
         )
         .ok();
 
-    let start_id = if let Some(_existing_unique_id) = existing_unique_id {
+    let start_id = if let Some(existing_unique_id) = existing_unique_id {
         // Existing database - validate and resume
         println!("  Found existing local database");
+        println!("  Existing target unique_id: {}", existing_unique_id);
 
         // Validate local version matches expected version
         let local_version: String = conn
@@ -285,8 +286,9 @@ fn sync_single_show(
     } else {
         // New database - initialize
         // Generate a new unique_id for this target database
-        let target_unique_id = format!("local_{}", uuid::Uuid::new_v4());
-        println!("  Creating new local database with unique_id: {}", target_unique_id);
+        let target_unique_id = crate::constants::generate_db_unique_id();
+        println!("  Creating new local database");
+        println!("  Initialized with target unique_id: {}", target_unique_id);
 
         // Create tables
         conn.execute(
@@ -377,8 +379,7 @@ fn sync_single_show(
             "INSERT INTO metadata (key, value) VALUES ('last_boundary_end_id', '0')",
             [],
         )?;
-
-        println!("  Initialized with source_unique_id={}", metadata.unique_id);
+        
         metadata.min_id
     };
 

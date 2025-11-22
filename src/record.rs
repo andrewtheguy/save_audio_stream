@@ -14,7 +14,6 @@ use fdk_aac::enc::{
 use fs2::FileExt;
 use log::debug;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
-use rand::Rng;
 use reqwest::blocking::Client;
 use rusqlite::Connection;
 use std::fs::File;
@@ -384,14 +383,7 @@ fn run_connection_loop(
         };
 
         // New database - insert metadata with new unique_id
-        let session_unique_id: String = format!(
-            "db_{}",
-            rand::thread_rng()
-                .sample_iter(&rand::distributions::Alphanumeric)
-                .take(12)
-                .map(char::from)
-                .collect::<String>()
-        );
+        let session_unique_id: String = crate::constants::generate_db_unique_id();
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
             [EXPECTED_DB_VERSION],
