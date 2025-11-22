@@ -1,6 +1,7 @@
 use crate::audio::resample;
 use crate::config::{AudioFormat, SessionConfig};
 use crate::constants::EXPECTED_DB_VERSION;
+use crate::db;
 use crate::schedule::{
     is_in_active_window, parse_time, seconds_until_end, seconds_until_start, time_to_minutes,
 };
@@ -128,7 +129,7 @@ fn run_connection_loop(
     let db_path = crate::db::get_db_path(output_dir, name);
 
     // Initialize database once before the connection loop with WAL mode enabled
-    let conn = crate::db::open_database_connection(&std::path::Path::new(&db_path))?;
+    let mut conn = crate::db::open_database_connection(&std::path::Path::new(&db_path))?;
     // Create tables
     conn.execute(
         "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -709,11 +710,16 @@ fn run_connection_loop(
             .unwrap()
             .as_micros() as i64;
 
-        // Insert new section into sections table
-        conn.execute(
-            "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
-            rusqlite::params![connection_section_id, base_timestamp_ms],
-        )?;
+        // Insert new section and update pending_section_id metadata in a transaction
+        {
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
+                rusqlite::params![connection_section_id, base_timestamp_ms],
+            )?;
+            db::upsert_metadata(&tx, "pending_section_id", &connection_section_id.to_string())?;
+            tx.commit()?;
+        }
 
         // Helper to insert segment into SQLite
         let insert_segment = |conn: &Connection,

@@ -49,3 +49,17 @@ pub fn open_test_connection(db_path: &Path) -> Connection {
         .expect("Failed to enable foreign keys");
     conn
 }
+
+/// Update or insert a metadata key-value pair
+/// Uses INSERT OR REPLACE to handle both new and existing keys
+pub fn upsert_metadata(
+    conn: &Connection,
+    key: &str,
+    value: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+        [key, value],
+    )?;
+    Ok(())
+}
