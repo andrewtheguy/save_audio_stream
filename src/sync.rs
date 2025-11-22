@@ -284,7 +284,9 @@ fn sync_single_show(
         last_synced_id + 1
     } else {
         // New database - initialize
-        println!("  Creating new local database");
+        // Generate a new unique_id for this target database
+        let target_unique_id = format!("local_{}", uuid::Uuid::new_v4());
+        println!("  Creating new local database with unique_id: {}", target_unique_id);
 
         // Create tables
         conn.execute(
@@ -334,8 +336,6 @@ fn sync_single_show(
             "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
             [&metadata.version],
         )?;
-        // Generate a new unique_id for this target database (never reuse source unique_id)
-        let target_unique_id = format!("local_{}", uuid::Uuid::new_v4());
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('unique_id', ?1)",
             [&target_unique_id],
