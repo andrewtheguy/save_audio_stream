@@ -440,3 +440,265 @@ fn test_cleanup_verifies_sequential_deletion() {
     assert!(segment_exists(&conn, 6));
     assert!(segment_exists(&conn, 7));
 }
+
+#[test]
+fn test_cleanup_uses_pending_section_id_as_keeper() {
+    let conn = create_test_database();
+    let dummy_data = b"audio_data";
+
+    // Use a fixed reference time for deterministic testing
+    let now = Utc::now();
+
+    // Create very old section
+    let very_old_section = insert_segment_relative_to(&conn, now, 300, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 299, false, dummy_data);
+
+    // Create pending section (old but should be preserved)
+    let pending_boundary = insert_segment_relative_to(&conn, now, 250, true, dummy_data);
+    let pending_segment_1 = insert_segment_relative_to(&conn, now, 249, false, dummy_data);
+    let pending_segment_2 = insert_segment_relative_to(&conn, now, 248, false, dummy_data);
+
+    // Get the section_id for the pending boundary
+    let pending_section_id: i64 = conn
+        .query_row(
+            "SELECT section_id FROM segments WHERE id = ?1",
+            [pending_boundary],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    // Set pending_section_id in metadata
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('pending_section_id', ?1)",
+        [pending_section_id.to_string()],
+    )
+    .unwrap();
+
+    // Section newer than pending (200h ago is more recent than 250h ago)
+    let newer_section = insert_segment_relative_to(&conn, now, 200, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 199, false, dummy_data);
+
+    // Recent section
+    insert_segment_relative_to(&conn, now, 50, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 49, false, dummy_data);
+
+    assert_eq!(count_segments(&conn), 9);
+
+    // Run cleanup with 168 hour retention
+    cleanup_old_sections_with_params(&conn, 168, Some(now)).unwrap();
+
+    // Should keep: keeper (pending 250h) + sections with start_timestamp_ms >= cutoff (50h)
+    // Should delete: sections with start_timestamp_ms < cutoff except keeper
+    // Deleted: very_old (300h) + 1 segment, newer (200h) + 1 segment = 4 segments
+    // Kept: pending (250h keeper) + 2 segments + recent (50h) + 1 segment = 5 segments
+    assert_eq!(count_segments(&conn), 5);
+
+    // Verify pending section is preserved (it's the keeper)
+    assert!(segment_exists(&conn, pending_boundary));
+    assert!(segment_exists(&conn, pending_segment_1));
+    assert!(segment_exists(&conn, pending_segment_2));
+
+    // Verify recent section is preserved (>= cutoff)
+    // But newer_section at 200h is deleted (< cutoff and not keeper)
+    assert!(!segment_exists(&conn, newer_section));
+
+    // Verify very old section is deleted
+    assert!(!segment_exists(&conn, very_old_section));
+}
+
+#[test]
+fn test_cleanup_falls_back_when_no_pending_section_id() {
+    let conn = create_test_database();
+    let dummy_data = b"audio_data";
+
+    let now = Utc::now();
+
+    // Old section
+    let old_boundary = insert_segment_relative_to(&conn, now, 300, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 299, false, dummy_data);
+
+    // Keeper section (latest before cutoff)
+    let keeper_boundary = insert_segment_relative_to(&conn, now, 175, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 174, false, dummy_data);
+
+    // Recent section
+    insert_segment_relative_to(&conn, now, 50, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 49, false, dummy_data);
+
+    assert_eq!(count_segments(&conn), 6);
+
+    // NO pending_section_id in metadata - should use fallback logic
+    cleanup_old_sections_with_params(&conn, 168, Some(now)).unwrap();
+
+    // Should use fallback: keep keeper boundary (175h) and everything newer
+    assert_eq!(count_segments(&conn), 4);
+
+    // Verify keeper is preserved
+    assert!(segment_exists(&conn, keeper_boundary));
+
+    // Verify old section is deleted
+    assert!(!segment_exists(&conn, old_boundary));
+}
+
+#[test]
+fn test_cleanup_falls_back_when_pending_section_has_no_segments() {
+    let conn = create_test_database();
+    let dummy_data = b"audio_data";
+
+    let now = Utc::now();
+
+    // Create sections with segments
+    let old_boundary = insert_segment_relative_to(&conn, now, 300, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 299, false, dummy_data);
+
+    let keeper_boundary = insert_segment_relative_to(&conn, now, 175, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 174, false, dummy_data);
+
+    insert_segment_relative_to(&conn, now, 50, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 49, false, dummy_data);
+
+    // Create an empty section (section with no segments)
+    let empty_section_id = (now.timestamp_millis() + 999999) * 1000;
+    conn.execute(
+        "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
+        rusqlite::params![empty_section_id, now.timestamp_millis()],
+    )
+    .unwrap();
+
+    // Set the empty section as pending
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('pending_section_id', ?1)",
+        [empty_section_id.to_string()],
+    )
+    .unwrap();
+
+    assert_eq!(count_segments(&conn), 6);
+
+    // Cleanup should fall back to keeper logic since pending section has no segments
+    cleanup_old_sections_with_params(&conn, 168, Some(now)).unwrap();
+
+    // Should use fallback logic
+    assert_eq!(count_segments(&conn), 4);
+
+    assert!(segment_exists(&conn, keeper_boundary));
+    assert!(!segment_exists(&conn, old_boundary));
+}
+
+#[test]
+fn test_cleanup_preserves_pending_section_even_when_very_old() {
+    let conn = create_test_database();
+    let dummy_data = b"audio_data";
+
+    let now = Utc::now();
+
+    // Very old sections
+    insert_segment_relative_to(&conn, now, 500, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 499, false, dummy_data);
+
+    insert_segment_relative_to(&conn, now, 400, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 399, false, dummy_data);
+
+    // Pending section (very old but should be preserved)
+    let pending_boundary = insert_segment_relative_to(&conn, now, 350, true, dummy_data);
+    let pending_segment = insert_segment_relative_to(&conn, now, 349, false, dummy_data);
+
+    let pending_section_id: i64 = conn
+        .query_row(
+            "SELECT section_id FROM segments WHERE id = ?1",
+            [pending_boundary],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('pending_section_id', ?1)",
+        [pending_section_id.to_string()],
+    )
+    .unwrap();
+
+    // Section that would normally be the keeper (latest before cutoff)
+    insert_segment_relative_to(&conn, now, 175, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 174, false, dummy_data);
+
+    // Recent section
+    insert_segment_relative_to(&conn, now, 50, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 49, false, dummy_data);
+
+    assert_eq!(count_segments(&conn), 10);
+
+    // Cleanup with 168 hour retention
+    cleanup_old_sections_with_params(&conn, 168, Some(now)).unwrap();
+
+    // Should keep: keeper (pending 350h) + sections with start_timestamp_ms >= cutoff (50h)
+    // Should delete: all other sections with start_timestamp_ms < cutoff
+    // Deleted: 500h, 400h, 175h sections (6 segments)
+    // Kept: pending (350h keeper) + 1 segment + recent (50h) + 1 segment = 4 segments
+    assert_eq!(count_segments(&conn), 4);
+
+    // Verify pending section is preserved
+    assert!(segment_exists(&conn, pending_boundary));
+    assert!(segment_exists(&conn, pending_segment));
+}
+
+#[test]
+fn test_cleanup_with_pending_section_id_and_multiple_sections_before_cutoff() {
+    let conn = create_test_database();
+    let dummy_data = b"audio_data";
+
+    let now = Utc::now();
+
+    // Multiple old sections
+    let very_old = insert_segment_relative_to(&conn, now, 500, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 499, false, dummy_data);
+
+    let old_2 = insert_segment_relative_to(&conn, now, 400, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 399, false, dummy_data);
+
+    let old_3 = insert_segment_relative_to(&conn, now, 300, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 299, false, dummy_data);
+
+    // Pending section (should act as keeper)
+    let pending_boundary = insert_segment_relative_to(&conn, now, 200, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 199, false, dummy_data);
+
+    let pending_section_id: i64 = conn
+        .query_row(
+            "SELECT section_id FROM segments WHERE id = ?1",
+            [pending_boundary],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('pending_section_id', ?1)",
+        [pending_section_id.to_string()],
+    )
+    .unwrap();
+
+    // Section between pending and cutoff
+    insert_segment_relative_to(&conn, now, 175, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 174, false, dummy_data);
+
+    // Recent section
+    insert_segment_relative_to(&conn, now, 50, true, dummy_data);
+    insert_segment_relative_to(&conn, now, 49, false, dummy_data);
+
+    assert_eq!(count_segments(&conn), 12);
+
+    // Cleanup
+    cleanup_old_sections_with_params(&conn, 168, Some(now)).unwrap();
+
+    // Should keep: keeper (pending 200h) + sections with start_timestamp_ms >= cutoff (50h)
+    // Should delete: sections with start_timestamp_ms < cutoff except keeper
+    // Deleted: 500h, 400h, 300h, 175h sections (8 segments)
+    // Kept: pending (200h keeper) + 1 segment + recent (50h) + 1 segment = 4 segments
+    assert_eq!(count_segments(&conn), 4);
+
+    // Verify old sections are deleted
+    assert!(!segment_exists(&conn, very_old));
+    assert!(!segment_exists(&conn, old_2));
+    assert!(!segment_exists(&conn, old_3));
+
+    // Verify pending is preserved (it's the keeper)
+    assert!(segment_exists(&conn, pending_boundary));
+}

@@ -55,7 +55,7 @@ pub fn cleanup_old_sections_with_retention(
     cleanup_old_sections_with_params(conn, retention_hours, None)
 }
 
-/// Clean up old sections with explicit reference time (for testing)
+/// Clean up old sections with explicit reference time need for testing
 pub fn cleanup_old_sections_with_params(
     conn: &Connection,
     retention_hours: i64,
@@ -72,23 +72,55 @@ pub fn cleanup_old_sections_with_params(
         cutoff.format("%Y-%m-%d %H:%M:%S UTC")
     );
 
-    // Find the last complete section BEFORE the cutoff
-    // This ensures we keep complete sessions and don't break playback continuity
-    let last_keeper_section: Option<i64> = conn
+    // Try to use pending_section_id from metadata as keeper
+    // This preserves the currently active recording session
+    let pending_keeper: Option<i64> = conn
         .query_row(
-            "SELECT MAX(id) FROM sections WHERE start_timestamp_ms < ?1",
+            "SELECT value FROM metadata WHERE key = 'pending_section_id'",
+            [],
+            |row| {
+                let value: String = row.get(0)?;
+                value.parse::<i64>().map_err(|_| rusqlite::Error::InvalidQuery)
+            },
+        )
+        .ok()
+        .and_then(|pending_id| {
+            // Verify that this section has segments (not empty)
+            let has_segments: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM segments WHERE section_id = ?1)",
+                    [pending_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+
+            if has_segments {
+                Some(pending_id)
+            } else {
+                None
+            }
+        });
+
+    // Use pending_section_id if available, otherwise query for fallback
+    let keeper_section_id = if pending_keeper.is_some() {
+        pending_keeper
+    } else {
+        // Fallback: Find the section with the latest start_timestamp_ms BEFORE the cutoff
+        // This ensures we keep complete sessions and don't break playback continuity
+        conn.query_row(
+            "SELECT id FROM sections WHERE start_timestamp_ms < ?1 ORDER BY start_timestamp_ms DESC LIMIT 1",
             [cutoff_ms],
             |row| row.get(0),
         )
-        .ok();
+        .ok()
+    };
 
     // If we found a section to keep, delete all older sections
     // Segments will be automatically deleted via ON DELETE CASCADE
-    if let Some(keeper_section_id) = last_keeper_section {
-        // Delete sections that are both:
-        // 1. Timestamped before the cutoff
-        // 2. Have IDs less than the keeper (to preserve the last complete section)
-        // The foreign key ON DELETE CASCADE will automatically delete associated segments
+    if let Some(keeper_section_id) = keeper_section_id {
+        // Delete sections timestamped before cutoff, except the keeper
+        // This preserves the keeper section (whether from pending_section_id or fallback)
+        // and all sections with start_timestamp_ms >= cutoff
         let deleted_sections = conn.execute(
             "DELETE FROM sections WHERE start_timestamp_ms < ?1 AND id != ?2",
             rusqlite::params![cutoff_ms, keeper_section_id],
