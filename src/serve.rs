@@ -1179,7 +1179,7 @@ async fn hls_playlist_handler(
     let mut segment_durations = Vec::new();
 
     for segment_result in segments_iter {
-        let (seg_id, audio_data) = match segment_result {
+        let (seg_id, audio_data): (i64, Vec<u8>) = match segment_result {
             Ok(s) => s,
             Err(_) => continue,
         };
@@ -1419,7 +1419,7 @@ async fn opus_hls_playlist_handler(
     let mut segment_durations = Vec::new();
 
     for segment_result in segments_iter {
-        let (seg_id, audio_data) = match segment_result {
+        let (seg_id, audio_data): (i64, Vec<u8>) = match segment_result {
             Ok(s) => s,
             Err(_) => continue,
         };
@@ -2001,7 +2001,7 @@ async fn db_sections_handler(
         .and_then(|rows| rows.collect());
 
     match sections {
-        Ok(sections) => axum::Json(sections).into_response(),
+        Ok(sections) => axum::Json::<Vec<SectionInfo>>(sections).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(serde_json::json!({"error": format!("Failed to fetch sections: {}", e)})),

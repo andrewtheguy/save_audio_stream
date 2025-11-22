@@ -14,7 +14,8 @@
       "Bash(deno task:*)",
       "Bash(timeout 5 deno task:*)",
       "Bash(curl:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(git stash:*)"
     ],
     "deny": [],
     "ask": []

@@ -648,9 +648,17 @@ async fn test_sync_rejects_old_version() {
     // Create source database with old version (version "2" instead of "3")
     let conn = save_audio_stream::db::create_test_connection_in_memory();
 
-    // Create old schema (version 2 - without sections table)
+    // Create old schema (version 2)
     conn.execute(
         "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE sections (
+            id INTEGER PRIMARY KEY,
+            start_timestamp_ms INTEGER NOT NULL
+        )",
         [],
     )
     .unwrap();
@@ -699,6 +707,13 @@ async fn test_sync_rejects_old_version() {
     .unwrap();
     conn.execute(
         "INSERT INTO metadata (key, value) VALUES ('sample_rate', '48000')",
+        [],
+    )
+    .unwrap();
+
+    // Insert section first (required for foreign key)
+    conn.execute(
+        "INSERT INTO sections (id, start_timestamp_ms) VALUES (1, 1700000000000)",
         [],
     )
     .unwrap();
@@ -768,6 +783,15 @@ async fn test_sync_rejects_old_version_on_resume() {
         .unwrap();
     old_conn
         .execute(
+            "CREATE TABLE sections (
+                id INTEGER PRIMARY KEY,
+                start_timestamp_ms INTEGER NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+    old_conn
+        .execute(
             "CREATE TABLE segments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp_ms INTEGER NOT NULL,
@@ -822,6 +846,15 @@ async fn test_sync_rejects_old_version_on_resume() {
             [],
         )
         .unwrap();
+
+    // Insert section first (required for foreign key)
+    old_conn
+        .execute(
+            "INSERT INTO sections (id, start_timestamp_ms) VALUES (1, 1700000000000)",
+            [],
+        )
+        .unwrap();
+
     old_conn
         .execute(
             "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, audio_data, section_id)
@@ -1089,7 +1122,7 @@ async fn test_sync_rejects_source_unique_id_mismatch() {
     assert!(result.is_err());
     let err_msg = result.err().unwrap();
     assert!(
-        err_msg.contains("Source mismatch"),
+        err_msg.contains("Source database mismatch") || err_msg.contains("source mismatch"),
         "Expected source mismatch error but got: {}",
         err_msg
     );

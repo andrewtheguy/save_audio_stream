@@ -1,6 +1,7 @@
 mod audio;
 mod config;
 mod constants;
+mod db;
 mod fmp4;
 mod record;
 mod schedule;
