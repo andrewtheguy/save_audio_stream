@@ -242,7 +242,7 @@ fn sync_single_show(
 
         if source_unique_id != metadata.unique_id {
             return Err(format!(
-                "Source mismatch: local expects '{}', remote is '{}'",
+                "Source database mismatch: local expects source '{}', but remote source is '{}'. Cannot sync from different source databases.",
                 source_unique_id, metadata.unique_id
             )
             .into());
@@ -334,9 +334,11 @@ fn sync_single_show(
             "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
             [&metadata.version],
         )?;
+        // Generate a new unique_id for this target database (never reuse source unique_id)
+        let target_unique_id = format!("local_{}", uuid::Uuid::new_v4());
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('unique_id', ?1)",
-            [&existing_unique_id.unwrap_or_else(|| format!("local_{}", uuid::Uuid::new_v4()))],
+            [&target_unique_id],
         )?;
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
@@ -362,6 +364,7 @@ fn sync_single_show(
             "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'true')",
             [],
         )?;
+        // Store the source database's unique_id for validation on future syncs
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('source_unique_id', ?1)",
             [&metadata.unique_id],
