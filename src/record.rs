@@ -16,7 +16,7 @@ use fs2::FileExt;
 use log::debug;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
 use reqwest::blocking::Client;
-use rusqlite::Connection;
+use rusqlite::{Connection, Error as SqliteError};
 use std::fs::File;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,6 +42,24 @@ fn get_backoff_ms(elapsed_secs: u64) -> u64 {
         60..=119 => 2000,  // 2s
         120..=179 => 4000, // 4s
         _ => 5000,         // 5s
+    }
+}
+
+/// Helper to convert query Result to Option, preserving errors other than "no rows"
+/// - QueryReturnedNoRows -> Ok(None) (acceptable - key doesn't exist)
+/// - Other errors -> Err (corruption, locking, table missing, etc.)
+fn query_optional_metadata(
+    conn: &Connection,
+    key: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    match conn.query_row(
+        "SELECT value FROM metadata WHERE key = ?1",
+        [key],
+        |row| row.get(0),
+    ) {
+        Ok(value) => Ok(Some(value)),
+        Err(SqliteError::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to query metadata key '{}': {}", key, e).into()),
     }
 }
 
@@ -209,53 +227,13 @@ fn run_connection_loop(
         AudioFormat::Wav => "wav",
     };
 
-    let existing_unique_id: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'unique_id'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_name: Option<String> = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
-            row.get(0)
-        })
-        .ok();
-    let existing_format: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'audio_format'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_interval: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'split_interval'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_bitrate: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'bitrate'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_version: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'version'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-    let existing_is_recipient: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'is_recipient'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
+    let existing_unique_id: Option<String> = query_optional_metadata(&conn, "unique_id")?;
+    let existing_name: Option<String> = query_optional_metadata(&conn, "name")?;
+    let existing_format: Option<String> = query_optional_metadata(&conn, "audio_format")?;
+    let existing_interval: Option<String> = query_optional_metadata(&conn, "split_interval")?;
+    let existing_bitrate: Option<String> = query_optional_metadata(&conn, "bitrate")?;
+    let existing_version: Option<String> = query_optional_metadata(&conn, "version")?;
+    let existing_is_recipient: Option<String> = query_optional_metadata(&conn, "is_recipient")?;
 
     // Check if this is an existing database
     let is_existing_db =
