@@ -411,8 +411,9 @@ fn run_connection_loop(
         println!("Session ID new db: {}", session_unique_id);
     }
 
-    // Retry configuration
-    const MAX_RETRY_DURATION: Duration = Duration::from_secs(5 * 60); // 5 minutes
+    // Calculate absolute end time based on schedule
+    let recording_start_time = Instant::now();
+    let recording_end_time = recording_start_time + Duration::from_secs(duration);
     let mut retry_start: Option<Instant> = None;
 
     // Create HTTP client with connection timeout
@@ -424,6 +425,12 @@ fn run_connection_loop(
 
     // Main connection retry loop - each connection is a fresh recording
     'connection: loop {
+        // Check if we've reached the schedule end time
+        if Instant::now() >= recording_end_time {
+            println!("Recording schedule end time reached");
+            break 'connection;
+        }
+
         let response = match client.get(url).send() {
             Ok(resp) => {
                 retry_start = None; // Reset on success
@@ -431,15 +438,17 @@ fn run_connection_loop(
             }
             Err(e) => {
                 eprintln!("Connection error: {}", e);
-                if let Some(start) = retry_start {
-                    if start.elapsed() > MAX_RETRY_DURATION {
-                        return Err(
-                            format!("Max retry duration exceeded. Last error: {}", e).into()
-                        );
-                    }
-                } else {
+
+                // Check if we've reached schedule end
+                if Instant::now() >= recording_end_time {
+                    println!("Recording schedule end time reached during retry");
+                    break 'connection;
+                }
+
+                if retry_start.is_none() {
                     retry_start = Some(Instant::now());
                 }
+
                 let backoff_ms = get_backoff_ms(retry_start.unwrap().elapsed().as_secs());
                 println!("Retrying in {}ms...", backoff_ms);
                 thread::sleep(Duration::from_millis(backoff_ms));
@@ -450,15 +459,17 @@ fn run_connection_loop(
         if !response.status().is_success() {
             let status = response.status();
             eprintln!("HTTP error: {}", status);
-            if let Some(start) = retry_start {
-                if start.elapsed() > MAX_RETRY_DURATION {
-                    return Err(
-                        format!("Max retry duration exceeded. HTTP error: {}", status).into(),
-                    );
-                }
-            } else {
+
+            // Check if we've reached schedule end
+            if Instant::now() >= recording_end_time {
+                println!("Recording schedule end time reached during retry");
+                break 'connection;
+            }
+
+            if retry_start.is_none() {
                 retry_start = Some(Instant::now());
             }
+
             let backoff_ms = get_backoff_ms(retry_start.unwrap().elapsed().as_secs());
             println!("Retrying in {}ms...", backoff_ms);
             thread::sleep(Duration::from_millis(backoff_ms));
@@ -624,11 +635,7 @@ fn run_connection_loop(
         }
 
         // Helper to create AAC encoder
-        // ⚠️ EXPERIMENTAL: AAC encoding has known limitations:
-        // - The fdk-aac library binding may have stability issues
-        // - AAC has inherent encoder priming delay that affects gapless playback
-        // - May be replaced with FFmpeg-based encoding in the future for better stability
-        // - Recommendation: Use Opus for production workloads
+        // opus is recommended instead of aac for voip use cases
         let create_aac_encoder = || -> Result<AacEncoder, Box<dyn std::error::Error>> {
             let params = EncoderParams {
                 bit_rate: AacBitRate::Cbr(bitrate as u32),
@@ -1010,15 +1017,13 @@ fn run_connection_loop(
             total_output_samples, target_samples
         );
 
-        if let Some(start) = retry_start {
-            if start.elapsed() > MAX_RETRY_DURATION {
-                return Err(format!(
-                    "Max retry duration exceeded. Only recorded {} of {} samples",
-                    total_output_samples, target_samples
-                )
-                .into());
-            }
-        } else {
+        // Check if we've reached schedule end
+        if Instant::now() >= recording_end_time {
+            println!("Recording schedule end time reached");
+            break 'connection;
+        }
+
+        if retry_start.is_none() {
             retry_start = Some(Instant::now());
         }
 
