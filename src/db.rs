@@ -21,7 +21,7 @@ pub fn open_database_connection(db_path: &Path) -> Result<Connection, Box<dyn st
 /// Foreign keys are not enabled as no modifications are allowed
 /// The `immutable` parameter controls whether immutable=1 is set, which is needed
 /// for network filesystems but incompatible with active databases with WAL files
-pub fn open_readonly_connection_with_options(
+fn open_readonly_connection_with_options(
     db_path: impl AsRef<Path>,
     immutable: bool,
 ) -> Result<Connection, Box<dyn std::error::Error>> {
