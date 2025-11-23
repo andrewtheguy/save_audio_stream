@@ -274,11 +274,10 @@ impl SftpClient {
 
         // Determine actual remote path (temp or final)
         let (actual_remote_path, is_temp) = if options.atomic {
-            // Use temporary path with UUID suffix
+            // Use temporary path with .tmpupload suffix to avoid extra tmp file on reupload
             let temp_path = PathBuf::from(format!(
-                "{}.tmp.{}",
-                remote_path.display(),
-                uuid::Uuid::new_v4()
+                "{}.tmpupload",
+                remote_path.display()
             ));
             (temp_path, true)
         } else {

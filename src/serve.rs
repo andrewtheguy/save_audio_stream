@@ -6,6 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
+use crate::sftp::{SftpClient, SftpConfig, UploadOptions};
 use fs2::FileExt;
 use log::{error, warn};
 
@@ -59,6 +60,7 @@ struct AppState {
     audio_format: String,
     sessions: Mutex<HashMap<String, AudioSession>>,
     immutable: bool,
+    sftp_config: Option<crate::config::SftpExportConfig>,
 }
 
 impl AppState {
@@ -73,11 +75,20 @@ impl AppState {
 }
 
 /// Serve multiple databases from a directory (for sync endpoints during recording)
-pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub fn serve_for_sync(
+    output_dir: PathBuf,
+    port: u16,
+    sftp_config: Option<crate::config::SftpExportConfig>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let output_dir_str = output_dir.to_string_lossy().to_string();
 
     println!("Starting multi-show API server");
     println!("Output directory: {}", output_dir_str);
+    if sftp_config.is_some() {
+        println!("SFTP export: ENABLED");
+    } else {
+        println!("SFTP export: DISABLED");
+    }
     println!("Listening on: http://[::]{} (IPv4 + IPv6)", port);
     println!("Endpoints:");
     println!("  GET /health  - Health check");
@@ -96,6 +107,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
             audio_format: String::new(), // Not used for multi-show serving
             sessions: Mutex::new(HashMap::new()),
             immutable: false, // Active recording databases - must not use immutable mode
+            sftp_config,
         });
 
         // Spawn cleanup task for expired sessions
@@ -258,6 +270,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
             audio_format: audio_format.clone(),
             sessions: Mutex::new(HashMap::new()),
             immutable,
+            sftp_config: None, // SFTP not supported in serve command
         });
 
         // Spawn cleanup task for expired sessions
@@ -2172,10 +2185,50 @@ struct ExportSectionPath {
 
 #[derive(Serialize)]
 struct ExportResponse {
-    file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sftp_path: Option<String>,
     section_id: i64,
     format: String,
     duration_seconds: f64,
+}
+
+/// Upload file to SFTP server and delete local file
+///
+/// This function uploads the exported file to the configured SFTP server
+/// and then deletes the local file, regardless of upload success or failure.
+///
+/// Returns the remote SFTP path if successful.
+fn upload_to_sftp_and_cleanup(
+    local_path: &str,
+    filename: &str,
+    config: &crate::config::SftpExportConfig,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Upload to SFTP
+    let sftp_config = SftpConfig::with_password(
+        config.host.clone(),
+        config.port,
+        config.username.clone(),
+        config.password.clone(),
+    );
+
+    let client = SftpClient::connect(&sftp_config)?;
+    let remote_path = std::path::Path::new(&config.remote_dir).join(filename);
+    let remote_path_str = remote_path.to_string_lossy().to_string();
+    let options = UploadOptions::default();
+
+    // Upload the file
+    let upload_result = client.upload_file(std::path::Path::new(local_path), &remote_path, &options);
+
+    // Disconnect from SFTP
+    let _ = client.disconnect();
+
+    // Always delete local file (even if upload failed)
+    let _ = std::fs::remove_file(local_path);
+
+    // Return the remote path if upload succeeded
+    upload_result.map(|_| remote_path_str).map_err(|e| e.into())
 }
 
 async fn export_section_handler(
@@ -2407,8 +2460,37 @@ async fn export_section_handler(
 
     match export_result {
         Ok(_) => {
+            // Upload to SFTP if configured
+            let (response_file_path, response_sftp_path) = if let Some(ref sftp_config) = state.sftp_config {
+                // Extract filename from file_path
+                let filename = std::path::Path::new(&file_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&file_path);
+
+                // Upload and cleanup (deletes local file regardless of result)
+                match upload_to_sftp_and_cleanup(&file_path, filename, sftp_config) {
+                    Ok(remote_path) => {
+                        // SFTP upload succeeded, file is deleted, return remote path
+                        (None, Some(remote_path))
+                    }
+                    Err(e) => {
+                        // SFTP upload failed, file is still deleted
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            axum::Json(serde_json::json!({"error": format!("SFTP upload failed (local file deleted): {}", e)})),
+                        )
+                            .into_response();
+                    }
+                }
+            } else {
+                // No SFTP configured, return local file path
+                (Some(file_path), None)
+            };
+
             axum::Json(ExportResponse {
-                file_path,
+                file_path: response_file_path,
+                sftp_path: response_sftp_path,
                 section_id,
                 format: audio_format,
                 duration_seconds: duration_secs,

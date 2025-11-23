@@ -6,6 +6,7 @@ mod fmp4;
 mod record;
 mod schedule;
 mod serve;
+mod sftp;
 mod streaming;
 mod sync;
 mod webm;
@@ -113,12 +114,24 @@ fn record_multi_session(
         return Err("No sessions defined in config file".into());
     }
 
+    // Validate SFTP configuration if enabled
+    if let Err(e) = multi_config.validate_sftp() {
+        return Err(format!("SFTP configuration error: {}", e).into());
+    }
+
     // Determine output directory and API port
     let output_dir = multi_config
         .output_dir
         .clone()
         .unwrap_or_else(|| "tmp".to_string());
     let api_port = port_override.unwrap_or(multi_config.api_port);
+
+    // Extract SFTP config for API server
+    let sftp_config = if multi_config.export_to_sftp.unwrap_or(false) {
+        multi_config.sftp.clone()
+    } else {
+        None
+    };
 
     // Create output directory if it doesn't exist
     let output_dir_path = PathBuf::from(output_dir.clone());
@@ -129,7 +142,7 @@ fn record_multi_session(
     println!("Starting API server on port {}", api_port);
 
     let api_handle = thread::spawn(move || {
-        if let Err(e) = serve::serve_for_sync(output_dir_path, api_port) {
+        if let Err(e) = serve::serve_for_sync(output_dir_path, api_port, sftp_config) {
             eprintln!("API server failed: {}", e);
             std::process::exit(1);
         }

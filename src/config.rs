@@ -56,6 +56,25 @@ pub struct MultiSessionConfig {
     /// Global API server port for all sessions (default: 3000)
     #[serde(default = "default_api_port")]
     pub api_port: u16,
+    /// Enable SFTP export for section exports (default: false)
+    pub export_to_sftp: Option<bool>,
+    /// SFTP configuration (maps to [sftp] section in TOML)
+    pub sftp: Option<SftpExportConfig>,
+}
+
+/// SFTP export configuration (maps to [sftp] section in TOML)
+#[derive(Debug, Clone, Deserialize)]
+pub struct SftpExportConfig {
+    /// SFTP server hostname or IP address
+    pub host: String,
+    /// SFTP server port (default: 22)
+    pub port: u16,
+    /// SFTP username for authentication
+    pub username: String,
+    /// SFTP password for authentication
+    pub password: String,
+    /// Remote directory path where files will be uploaded (e.g., /uploads/audio)
+    pub remote_dir: String,
 }
 
 /// Sync configuration file structure
@@ -93,4 +112,21 @@ pub struct SessionConfig {
     /// Output directory (populated from global config, not in TOML)
     #[serde(skip)]
     pub output_dir: Option<String>,
+}
+
+impl MultiSessionConfig {
+    /// Validate SFTP configuration
+    ///
+    /// If `export_to_sftp` is true, ensures that the `sftp` configuration section exists
+    /// and contains all required fields.
+    pub fn validate_sftp(&self) -> Result<(), String> {
+        if self.export_to_sftp.unwrap_or(false) {
+            if self.sftp.is_none() {
+                return Err(
+                    "export_to_sftp is enabled but [sftp] section is missing in config".to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
