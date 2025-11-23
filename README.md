@@ -265,11 +265,19 @@ CREATE INDEX idx_sections_start_timestamp ON sections(start_timestamp_ms);
 
 AAC encoding support is **experimental** and has known limitations:
 - **Not gapless**: AAC files may not provide seamless playback when concatenated
-- **Stability issues**: The underlying `fdk-aac` library binding may have stability issues
+- **Stability issues**: The underlying `fdk-aac` library binding may have stability issues because it is not widely used in Rust
 - **Encoder priming delay**: AAC has inherent encoder padding that affects split files
 - **Future migration**: May switch to FFmpeg-based encoding in future versions for better stability
 
 **Recommendation**: Use **Opus** for production workloads. It provides better quality at lower bitrates and guaranteed gapless playback.
+
+### AAC Implementation Notes
+
+**For future AAC decoding needs:**
+- **Use Symphonia AAC decoder** - More stable and reliable than fdk-aac decoder
+- The `fdk-aac` crate is only used for **encoding** because it's the only practical choice for AAC encoding in Rust without FFmpeg
+- Decoding with Symphonia provides better error handling and stability
+- The AAC encoder (fdk-aac) is necessary for encoding but has known stability issues (see warning above)
 
 ## Gapless Playback
 
