@@ -2478,7 +2478,7 @@ async fn export_section_handler(
                         // SFTP upload failed, file is still deleted
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            axum::Json(serde_json::json!({"error": format!("SFTP upload failed (local file deleted): {}", e)})),
+                            axum::Json(serde_json::json!({"error": format!("SFTP upload failed: {}", e)})),
                         )
                             .into_response();
                     }
