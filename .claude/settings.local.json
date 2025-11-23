@@ -24,7 +24,8 @@
       "Bash(python3:*)",
       "Bash(rclone serve sftp:*)",
       "Bash(rclone version:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(./scripts/run-sftp-tests.sh:*)"
     ],
     "deny": [],
     "ask": []

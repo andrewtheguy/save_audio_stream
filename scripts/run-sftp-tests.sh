@@ -65,4 +65,13 @@ else
     EXIT_CODE=1
 fi
 
+# List all files in SFTP server before stopping
+echo ""
+echo -e "${YELLOW}Listing all files in SFTP server:${NC}"
+rclone ls :sftp: \
+    --sftp-host=localhost \
+    --sftp-port=$PORT \
+    --sftp-user=demo \
+    --sftp-pass=$(rclone obscure demo) 2>/dev/null || echo -e "${YELLOW}(No files or listing failed)${NC}"
+
 exit $EXIT_CODE

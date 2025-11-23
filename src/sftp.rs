@@ -391,6 +391,46 @@ impl SftpClient {
         Ok(())
     }
 
+    /// List files in a remote directory
+    ///
+    /// Returns a vector of filenames (not full paths) in the specified directory.
+    pub fn list_files(&self, dir_path: &Path) -> Result<Vec<String>> {
+        let entries = self.sftp.readdir(dir_path).map_err(|e| {
+            SftpError::RemoteFileError(
+                dir_path.to_path_buf(),
+                format!("Failed to read directory: {}", e),
+            )
+        })?;
+
+        let filenames: Vec<String> = entries
+            .into_iter()
+            .filter_map(|(path, stat)| {
+                // Filter out directories, only return files
+                if !stat.is_dir() {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(filenames)
+    }
+
+    /// Get file statistics for a remote file
+    ///
+    /// Returns file size and other metadata for the specified path.
+    pub fn stat(&self, path: &Path) -> Result<ssh2::FileStat> {
+        self.sftp.stat(path).map_err(|e| {
+            SftpError::RemoteFileError(
+                path.to_path_buf(),
+                format!("Failed to stat file: {}", e),
+            )
+        })
+    }
+
     /// Close the SFTP connection
     pub fn disconnect(self) -> Result<()> {
         drop(self.sftp);
