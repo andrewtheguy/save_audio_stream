@@ -1,4 +1,5 @@
 use crossbeam_channel::Receiver;
+use log::warn;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -37,8 +38,9 @@ impl StreamingSource {
                     self.buffer = chunk;
                     self.position = 0;
                 }
-                Err(_) => {
-                    // Channel closed
+                Err(e) => {
+                    // Channel closed - this is expected when sender finishes
+                    warn!("Streaming channel closed: {}", e);
                     self.is_finished = true;
                     break;
                 }

@@ -1158,7 +1158,10 @@ async fn hls_playlist_handler(
         |row| row.get::<_, String>(0),
     ) {
         Ok(sr) => sr.parse().unwrap_or(16000),
-        Err(_) => 16000,
+        Err(e) => {
+            error!("Failed to query sample_rate metadata: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
     };
 
     let frame_size: u32 = match conn.query_row(
@@ -1167,7 +1170,10 @@ async fn hls_playlist_handler(
         |row| row.get::<_, String>(0),
     ) {
         Ok(fs) => fs.parse().unwrap_or(1024),
-        Err(_) => 1024,
+        Err(e) => {
+            error!("Failed to query aac_frame_size metadata: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
     };
 
     // Determine segment range
@@ -1414,7 +1420,10 @@ async fn opus_hls_playlist_handler(
         |row| row.get::<_, String>(0),
     ) {
         Ok(sr) => sr.parse().unwrap_or(48000),
-        Err(_) => 48000,
+        Err(e) => {
+            error!("Failed to query sample_rate metadata: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
     };
 
     // Opus frame size is always 960 samples at 48kHz (20ms)
@@ -1761,7 +1770,10 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             row.get(0)
         }) {
             Ok(n) => n,
-            Err(_) => "Unknown".to_string(),
+            Err(e) => {
+                error!("Failed to query name metadata: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            }
         };
 
     // Get split interval
@@ -1898,12 +1910,14 @@ async fn proxy_to_vite(path: &str) -> Response {
 
                     response
                 }
-                Err(_) => {
+                Err(e) => {
+                    warn!("Failed to read response from dev server: {}", e);
                     (StatusCode::BAD_GATEWAY, "Failed to read response from dev server").into_response()
                 }
             }
         }
-        Err(_) => {
+        Err(e) => {
+            warn!("Failed to connect to dev server at {}: {}", VITE_DEV_SERVER, e);
             (
                 StatusCode::BAD_GATEWAY,
                 format!("Failed to connect to dev server at {}. Make sure to run 'deno task dev' in the app/ directory.", VITE_DEV_SERVER)
