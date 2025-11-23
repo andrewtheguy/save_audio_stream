@@ -251,27 +251,24 @@ impl SftpClient {
         Ok(())
     }
 
-    /// Upload a file from local path to remote path
+    /// Upload data from a reader (e.g., in-memory buffer, file, etc.) to remote path
     ///
-    /// This method efficiently uploads large files using buffered I/O.
-    /// If `atomic` is enabled, the file is first uploaded to a temporary location
+    /// This method efficiently uploads data using buffered I/O.
+    /// If `atomic` is enabled, the data is first uploaded to a temporary location
     /// and then atomically renamed to the target path.
-    pub fn upload_file(
+    ///
+    /// # Arguments
+    /// * `reader` - Any type implementing Read (e.g., &[u8], File, Cursor, etc.)
+    /// * `remote_path` - Target path on the SFTP server
+    /// * `size` - Size of the data in bytes (required for verification)
+    /// * `options` - Upload options (atomic mode, buffer size, etc.)
+    pub fn upload_stream<R: Read>(
         &self,
-        local_path: &Path,
+        reader: &mut R,
         remote_path: &Path,
+        size: u64,
         options: &UploadOptions,
     ) -> Result<()> {
-        // Open local file
-        let mut local_file = File::open(local_path)
-            .map_err(|e| SftpError::LocalFileError(local_path.to_path_buf(), e))?;
-
-        // Get file size
-        let file_size = local_file
-            .metadata()
-            .map_err(|e| SftpError::LocalFileError(local_path.to_path_buf(), e))?
-            .len();
-
         // Determine actual remote path (temp or final)
         let (actual_remote_path, is_temp) = if options.atomic {
             // Use temporary path with .tmpupload suffix to avoid extra tmp file on reupload
@@ -317,14 +314,12 @@ impl SftpClient {
             })?
         };
 
-        // Upload file in chunks
+        // Upload data in chunks
         let mut buffer = vec![0u8; options.buffer_size];
         let mut uploaded = 0u64;
 
         loop {
-            let n = local_file.read(&mut buffer).map_err(|e| {
-                SftpError::LocalFileError(local_path.to_path_buf(), e)
-            })?;
+            let n = reader.read(&mut buffer)?;
 
             if n == 0 {
                 break; // EOF
@@ -341,7 +336,7 @@ impl SftpClient {
 
             // Call progress callback
             if let Some(callback) = options.progress_callback {
-                callback(uploaded, file_size);
+                callback(uploaded, size);
             }
         }
 
@@ -364,13 +359,13 @@ impl SftpClient {
             })?;
 
             let remote_size = stat.size.unwrap_or(0);
-            if remote_size != file_size {
+            if remote_size != size {
                 // Clean up temp file if atomic upload
                 if is_temp {
                     let _ = self.sftp.unlink(&actual_remote_path);
                 }
                 return Err(SftpError::SizeMismatch {
-                    expected: file_size,
+                    expected: size,
                     actual: remote_size,
                 });
             }
@@ -389,6 +384,31 @@ impl SftpClient {
         }
 
         Ok(())
+    }
+
+    /// Upload a file from local path to remote path
+    ///
+    /// This method efficiently uploads large files using buffered I/O.
+    /// If `atomic` is enabled, the file is first uploaded to a temporary location
+    /// and then atomically renamed to the target path.
+    pub fn upload_file(
+        &self,
+        local_path: &Path,
+        remote_path: &Path,
+        options: &UploadOptions,
+    ) -> Result<()> {
+        // Open local file
+        let mut local_file = File::open(local_path)
+            .map_err(|e| SftpError::LocalFileError(local_path.to_path_buf(), e))?;
+
+        // Get file size
+        let file_size = local_file
+            .metadata()
+            .map_err(|e| SftpError::LocalFileError(local_path.to_path_buf(), e))?
+            .len();
+
+        // Delegate to upload_stream
+        self.upload_stream(&mut local_file, remote_path, file_size, options)
     }
 
     /// List files in a remote directory
@@ -429,6 +449,28 @@ impl SftpClient {
                 format!("Failed to stat file: {}", e),
             )
         })
+    }
+
+    /// Download a file from remote path and return its contents as a Vec<u8>
+    ///
+    /// This method reads the entire file into memory. Use with caution for large files.
+    pub fn download_file(&self, remote_path: &Path) -> Result<Vec<u8>> {
+        let mut remote_file = self.sftp.open(remote_path).map_err(|e| {
+            SftpError::RemoteFileError(
+                remote_path.to_path_buf(),
+                format!("Failed to open remote file: {}", e),
+            )
+        })?;
+
+        let mut buffer = Vec::new();
+        remote_file.read_to_end(&mut buffer).map_err(|e| {
+            SftpError::RemoteFileError(
+                remote_path.to_path_buf(),
+                format!("Failed to read remote file: {}", e),
+            )
+        })?;
+
+        Ok(buffer)
     }
 
     /// Close the SFTP connection

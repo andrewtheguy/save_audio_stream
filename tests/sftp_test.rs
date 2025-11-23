@@ -1,16 +1,7 @@
 use save_audio_stream::sftp::{SftpClient, SftpConfig, UploadOptions};
-use std::fs::File;
-use std::io::Write;
+use std::io::Cursor;
 use std::path::Path;
 use tempfile::TempDir;
-
-/// Helper to create a test file with given size
-fn create_test_file(path: &Path, size_bytes: usize) -> std::io::Result<()> {
-    let mut file = File::create(path)?;
-    let data = vec![b'A'; size_bytes];
-    file.write_all(&data)?;
-    Ok(())
-}
 
 /// Progress callback for testing
 fn progress_callback(uploaded: u64, total: u64) {
@@ -22,12 +13,20 @@ fn progress_callback(uploaded: u64, total: u64) {
     );
 }
 
-/// Helper to verify upload was successful and no temporary files are left behind
+/// Helper to verify upload was successful with mandatory CRC32 validation
 /// Checks:
 /// 1. The final file exists at the target path
 /// 2. The final file has the expected size
 /// 3. No temp file is left behind
-fn verify_upload_success(client: &SftpClient, remote_path: &Path, expected_size: u64) {
+/// 4. CRC32 checksum matches original data
+fn verify_upload_success(
+    client: &SftpClient,
+    remote_path: &Path,
+    expected_size: u64,
+    expected_data: &[u8],
+) {
+    use crc32fast::Hasher;
+
     let remote_dir = remote_path.parent().unwrap_or(Path::new("."));
     let expected_temp_name = format!(
         "{}.tmpupload",
@@ -75,15 +74,42 @@ fn verify_upload_success(client: &SftpClient, remote_path: &Path, expected_size:
         expected_size, actual_size
     );
     println!("✓ File size verified: {} bytes", actual_size);
+
+    // Check 4: Download and verify CRC32 checksum
+    let downloaded = client
+        .download_file(remote_path)
+        .expect("Failed to download file for CRC32 validation");
+
+    // Calculate expected CRC32
+    let mut expected_hasher = Hasher::new();
+    expected_hasher.update(expected_data);
+    let expected_crc32 = expected_hasher.finalize();
+
+    // Calculate actual CRC32
+    let mut actual_hasher = Hasher::new();
+    actual_hasher.update(&downloaded);
+    let actual_crc32 = actual_hasher.finalize();
+
+    println!("Expected CRC32: 0x{:08X}", expected_crc32);
+    println!("Actual CRC32:   0x{:08X}", actual_crc32);
+
+    assert_eq!(
+        actual_crc32, expected_crc32,
+        "CRC32 checksum mismatch! Data corruption detected."
+    );
+    println!("✓ CRC32 checksum verified");
 }
 
 #[test]
 #[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_small_file() {
+    // Create test data
+    let test_data = vec![b'A'; 1024]; // 1KB file
+
     // Create a temporary directory and file
     let temp_dir = TempDir::new().unwrap();
     let local_file = temp_dir.path().join("test_small.txt");
-    create_test_file(&local_file, 1024).unwrap(); // 1KB file
+    std::fs::write(&local_file, &test_data).unwrap();
 
     // Configure SFTP connection
     let config = SftpConfig::with_password(
@@ -106,8 +132,8 @@ fn test_sftp_upload_small_file() {
 
     println!("✓ Small file uploaded successfully");
 
-    // Verify upload success and no temp files left behind
-    verify_upload_success(&client, remote_path, 1024);
+    // Verify upload success with CRC32 validation
+    verify_upload_success(&client, remote_path, 1024, &test_data);
 
     // Cleanup
     client.disconnect().unwrap();
@@ -116,10 +142,14 @@ fn test_sftp_upload_small_file() {
 #[test]
 #[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_large_file() {
-    // Create a temporary directory and large file
+    // Create large test data (10MB)
+    let size = 10 * 1024 * 1024;
+    let test_data = vec![b'A'; size];
+
+    // Create a temporary directory and file
     let temp_dir = TempDir::new().unwrap();
     let local_file = temp_dir.path().join("test_large.bin");
-    create_test_file(&local_file, 10 * 1024 * 1024).unwrap(); // 10MB file
+    std::fs::write(&local_file, &test_data).unwrap();
 
     // Configure SFTP connection
     let config = SftpConfig::with_password(
@@ -146,8 +176,8 @@ fn test_sftp_upload_large_file() {
 
     println!("✓ Large file uploaded successfully");
 
-    // Verify upload success and no temp files left behind
-    verify_upload_success(&client, remote_path, 10 * 1024 * 1024);
+    // Verify upload success with CRC32 validation
+    verify_upload_success(&client, remote_path, size as u64, &test_data);
 
     // Cleanup
     client.disconnect().unwrap();
@@ -156,10 +186,13 @@ fn test_sftp_upload_large_file() {
 #[test]
 #[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_nested_directory() {
+    // Create test data
+    let test_data = vec![b'A'; 2048]; // 2KB file
+
     // Create a temporary directory and file
     let temp_dir = TempDir::new().unwrap();
     let local_file = temp_dir.path().join("test_nested.txt");
-    create_test_file(&local_file, 2048).unwrap(); // 2KB file
+    std::fs::write(&local_file, &test_data).unwrap();
 
     // Configure SFTP connection
     let config = SftpConfig::with_password(
@@ -182,8 +215,8 @@ fn test_sftp_upload_nested_directory() {
 
     println!("✓ File uploaded to nested directory successfully");
 
-    // Verify upload success and no temp files left behind
-    verify_upload_success(&client, remote_path, 2048);
+    // Verify upload success with CRC32 validation
+    verify_upload_success(&client, remote_path, 2048, &test_data);
 
     // Cleanup
     client.disconnect().unwrap();
@@ -192,10 +225,13 @@ fn test_sftp_upload_nested_directory() {
 #[test]
 #[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_non_atomic() {
+    // Create test data
+    let test_data = vec![b'A'; 512];
+
     // Create a temporary directory and file
     let temp_dir = TempDir::new().unwrap();
     let local_file = temp_dir.path().join("test_non_atomic.txt");
-    create_test_file(&local_file, 512).unwrap();
+    std::fs::write(&local_file, &test_data).unwrap();
 
     // Configure SFTP connection
     let config = SftpConfig::with_password(
@@ -219,8 +255,8 @@ fn test_sftp_upload_non_atomic() {
 
     println!("✓ Non-atomic upload successful");
 
-    // Verify upload success and no temp files left behind (should be none for non-atomic)
-    verify_upload_success(&client, remote_path, 512);
+    // Verify upload success with CRC32 validation (should be none for non-atomic)
+    verify_upload_success(&client, remote_path, 512, &test_data);
 
     // Cleanup
     client.disconnect().unwrap();
@@ -262,10 +298,13 @@ fn test_sftp_mkdir_p() {
 #[test]
 #[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_atomic() {
+    // Create test data
+    let test_data = vec![b'A'; 4096]; // 4KB file
+
     // Create a temporary directory and file
     let temp_dir = TempDir::new().unwrap();
     let local_file = temp_dir.path().join("test_atomic.txt");
-    create_test_file(&local_file, 4096).unwrap(); // 4KB file
+    std::fs::write(&local_file, &test_data).unwrap();
 
     // Configure SFTP connection
     let config = SftpConfig::with_password(
@@ -291,8 +330,8 @@ fn test_sftp_upload_atomic() {
 
     println!("✓ Atomic upload completed successfully");
 
-    // Verify upload success and no temp files left behind
-    verify_upload_success(&client, remote_path, 4096);
+    // Verify upload success with CRC32 validation
+    verify_upload_success(&client, remote_path, 4096, &test_data);
 
     // Verify file exists and has correct size by re-uploading to same path
     // This tests that atomic rename worked correctly
@@ -302,8 +341,8 @@ fn test_sftp_upload_atomic() {
 
     println!("✓ Atomic re-upload (overwrite) successful");
 
-    // Verify again that upload succeeded and no temp files exist after re-upload
-    verify_upload_success(&client, remote_path, 4096);
+    // Verify again that upload succeeded with CRC32 validation after re-upload
+    verify_upload_success(&client, remote_path, 4096, &test_data);
 
     // Cleanup
     client.disconnect().unwrap();
@@ -345,4 +384,81 @@ fn test_sftp_auth_failure() {
     if let Err(e) = result {
         println!("✓ Expected authentication error: {}", e);
     }
+}
+
+#[test]
+#[ignore] // Requires SFTP server running on localhost:2222
+fn test_sftp_upload_from_memory() {
+    // Create test data in memory
+    let test_data = b"Hello, SFTP! This is data uploaded from memory.";
+    let data_size = test_data.len() as u64;
+
+    // Configure SFTP connection
+    let config = SftpConfig::with_password(
+        "localhost".to_string(),
+        2222,
+        "demo".to_string(),
+        "demo".to_string(),
+    );
+
+    // Connect to SFTP server
+    let client = SftpClient::connect(&config).expect("Failed to connect");
+
+    // Upload from memory using Cursor
+    let remote_path = Path::new("test/memory_upload.txt");
+    let mut cursor = Cursor::new(test_data);
+    let options = UploadOptions::default();
+
+    client
+        .upload_stream(&mut cursor, remote_path, data_size, &options)
+        .expect("Failed to upload from memory");
+
+    println!("✓ Data uploaded from memory successfully");
+
+    // Verify upload success with CRC32 validation
+    verify_upload_success(&client, remote_path, data_size, test_data);
+
+    // Cleanup
+    client.disconnect().unwrap();
+}
+
+#[test]
+#[ignore] // Requires SFTP server running on localhost:2222
+fn test_sftp_upload_large_data_from_memory() {
+    // Create 5MB of test data
+    let size = 5 * 1024 * 1024;
+    let test_data: Vec<u8> = (0..size)
+        .map(|i| ((i * 31 + 17) % 256) as u8)
+        .collect();
+
+    println!("Large data size: {} bytes ({} MB)", size, size / 1024 / 1024);
+
+    // Configure SFTP connection
+    let config = SftpConfig::with_password(
+        "localhost".to_string(),
+        2222,
+        "demo".to_string(),
+        "demo".to_string(),
+    );
+
+    // Connect to SFTP server
+    let client = SftpClient::connect(&config).expect("Failed to connect");
+
+    // Upload from memory with progress callback
+    let remote_path = Path::new("test/large_memory_upload.bin");
+    let mut cursor = Cursor::new(&test_data);
+    let mut options = UploadOptions::default();
+    options.progress_callback = Some(progress_callback);
+
+    client
+        .upload_stream(&mut cursor, remote_path, size as u64, &options)
+        .expect("Failed to upload large data from memory");
+
+    println!("✓ Large data uploaded from memory successfully");
+
+    // Verify upload success with CRC32 validation
+    verify_upload_success(&client, remote_path, size as u64, &test_data);
+
+    // Cleanup
+    client.disconnect().unwrap();
 }
