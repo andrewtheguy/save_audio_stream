@@ -485,18 +485,9 @@ fn write_ogg_stream<W: Write>(
 fn export_opus_section(
     conn: &Connection,
     section_id: i64,
-    file_path: &str,
     sample_rate: u32,
     duration_secs: f64,
-) -> Result<(), std::io::Error> {
-    // Create tmp directory if it doesn't exist
-    std::fs::create_dir_all("tmp").map_err(|e| {
-        std::io::Error::new(
-            e.kind(),
-            format!("Failed to create tmp directory: {}", e),
-        )
-    })?;
-
+) -> Result<Vec<u8>, std::io::Error> {
     // Get segment ID range for this section
     let (start_id, end_id): (i64, i64) = conn
         .query_row(
@@ -506,8 +497,8 @@ fn export_opus_section(
         )
         .map_err(map_to_io_error)?;
 
-    // Create file and write Ogg stream
-    let file = std::fs::File::create(file_path)?;
+    // Write Ogg stream to memory buffer
+    let mut buffer = Vec::new();
     let samples_per_packet = 960; // 48kHz Opus, 20ms packets
 
     write_ogg_stream(
@@ -517,34 +508,25 @@ fn export_opus_section(
         sample_rate,
         duration_secs,
         samples_per_packet,
-        file,
+        &mut buffer,
     )?;
 
-    Ok(())
+    Ok(buffer)
 }
 
-/// Export AAC audio for a section to an AAC file (raw ADTS frames)
+/// Export AAC audio for a section to a memory buffer (raw ADTS frames)
 fn export_aac_section(
     segments: &[(i64, Vec<u8>)],
-    file_path: &str,
-) -> Result<(), std::io::Error> {
-    // Create tmp directory if it doesn't exist
-    std::fs::create_dir_all("tmp").map_err(|e| {
-        std::io::Error::new(
-            e.kind(),
-            format!("Failed to create tmp directory: {}", e),
-        )
-    })?;
+) -> Result<Vec<u8>, std::io::Error> {
+    // Create buffer
+    let mut buffer = Vec::new();
 
-    // Create file
-    let mut file = std::fs::File::create(file_path)?;
-
-    // Write all segment data (AAC ADTS frames) directly to file
+    // Write all segment data (AAC ADTS frames) to buffer
     for (_, segment_data) in segments {
-        file.write_all(segment_data)?;
+        buffer.write_all(segment_data)?;
     }
 
-    Ok(())
+    Ok(buffer)
 }
 
 // Query parameters for audio endpoint
@@ -2194,17 +2176,19 @@ struct ExportResponse {
     duration_seconds: f64,
 }
 
-/// Upload file to SFTP server and delete local file
+/// Upload data directly to SFTP using streaming
 ///
-/// This function uploads the exported file to the configured SFTP server
-/// and then deletes the local file, regardless of upload success or failure.
+/// This function uploads data from memory to the configured SFTP server
+/// using atomic upload (temp file + rename). No local file is created.
 ///
 /// Returns the remote SFTP path if successful.
-fn upload_to_sftp_and_cleanup(
-    local_path: &str,
+fn upload_to_sftp(
+    data: &[u8],
     filename: &str,
     config: &crate::config::SftpExportConfig,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::Cursor;
+
     // Upload to SFTP
     let sftp_config = SftpConfig::with_password(
         config.host.clone(),
@@ -2218,14 +2202,17 @@ fn upload_to_sftp_and_cleanup(
     let remote_path_str = remote_path.to_string_lossy().to_string();
     let options = UploadOptions::default();
 
-    // Upload the file
-    let upload_result = client.upload_file(std::path::Path::new(local_path), &remote_path, &options);
+    // Upload from memory using streaming
+    let mut cursor = Cursor::new(data);
+    let upload_result = client.upload_stream(
+        &mut cursor,
+        &remote_path,
+        data.len() as u64,
+        &options,
+    );
 
     // Disconnect from SFTP
     let _ = client.disconnect();
-
-    // Always delete local file (even if upload failed)
-    let _ = std::fs::remove_file(local_path);
 
     // Return the remote path if upload succeeded
     upload_result.map(|_| remote_path_str).map_err(|e| e.into())
@@ -2416,7 +2403,6 @@ async fn export_section_handler(
 
     // Generate filename
     let filename = format!("{}_{}._{}.{}", show_name, formatted_time, hex_section_id, extension);
-    let file_path = format!("tmp/{}", filename);
 
     // Calculate duration in seconds
     let total_samples = if audio_format == "opus" {
@@ -2448,10 +2434,10 @@ async fn export_section_handler(
 
     let duration_secs = total_samples as f64 / sample_rate as f64;
 
-    // Export audio to file
+    // Export audio to memory buffer
     let export_result = match audio_format.as_str() {
-        "opus" => export_opus_section(&conn, section_id, &file_path, sample_rate, duration_secs),
-        "aac" => export_aac_section(&segments, &file_path),
+        "opus" => export_opus_section(&conn, section_id, sample_rate, duration_secs),
+        "aac" => export_aac_section(&segments),
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "Unsupported format",
@@ -2459,23 +2445,17 @@ async fn export_section_handler(
     };
 
     match export_result {
-        Ok(_) => {
-            // Upload to SFTP if configured
+        Ok(audio_data) => {
+            // Upload to SFTP if configured, otherwise save to file
             let (response_file_path, response_sftp_path) = if let Some(ref sftp_config) = state.sftp_config {
-                // Extract filename from file_path
-                let filename = std::path::Path::new(&file_path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&file_path);
-
-                // Upload and cleanup (deletes local file regardless of result)
-                match upload_to_sftp_and_cleanup(&file_path, filename, sftp_config) {
+                // Upload directly from memory to SFTP (atomic, no disk write)
+                match upload_to_sftp(&audio_data, &filename, sftp_config) {
                     Ok(remote_path) => {
-                        // SFTP upload succeeded, file is deleted, return remote path
+                        // SFTP upload succeeded, return remote path
                         (None, Some(remote_path))
                     }
                     Err(e) => {
-                        // SFTP upload failed, file is still deleted
+                        // SFTP upload failed
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             axum::Json(serde_json::json!({"error": format!("SFTP upload failed: {}", e)})),
@@ -2484,8 +2464,27 @@ async fn export_section_handler(
                     }
                 }
             } else {
-                // No SFTP configured, return local file path
-                (Some(file_path), None)
+                // No SFTP configured, save to local file
+                // Create tmp directory if it doesn't exist
+                if let Err(e) = std::fs::create_dir_all("tmp") {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(serde_json::json!({"error": format!("Failed to create tmp directory: {}", e)})),
+                    )
+                        .into_response();
+                }
+
+                let file_path = format!("tmp/{}", filename);
+                match std::fs::write(&file_path, &audio_data) {
+                    Ok(_) => (Some(file_path), None),
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            axum::Json(serde_json::json!({"error": format!("Failed to write file: {}", e)})),
+                        )
+                            .into_response();
+                    }
+                }
             };
 
             axum::Json(ExportResponse {
