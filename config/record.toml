@@ -21,6 +21,7 @@ name = 'knx_news'
 split_interval = 10  # Split every 10 seconds
 audio_format = 'opus'      # default
 storage_format = 'sqlite'   # default
+retention_hours = 72  # Retain recordings for 72 hours (3 days)
 
 # Schedule: record every day from 14:00 UTC to 07:00 UTC (next day)
 # This excludes 07:00 to 14:00 UTC

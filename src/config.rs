@@ -88,6 +88,8 @@ pub struct SessionConfig {
     pub name: String,
     /// Split interval in seconds (0 = no splitting)
     pub split_interval: Option<u64>,
+    /// Retention period in hours (default: 168 hours = 1 week)
+    pub retention_hours: Option<i64>,
     /// Output directory (populated from global config, not in TOML)
     #[serde(skip)]
     pub output_dir: Option<String>,

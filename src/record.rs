@@ -1104,6 +1104,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         .clone()
         .unwrap_or_else(|| "tmp".to_string());
     let split_interval = config.split_interval.unwrap_or(0);
+    let retention_hours = config.retention_hours.unwrap_or(RETENTION_HOURS);
 
     // Acquire exclusive lock to prevent multiple instances
     std::fs::create_dir_all(&output_dir)
@@ -1194,7 +1195,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(cleanup_conn) =
             crate::db::open_database_connection(&std::path::Path::new(&db_path))
         {
-            if let Err(e) = cleanup_old_sections(&cleanup_conn) {
+            if let Err(e) = cleanup_old_sections_with_retention(&cleanup_conn, retention_hours) {
                 eprintln!("Warning: Failed to clean up old sections: {}", e);
             }
         }
