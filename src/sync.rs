@@ -266,13 +266,18 @@ fn sync_single_show(
             .unwrap_or(0);
 
         // Ensure last_boundary_end_id exists (for older databases that don't have it)
-        let has_boundary_end: bool = conn
-            .query_row(
-                "SELECT 1 FROM metadata WHERE key = 'last_boundary_end_id'",
-                [],
-                |_| Ok(true),
-            )
-            .unwrap_or(false);
+        let has_boundary_end: bool = match conn.query_row(
+            "SELECT 1 FROM metadata WHERE key = 'last_boundary_end_id'",
+            [],
+            |_| Ok(true),
+        ) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => false, // Expected - key doesn't exist
+            Err(e) => {
+                // Propagate actual errors (corruption, locking, table missing, etc.)
+                return Err(format!("Failed to check for last_boundary_end_id metadata: {}", e).into());
+            }
+        };
 
         if !has_boundary_end {
             conn.execute(

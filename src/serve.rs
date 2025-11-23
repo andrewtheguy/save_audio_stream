@@ -799,7 +799,10 @@ async fn mpd_handler(
     // Validate end_id
     let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::NOT_FOUND, "No segments in database").into_response(),
+        Err(e) => {
+            error!("Failed to query max segment ID: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
+        }
     };
 
     if query.end_id > max_id {
@@ -1038,10 +1041,11 @@ async fn segment_handler(
         |row| row.get(0),
     ) {
         Ok(data) => data,
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to query segment {}: {}", actual_id, e);
             return (
-                StatusCode::NOT_FOUND,
-                format!("Segment {} not found", actual_id),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error querying segment {}: {}", actual_id, e),
             )
                 .into_response()
         }
@@ -1177,10 +1181,11 @@ async fn hls_playlist_handler(
     } else {
         match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
             Ok(id) => id,
-            Err(_) => {
+            Err(e) => {
+                error!("Failed to query max segment ID: {}", e);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to determine max segment ID",
+                    format!("Database error: {}", e),
                 )
                     .into_response()
             }
@@ -1295,8 +1300,9 @@ async fn aac_segment_handler(
         |row| row.get(0),
     ) {
         Ok(data) => data,
-        Err(_) => {
-            return (StatusCode::NOT_FOUND, "Segment not found").into_response();
+        Err(e) => {
+            error!("Failed to query segment {}: {}", seg_id, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
         }
     };
 
@@ -1425,10 +1431,11 @@ async fn opus_hls_playlist_handler(
     } else {
         match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
             Ok(id) => id,
-            Err(_) => {
+            Err(e) => {
+                error!("Failed to query max segment ID: {}", e);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to determine max segment ID",
+                    format!("Database error: {}", e),
                 )
                     .into_response()
             }
@@ -1580,8 +1587,9 @@ async fn opus_segment_handler(
         |row| row.get(0),
     ) {
         Ok(data) => data,
-        Err(_) => {
-            return (StatusCode::NOT_FOUND, "Segment not found").into_response();
+        Err(e) => {
+            error!("Failed to query segment {}: {}", seg_id, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
         }
     };
 
@@ -1815,10 +1823,11 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
     // Get max segment ID to handle the last session
     let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
         Ok(id) => id,
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to query max segment ID: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to get max segment ID",
+                format!("Database error: {}", e),
             )
                 .into_response()
         }
@@ -2245,10 +2254,11 @@ async fn sync_show_metadata_handler(
         |row| row.get(0),
     ) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to query unique_id metadata: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "Missing unique_id metadata"})),
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
             )
                 .into_response();
         }
@@ -2259,10 +2269,11 @@ async fn sync_show_metadata_handler(
             row.get(0)
         }) {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
+                error!("Failed to query name metadata: {}", e);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": "Missing name metadata"})),
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
                 )
                     .into_response();
             }
@@ -2274,10 +2285,11 @@ async fn sync_show_metadata_handler(
         |row| row.get(0),
     ) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to query audio_format metadata: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "Missing audio_format metadata"})),
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
             )
                 .into_response();
         }
@@ -2289,10 +2301,11 @@ async fn sync_show_metadata_handler(
         |row| row.get(0),
     ) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to query split_interval metadata: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "Missing split_interval metadata"})),
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
             )
                 .into_response();
         }
@@ -2304,10 +2317,11 @@ async fn sync_show_metadata_handler(
         |row| row.get(0),
     ) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to query bitrate metadata: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "Missing bitrate metadata"})),
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
             )
                 .into_response();
         }
@@ -2319,10 +2333,11 @@ async fn sync_show_metadata_handler(
         |row| row.get(0),
     ) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to query sample_rate metadata: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "Missing sample_rate metadata"})),
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
             )
                 .into_response();
         }
@@ -2334,10 +2349,11 @@ async fn sync_show_metadata_handler(
         |row| row.get(0),
     ) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
+            error!("Failed to query version metadata: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": "Missing version metadata"})),
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
             )
                 .into_response();
         }
@@ -2349,10 +2365,11 @@ async fn sync_show_metadata_handler(
             Ok((row.get(0)?, row.get(1)?))
         }) {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
+                error!("Failed to query min/max segment IDs: {}", e);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": "No segments found"})),
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
                 )
                     .into_response();
             }

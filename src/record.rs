@@ -92,34 +92,43 @@ pub fn cleanup_old_sections_with_params(
 
     // Try to use pending_section_id from metadata as keeper
     // This preserves the currently active recording session
-    let pending_keeper: Option<i64> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'pending_section_id'",
-            [],
-            |row| {
-                let value: String = row.get(0)?;
-                value
-                    .parse::<i64>()
-                    .map_err(|_| rusqlite::Error::InvalidQuery)
-            },
-        )
-        .ok()
-        .and_then(|pending_id| {
+    let pending_keeper: Option<i64> = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'pending_section_id'",
+        [],
+        |row| {
+            let value: String = row.get(0)?;
+            value
+                .parse::<i64>()
+                .map_err(|_| rusqlite::Error::InvalidQuery)
+        },
+    ) {
+        Ok(pending_id) => {
             // Verify that this section has segments (not empty)
-            let has_segments: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM segments WHERE section_id = ?1)",
-                    [pending_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(false);
-
-            if has_segments {
-                Some(pending_id)
-            } else {
-                None
+            match conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM segments WHERE section_id = ?1)",
+                [pending_id],
+                |row| row.get(0),
+            ) {
+                Ok(has_segments) => {
+                    if has_segments {
+                        Some(pending_id)
+                    } else {
+                        None
+                    }
+                }
+                Err(SqliteError::QueryReturnedNoRows) => None, // Expected - no rows means false
+                Err(e) => {
+                    // Propagate actual errors (corruption, locking, table missing, etc.)
+                    return Err(format!("Failed to check if section {} has segments: {}", pending_id, e).into());
+                }
             }
-        });
+        }
+        Err(SqliteError::QueryReturnedNoRows) => None, // Expected - pending_section_id doesn't exist
+        Err(e) => {
+            // Propagate actual errors (corruption, locking, table missing, etc.)
+            return Err(format!("Failed to query pending_section_id metadata: {}", e).into());
+        }
+    };
 
     // Use pending_section_id if available, otherwise query for fallback
     let keeper_section_id = if pending_keeper.is_some() {
