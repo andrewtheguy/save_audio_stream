@@ -1,7 +1,6 @@
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 
-use fdk_aac::dec::{Decoder as AacDecoder, Transport as DecTransport};
 use fdk_aac::enc::{
     AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
     Transport,
@@ -12,6 +11,13 @@ use ogg::writing::PacketWriter;
 use opus::{
     Application, Bitrate as OpusBitrate, Channels, Decoder as OpusDecoder, Encoder as OpusEncoder,
 };
+use symphonia::core::audio::{AudioBufferRef, Signal};
+use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
 
 /// Generate a test sine wave at the given sample rate
 fn generate_sine_wave(sample_rate: u32, duration_secs: f32, frequency: f32) -> Vec<i16> {
@@ -68,7 +74,7 @@ fn encode_aac_split(
         audio_object_type: AudioObjectType::Mpeg4LowComplexity,
     };
 
-    let encoder =
+    let mut encoder =
         AacEncoder::new(params).map_err(|e| format!("Failed to create AAC encoder: {:?}", e))?;
     let mut encode_buffer = vec![0u8; 8192];
     let mut files_written = Vec::new();
@@ -97,6 +103,17 @@ fn encode_aac_split(
                     filename = format!("{}/test_{:03}.aac", output_dir, segment_number);
                     files_written.push(filename.clone());
                     output_file = File::create(&filename)?;
+
+                    // Create new encoder for new file to ensure fresh state
+                    let new_params = EncoderParams {
+                        bit_rate: AacBitRate::Cbr(32000),
+                        sample_rate: sample_rate as u32,
+                        channels: ChannelMode::Mono,
+                        transport: Transport::Adts,
+                        audio_object_type: AudioObjectType::Mpeg4LowComplexity,
+                    };
+                    encoder = AacEncoder::new(new_params)
+                        .map_err(|e| format!("Failed to create AAC encoder for segment {}: {:?}", segment_number, e))?;
                 }
             }
             Err(e) => {
@@ -236,8 +253,10 @@ fn encode_opus_split(
     Ok(files_written)
 }
 
-/// Decode AAC files and return all samples
+/// Decode AAC files and return all samples using Symphonia
+/// Skips encoder delay (priming samples) at the start of each file for gapless playback
 fn decode_aac_files(files: &[String]) -> Result<Vec<i16>, Box<dyn std::error::Error>> {
+    const AAC_ENCODER_DELAY: usize = 2048; // Priming samples to skip per file
     let mut all_samples = Vec::new();
 
     for filename in files {
@@ -245,60 +264,101 @@ fn decode_aac_files(files: &[String]) -> Result<Vec<i16>, Box<dyn std::error::Er
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
 
-        let mut decoder = AacDecoder::new(DecTransport::Adts);
-        let mut decode_buffer = vec![0i16; 8192];
-        let mut pos = 0;
+        // Create media source from file data
+        let cursor = Cursor::new(data);
+        let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
 
-        while pos < data.len() {
-            // Find ADTS sync word
-            if pos + 7 > data.len() {
-                break;
-            }
+        // Probe the format
+        let mut hint = Hint::new();
+        hint.with_extension("aac");
 
-            if data[pos] != 0xFF || (data[pos + 1] & 0xF0) != 0xF0 {
-                pos += 1;
-                continue;
-            }
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+            .map_err(|e| format!("Failed to probe AAC file {}: {}", filename, e))?;
 
-            // Get frame length from ADTS header
-            let frame_len = (((data[pos + 3] & 0x03) as usize) << 11)
-                | ((data[pos + 4] as usize) << 3)
-                | ((data[pos + 5] as usize) >> 5);
+        let mut format = probed.format;
 
-            if pos + frame_len > data.len() || frame_len < 7 {
-                break;
-            }
+        // Get the default track
+        let track = format
+            .default_track()
+            .ok_or_else(|| format!("No default track found in {}", filename))?;
 
-            // Fill decoder buffer with frame data
-            match decoder.fill(&data[pos..pos + frame_len]) {
-                Ok(bytes_filled) => {
-                    if bytes_filled == 0 {
-                        pos += 1;
-                        continue;
-                    }
+        // Create decoder for the track
+        let mut decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params, &DecoderOptions::default())
+            .map_err(|e| format!("Failed to create decoder for {}: {}", filename, e))?;
+
+        // Track samples decoded from this file to skip encoder delay
+        let mut file_samples = Vec::new();
+
+        // Decode all packets
+        loop {
+            // Get next packet
+            let packet = match format.next_packet() {
+                Ok(packet) => packet,
+                Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    break; // End of stream
                 }
-                Err(_) => {
-                    pos += 1;
+                Err(SymphoniaError::ResetRequired) => {
+                    // Decoder needs reset - this shouldn't happen in ADTS but handle it
+                    break;
+                }
+                Err(e) => {
+                    return Err(format!("Error reading packet from {}: {}", filename, e).into());
+                }
+            };
+
+            // Decode the packet
+            match decoder.decode(&packet) {
+                Ok(decoded) => {
+                    // Convert decoded audio to i16 samples
+                    let samples: Vec<i16> = match decoded {
+                        AudioBufferRef::S16(buf) => {
+                            // Already i16, just copy
+                            buf.chan(0).to_vec()
+                        }
+                        AudioBufferRef::F32(buf) => {
+                            // Convert f32 to i16
+                            buf.chan(0)
+                                .iter()
+                                .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
+                                .collect()
+                        }
+                        AudioBufferRef::F64(buf) => {
+                            // Convert f64 to i16
+                            buf.chan(0)
+                                .iter()
+                                .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
+                                .collect()
+                        }
+                        _ => {
+                            return Err(format!(
+                                "Unsupported audio buffer format in {}",
+                                filename
+                            )
+                            .into());
+                        }
+                    };
+
+                    file_samples.extend_from_slice(&samples);
+                }
+                Err(SymphoniaError::DecodeError(e)) => {
+                    // Ignore decode errors (likely priming frames with encoder delay)
+                    eprintln!("Warning: Decode error in {} (likely priming frame): {}", filename, e);
                     continue;
                 }
-            }
-
-            // Decode frame
-            match decoder.decode_frame(&mut decode_buffer) {
-                Ok(()) => {
-                    // Get stream info to find out how many samples were decoded
-                    let info = decoder.stream_info();
-                    let sample_count = info.frameSize as usize * info.numChannels as usize;
-                    if sample_count > 0 && sample_count <= decode_buffer.len() {
-                        all_samples.extend_from_slice(&decode_buffer[..sample_count]);
-                    }
-                }
-                Err(_) => {
-                    // Skip this frame
+                Err(e) => {
+                    return Err(format!("Failed to decode packet in {}: {}", filename, e).into());
                 }
             }
+        }
 
-            pos += frame_len;
+        // Skip encoder delay at the start of each file for gapless playback
+        if file_samples.len() > AAC_ENCODER_DELAY {
+            all_samples.extend_from_slice(&file_samples[AAC_ENCODER_DELAY..]);
+        } else {
+            eprintln!("Warning: File {} has fewer samples ({}) than encoder delay ({})",
+                     filename, file_samples.len(), AAC_ENCODER_DELAY);
         }
     }
 
