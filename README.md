@@ -303,7 +303,7 @@ The tests verify:
 
 ### Running SFTP Tests
 
-The SFTP module includes integration tests that are ignored by default (require manual SFTP server setup).
+The SFTP module includes integration tests that are ignored by default. These tests require rclone to provide a test SFTP server.
 
 **Prerequisites:**
 
@@ -318,7 +318,21 @@ sudo apt install rclone
 # Or download from https://rclone.org/downloads/
 ```
 
-**Running Tests:**
+**Automated Testing (Recommended):**
+
+Use the provided helper script that automatically starts rclone and runs the tests:
+
+```bash
+./scripts/run-sftp-tests.sh
+```
+
+The script will:
+- Find an available port (starting from 2222)
+- Start rclone SFTP server with `:memory:` backend
+- Run all SFTP integration tests
+- Automatically clean up the server when done
+
+**Manual Testing (Alternative):**
 
 1. Start rclone SFTP test server in a separate terminal:
 ```bash
@@ -330,7 +344,7 @@ rclone serve sftp :memory: --addr :2222 --user demo --pass demo
 cargo test --test sftp_test -- --ignored
 ```
 
-3. Stop the server with `Ctrl+C` so that the memory backend is discarded.
+3. Stop the server with `Ctrl+C` (memory backend is automatically discarded)
 
 **What Gets Tested:**
 - Small file uploads (1KB)
