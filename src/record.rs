@@ -1101,18 +1101,28 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         // Check if we're in the active window
         let duration = if !is_in_active_window(current_mins, start_mins, end_mins) {
             // Wait until start time
-            let wait_secs = seconds_until_start(current_mins, start_mins);
             println!(
                 "Current time is outside recording window ({} to {} UTC)",
                 config.schedule.record_start, config.schedule.record_end
             );
             println!(
-                "Waiting {} seconds ({:.1} hours) until {} UTC...",
-                wait_secs,
-                wait_secs as f64 / 3600.0,
+                "Waiting until {} UTC...",
                 config.schedule.record_start
             );
-            std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+
+            // Loop and sleep 1 second at a time for more accurate timing
+            loop {
+                let now = chrono::Utc::now();
+                let current_mins = time_to_minutes(now.hour(), now.minute());
+                let wait_secs = seconds_until_start(current_mins, start_mins);
+
+                if wait_secs == 0 {
+                    // We've reached the start time
+                    break;
+                }
+
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
 
             // Recalculate current time after waiting
             let now = chrono::Utc::now();
@@ -1145,10 +1155,6 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         let (start_hour, start_min) = parse_time(&config.schedule.record_start)?;
         let start_mins = time_to_minutes(start_hour, start_min);
 
-        let now = chrono::Utc::now();
-        let current_mins = time_to_minutes(now.hour(), now.minute());
-        let wait_secs = seconds_until_start(current_mins, start_mins);
-
         println!(
             "\nRecording window complete. Next window starts at {} UTC.",
             config.schedule.record_start
@@ -1164,13 +1170,19 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        println!(
-            "Waiting {} seconds ({:.1} hours)...",
-            wait_secs,
-            wait_secs as f64 / 3600.0
-        );
+        // Loop and sleep 1 second at a time for more accurate timing
+        loop {
+            let now = chrono::Utc::now();
+            let current_mins = time_to_minutes(now.hour(), now.minute());
+            let wait_secs = seconds_until_start(current_mins, start_mins);
 
-        std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+            if wait_secs == 0 {
+                // We've reached the start time
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
         // Continue to next day's recording
     } // End of daily loop - runs indefinitely
 }
