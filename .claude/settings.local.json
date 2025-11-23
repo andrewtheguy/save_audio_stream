@@ -21,7 +21,9 @@
       "Bash(./target/release/save_audio_stream:*)",
       "Bash(timeout 2 ./target/release/save_audio_stream serve:*)",
       "Bash(sqlite3:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(rclone serve sftp:*)",
+      "Bash(rclone version:*)"
     ],
     "deny": [],
     "ask": []

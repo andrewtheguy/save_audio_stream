@@ -301,6 +301,44 @@ The tests verify:
 - Opus files: Continuous granule positions and sample count verification
 - Edge cases: Various split intervals, boundary conditions, prime sample counts
 
+### Running SFTP Tests
+
+The SFTP module includes integration tests that are ignored by default (require manual SFTP server setup).
+
+**Prerequisites:**
+
+Install rclone if not already installed:
+```bash
+# macOS
+brew install rclone
+
+# Ubuntu/Debian
+sudo apt install rclone
+
+# Or download from https://rclone.org/downloads/
+```
+
+**Running Tests:**
+
+1. Start rclone SFTP test server in a separate terminal:
+```bash
+rclone serve sftp :memory: --addr :2222 --user demo --pass demo
+```
+
+2. Run the SFTP integration tests:
+```bash
+cargo test --test sftp_test -- --ignored
+```
+
+3. Stop the server with `Ctrl+C` so that the memory backend is discarded.
+
+**What Gets Tested:**
+- Small file uploads (1KB)
+- Large file uploads (10MB) with progress callbacks
+- Nested directory creation
+- Atomic vs non-atomic upload modes
+- Connection and authentication error handling
+
 ## Recording Session Boundaries
 
 The application uses `is_timestamp_from_source` flag in the database to track recording session boundaries:

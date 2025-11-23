@@ -23,7 +23,7 @@ fn progress_callback(uploaded: u64, total: u64) {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:1123
+#[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_small_file() {
     // Create a temporary directory and file
     let temp_dir = TempDir::new().unwrap();
@@ -33,7 +33,7 @@ fn test_sftp_upload_small_file() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        1123,
+        2222,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -56,7 +56,7 @@ fn test_sftp_upload_small_file() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:1123
+#[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_large_file() {
     // Create a temporary directory and large file
     let temp_dir = TempDir::new().unwrap();
@@ -66,7 +66,7 @@ fn test_sftp_upload_large_file() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        1123,
+        2222,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -90,7 +90,7 @@ fn test_sftp_upload_large_file() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:1123
+#[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_nested_directory() {
     // Create a temporary directory and file
     let temp_dir = TempDir::new().unwrap();
@@ -100,7 +100,7 @@ fn test_sftp_upload_nested_directory() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        1123,
+        2222,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -123,7 +123,7 @@ fn test_sftp_upload_nested_directory() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:1123
+#[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_non_atomic() {
     // Create a temporary directory and file
     let temp_dir = TempDir::new().unwrap();
@@ -133,7 +133,7 @@ fn test_sftp_upload_non_atomic() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        1123,
+        2222,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -157,12 +157,12 @@ fn test_sftp_upload_non_atomic() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:1123
+#[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_mkdir_p() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        1123,
+        2222,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -190,7 +190,7 @@ fn test_sftp_mkdir_p() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:1123
+#[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_connection_failure() {
     // Try to connect to non-existent server
     let config = SftpConfig::with_password(
@@ -209,12 +209,12 @@ fn test_sftp_connection_failure() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:1123
+#[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_auth_failure() {
     // Try to connect with wrong password
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        1123,
+        2222,
         "demo".to_string(),
         "wrong_password".to_string(),
     );
