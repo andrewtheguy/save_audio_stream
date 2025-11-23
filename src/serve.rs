@@ -182,7 +182,10 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
             [],
             |row| row.get(0),
         )
-        .map_err(|_| "Database is missing version in metadata")?;
+        .map_err(|e| {
+            // Preserve the actual error - this could be locking issues, corruption, etc.
+            format!("Failed to read version from metadata: {}", e)
+        })?;
 
     if db_version != EXPECTED_DB_VERSION {
         return Err(format!(
@@ -199,7 +202,9 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
             [],
             |row| row.get(0),
         )
-        .map_err(|_| "Database missing audio_format metadata")?;
+        .map_err(|e| {
+            format!("Failed to read audio_format from metadata: {}", e)
+        })?;
 
     if audio_format != "opus" && audio_format != "aac" {
         return Err(format!(
