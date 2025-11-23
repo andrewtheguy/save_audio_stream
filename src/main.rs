@@ -50,11 +50,6 @@ enum Command {
         /// Port to listen on
         #[arg(short, long, default_value = "3000")]
         port: u16,
-
-        /// Use immutable mode for network filesystem compatibility
-        /// WARNING: Only use this for databases without active WAL files
-        #[arg(long, default_value = "false")]
-        immutable: bool,
     },
     /// Sync show(s) from remote recording server to local database
     Sync {
@@ -71,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.command {
         Command::Record { config, port } => record_multi_session(config, port),
-        Command::Serve { sqlite_file, port, immutable } => serve::serve_audio(sqlite_file, port, immutable),
+        Command::Serve { sqlite_file, port } => serve::serve_audio(sqlite_file, port),
         Command::Sync { config } => sync_from_config(config),
     }
 }

@@ -55,17 +55,12 @@ struct AppState {
     output_dir: String,
     audio_format: String,
     sessions: Mutex<HashMap<String, AudioSession>>,
-    immutable: bool,
 }
 
 impl AppState {
-    /// Open a readonly connection using the appropriate mode based on the immutable flag
+    /// Open a readonly connection
     fn open_readonly(&self, path: impl AsRef<std::path::Path>) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
-        if self.immutable {
-            crate::db::open_readonly_connection_immutable(path)
-        } else {
-            crate::db::open_readonly_connection(path)
-        }
+        crate::db::open_readonly_connection(path)
     }
 }
 
@@ -91,7 +86,6 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
             output_dir: output_dir_str,
             audio_format: String::new(), // Not used for multi-show serving
             sessions: Mutex::new(HashMap::new()),
-            immutable: false, // Active recording databases - cannot use immutable mode
         });
 
         // Spawn cleanup task for expired sessions
@@ -154,17 +148,13 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
 }
 
 /// Serve a single database file (for serve command)
-pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Error>> {
     // Verify database exists and is Opus format
     if !sqlite_file.exists() {
         return Err(format!("Database file not found: {}", sqlite_file.display()).into());
     }
 
-    let conn = if immutable {
-        crate::db::open_readonly_connection_immutable(&sqlite_file)?
-    } else {
-        crate::db::open_readonly_connection(&sqlite_file)?
-    };
+    let conn = crate::db::open_readonly_connection(&sqlite_file)?;
 
     // Check version first
     let db_version: String = conn
@@ -236,7 +226,6 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
             output_dir,
             audio_format: audio_format.clone(),
             sessions: Mutex::new(HashMap::new()),
-            immutable,
         });
 
         // Spawn cleanup task for expired sessions
