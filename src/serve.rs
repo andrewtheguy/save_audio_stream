@@ -84,6 +84,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
     println!("  GET /api/sync/shows  - List available shows");
     println!("  GET /api/sync/shows/:name/metadata  - Show metadata");
     println!("  GET /api/sync/shows/:name/sections  - Show sections metadata");
+    println!("  GET /api/sync/shows/:name/sections/:id/export  - Export section audio to file");
     println!("  GET /api/sync/shows/:name/segments  - Show segments");
 
     // Create tokio runtime and run server

@@ -107,13 +107,14 @@ Cannot record to a recipient database. This database is configured for syncing o
 
 ## API Endpoints
 
-The sender (recording server) exposes these endpoints for synchronization:
+The sender (recording server) exposes these endpoints for synchronization and audio export:
 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/sync/shows` | List all available shows (databases) |
 | `GET /api/sync/shows/:name/metadata` | Get show metadata and segment range |
 | `GET /api/sync/shows/:name/sections` | Get sections metadata (id, start_timestamp_ms) |
+| `GET /api/sync/shows/:name/sections/:section_id/export` | **Export section audio to file** (Opus→.ogg, AAC→.aac) |
 | `GET /api/sync/shows/:name/segments?start_id=N&end_id=N&limit=N` | Fetch segment batch |
 
 ### Metadata Response
@@ -141,11 +142,29 @@ The sender (recording server) exposes these endpoints for synchronization:
     "id": 1,
     "timestamp_ms": 1700000000000,
     "is_timestamp_from_source": 1,
-    "audio_data": "<base64 encoded binary data>"
+    "audio_data": "<base64 encoded binary data>",
+    "section_id": 1700000000000000
   },
   ...
 ]
 ```
+
+### Export Response
+
+```json
+{
+  "file_path": "tmp/am1430_20250122_143000_62c4b12369400.ogg",
+  "section_id": 1737550800000000,
+  "format": "opus",
+  "duration_seconds": 3600.0
+}
+```
+
+**Export Features:**
+- No re-encoding (direct database to file)
+- Filename format: `{showname}_{yyyymmdd_hhmmss}_{hex_section_id}.{ext}`
+- Concurrent safety via file locking (returns 409 Conflict if export in progress)
+- Saved to `tmp/` directory
 
 ## Implementation Details
 

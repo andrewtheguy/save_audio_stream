@@ -54,6 +54,8 @@ cargo build --release
 
 The binary will be at `target/release/save_audio_stream`.
 
+Note: windows file locking is not tested yet.
+
 #### Web Frontend Feature Flag
 
 The project includes a `web-frontend` feature flag that controls whether the web UI is built and embedded into the binary:
@@ -381,6 +383,8 @@ save_audio_stream serve <database.sqlite> [-p PORT]
 
 ### Available Endpoints
 
+#### Serve Command Endpoints
+
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | Web UI with dynamic segment URLs |
@@ -390,6 +394,61 @@ save_audio_stream serve <database.sqlite> [-p PORT]
 | `GET /init.webm` | WebM initialization segment |
 | `GET /segment/{id}` | Individual WebM audio segment |
 | `GET /api/segments/range` | JSON with min/max segment IDs |
+| `GET /api/sessions` | List all recording sessions with metadata |
+
+#### Record Command API Endpoints
+
+When running `record` command, an API server is available for database synchronization and audio export:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check endpoint |
+| `GET /api/sync/shows` | List available shows for syncing |
+| `GET /api/sync/shows/{show_name}/metadata` | Show metadata (format, bitrate, etc.) |
+| `GET /api/sync/shows/{show_name}/sections` | List all sections (recording sessions) for a show |
+| `GET /api/sync/shows/{show_name}/sections/{section_id}/export` | **Export section audio to file** |
+| `GET /api/sync/shows/{show_name}/segments` | Fetch segments for syncing |
+
+### Exporting Audio Sections
+
+The export API allows you to export individual recording sections (sessions) as audio files without re-encoding.
+
+**Endpoint:** `GET /api/sync/shows/{show_name}/sections/{section_id}/export`
+
+**Features:**
+- **No re-encoding**: Direct export from database to file
+- **Format-specific output**:
+  - Opus → `.ogg` file (Ogg container)
+  - AAC → `.aac` file (raw ADTS frames)
+- **Smart filename**: `{showname}_{yyyymmdd_hhmmss}_{hex_section_id}.{ext}`
+  - Timestamp based on section start time
+  - Section ID in hexadecimal for uniqueness
+- **Concurrent safety**: File locking prevents multiple simultaneous exports of the same section
+- **Saved to**: `tmp/` directory by default
+
+**Example Usage:**
+
+```bash
+# First, get available sections for a show
+curl http://localhost:3000/api/sync/shows/am1430/sections
+
+# Export a specific section
+curl http://localhost:3000/api/sync/shows/am1430/sections/1737550800000000/export
+
+# Response:
+{
+  "file_path": "tmp/am1430_20250122_143000_62c4b12369400.ogg",
+  "section_id": 1737550800000000,
+  "format": "opus",
+  "duration_seconds": 3600.0
+}
+```
+
+**Error Responses:**
+
+- `404 Not Found`: Show or section doesn't exist
+- `409 Conflict`: Export already in progress for this section
+- `500 Internal Server Error`: Database or file system error
 
 ### Development Workflow
 
