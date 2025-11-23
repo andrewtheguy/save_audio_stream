@@ -10,51 +10,8 @@ use save_audio_stream::record::{
 fn create_test_database() -> Connection {
     let conn = save_audio_stream::db::create_test_connection_in_memory();
 
-    // Create tables
-    conn.execute(
-        "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "CREATE TABLE sections (
-            id INTEGER PRIMARY KEY,
-            start_timestamp_ms INTEGER NOT NULL
-        )",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "CREATE TABLE segments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp_ms INTEGER NOT NULL,
-            is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
-            audio_data BLOB NOT NULL,
-            section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE
-        )",
-        [],
-    )
-    .unwrap();
-
-    // Create indexes
-    conn.execute(
-        "CREATE INDEX idx_segments_boundary
-         ON segments(is_timestamp_from_source, timestamp_ms)",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "CREATE INDEX idx_segments_section_id
-         ON segments(section_id)",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "CREATE INDEX idx_sections_start_timestamp
-         ON sections(start_timestamp_ms)",
-        [],
-    )
-    .unwrap();
+    // Create schema using common helper
+    save_audio_stream::db::init_database_schema(&conn).unwrap();
 
     conn
 }

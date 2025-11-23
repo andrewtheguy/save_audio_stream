@@ -6,6 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
+use fs2::FileExt;
 use log::{error, warn};
 
 #[cfg(not(debug_assertions))]
@@ -17,6 +18,7 @@ use ogg::writing::PacketWriter;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc as StdArc;
@@ -137,6 +139,10 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
             .route(
                 "/api/sync/shows/{show_name}/sections",
                 get(db_sections_handler),
+            )
+            .route(
+                "/api/sync/shows/{show_name}/sections/{section_id}/export",
+                get(export_section_handler),
             )
             .route(
                 "/api/sync/shows/{show_name}/segments",
@@ -459,6 +465,72 @@ fn write_ogg_stream<W: Write>(
     }
 
     Ok(writer.into_inner())
+}
+
+/// Export Opus audio for a section to an Ogg file
+fn export_opus_section(
+    conn: &Connection,
+    section_id: i64,
+    file_path: &str,
+    sample_rate: u32,
+    duration_secs: f64,
+) -> Result<(), std::io::Error> {
+    // Create tmp directory if it doesn't exist
+    std::fs::create_dir_all("tmp").map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("Failed to create tmp directory: {}", e),
+        )
+    })?;
+
+    // Get segment ID range for this section
+    let (start_id, end_id): (i64, i64) = conn
+        .query_row(
+            "SELECT MIN(id), MAX(id) FROM segments WHERE section_id = ?1",
+            [section_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(map_to_io_error)?;
+
+    // Create file and write Ogg stream
+    let file = std::fs::File::create(file_path)?;
+    let samples_per_packet = 960; // 48kHz Opus, 20ms packets
+
+    write_ogg_stream(
+        conn,
+        start_id,
+        end_id,
+        sample_rate,
+        duration_secs,
+        samples_per_packet,
+        file,
+    )?;
+
+    Ok(())
+}
+
+/// Export AAC audio for a section to an AAC file (raw ADTS frames)
+fn export_aac_section(
+    segments: &[(i64, Vec<u8>)],
+    file_path: &str,
+) -> Result<(), std::io::Error> {
+    // Create tmp directory if it doesn't exist
+    std::fs::create_dir_all("tmp").map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("Failed to create tmp directory: {}", e),
+        )
+    })?;
+
+    // Create file
+    let mut file = std::fs::File::create(file_path)?;
+
+    // Write all segment data (AAC ADTS frames) directly to file
+    for (_, segment_data) in segments {
+        file.write_all(segment_data)?;
+    }
+
+    Ok(())
 }
 
 // Query parameters for audio endpoint
@@ -2086,6 +2158,265 @@ async fn db_sections_handler(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(serde_json::json!({"error": format!("Failed to fetch sections: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExportSectionPath {
+    show_name: String,
+    section_id: String,
+}
+
+#[derive(Serialize)]
+struct ExportResponse {
+    file_path: String,
+    section_id: i64,
+    format: String,
+    duration_seconds: f64,
+}
+
+async fn export_section_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(params): Path<ExportSectionPath>,
+) -> impl IntoResponse {
+    let show_name = params.show_name;
+    let section_id: i64 = match params.section_id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "Invalid section_id"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Create tmp directory for lock files if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all("tmp") {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": format!("Failed to create tmp directory: {}", e)})),
+        )
+            .into_response();
+    }
+
+    // Acquire exclusive lock to prevent concurrent exports of the same section
+    let lock_path = format!("tmp/export_{}_{}.lock", show_name, section_id);
+    let _lock_file = match File::create(&lock_path) {
+        Ok(file) => file,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to create lock file '{}': {}", lock_path, e)})),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(e) = _lock_file.try_lock_exclusive() {
+        return (
+            StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({"error": format!("Export already in progress for section {} of show '{}'. Lock file: {}. Error: {}", section_id, show_name, lock_path, e)})),
+        )
+            .into_response();
+    }
+    // Lock will be held until _lock_file is dropped (when function exits)
+
+    // Construct database path
+    let db_path = crate::db::get_db_path(&state.output_dir, &show_name);
+    let path = std::path::Path::new(&db_path);
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": format!("Database '{}' not found", show_name)})),
+        )
+            .into_response();
+    }
+
+    // Open database
+    let conn = match state.open_readonly(path) {
+        Ok(conn) => conn,
+        Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", db_path, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Get section info
+    let section_info: Result<(i64, i64), _> = conn.query_row(
+        "SELECT id, start_timestamp_ms FROM sections WHERE id = ?1",
+        [section_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    );
+
+    let (section_id, start_timestamp_ms) = match section_info {
+        Ok(info) => info,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({"error": format!("Section {} not found", section_id)})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to fetch section: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Get metadata
+    let audio_format: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'audio_format'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(format) => format,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to read audio_format: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let sample_rate: u32 = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'sample_rate'",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(rate) => rate.parse().unwrap_or(48000),
+        Err(_) => 48000,
+    };
+
+    // Get all segments for this section
+    let mut stmt = match conn.prepare(
+        "SELECT id, audio_data FROM segments WHERE section_id = ?1 ORDER BY id",
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to prepare query: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let segments: Result<Vec<(i64, Vec<u8>)>, _> = stmt
+        .query_map([section_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .and_then(|rows| rows.collect());
+
+    let segments = match segments {
+        Ok(segs) if !segs.is_empty() => segs,
+        Ok(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({"error": format!("No segments found for section {}", section_id)})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to fetch segments: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Format timestamp as yyyymmdd_hhmmss
+    let datetime = chrono::DateTime::from_timestamp_millis(start_timestamp_ms);
+    let formatted_time = match datetime {
+        Some(dt) => dt.format("%Y%m%d_%H%M%S").to_string(),
+        None => format!("{}", start_timestamp_ms),
+    };
+
+    // Format section_id as hex
+    let hex_section_id = format!("{:x}", section_id);
+
+    // Determine extension
+    let extension = match audio_format.as_str() {
+        "opus" => "ogg",
+        "aac" => "aac",
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": format!("Unsupported audio format: {}", audio_format)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Generate filename
+    let filename = format!("{}_{}._{}.{}", show_name, formatted_time, hex_section_id, extension);
+    let file_path = format!("tmp/{}", filename);
+
+    // Calculate duration in seconds
+    let total_samples = if audio_format == "opus" {
+        let samples_per_packet = 960u64; // 48kHz Opus, 20ms packets
+        let mut total_packets = 0u64;
+        for (_, segment) in &segments {
+            let mut offset = 0;
+            while offset + 2 <= segment.len() {
+                let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
+                offset += 2;
+                if offset + len > segment.len() {
+                    break;
+                }
+                offset += len;
+                total_packets += 1;
+            }
+        }
+        total_packets * samples_per_packet
+    } else {
+        // AAC - approximate based on frame size
+        let frame_samples = 1024u64; // AAC frame size
+        let mut total_frames = 0u64;
+        for (_, segment) in &segments {
+            // Count ADTS frames (rough estimate)
+            total_frames += segment.len() as u64 / 200; // Approximate
+        }
+        total_frames * frame_samples
+    };
+
+    let duration_secs = total_samples as f64 / sample_rate as f64;
+
+    // Export audio to file
+    let export_result = match audio_format.as_str() {
+        "opus" => export_opus_section(&conn, section_id, &file_path, sample_rate, duration_secs),
+        "aac" => export_aac_section(&segments, &file_path),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Unsupported format",
+        )),
+    };
+
+    match export_result {
+        Ok(_) => {
+            axum::Json(ExportResponse {
+                file_path,
+                section_id,
+                format: audio_format,
+                duration_seconds: duration_secs,
+            })
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": format!("Failed to export audio: {}", e)})),
         )
             .into_response(),
     }

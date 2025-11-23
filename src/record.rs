@@ -184,45 +184,9 @@ fn run_connection_loop(
 
     // Initialize database once before the connection loop with WAL mode enabled
     let mut conn = crate::db::open_database_connection(&std::path::Path::new(&db_path))?;
-    // Create tables
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS sections (
-            id INTEGER PRIMARY KEY,
-            start_timestamp_ms INTEGER NOT NULL
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS segments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp_ms INTEGER NOT NULL,
-            is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
-            audio_data BLOB NOT NULL,
-            section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
 
-    // Create indexes for efficient queries
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_segments_boundary
-         ON segments(is_timestamp_from_source, timestamp_ms)",
-        [],
-    )?;
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_segments_section_id
-         ON segments(section_id)",
-        [],
-    )?;
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sections_start_timestamp
-         ON sections(start_timestamp_ms)",
-        [],
-    )?;
+    // Initialize schema using common helper
+    crate::db::init_database_schema(&conn)?;
 
     // Check if database already has metadata and validate it matches config
     let audio_format_str = match audio_format {
