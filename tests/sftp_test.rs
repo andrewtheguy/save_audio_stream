@@ -224,6 +224,80 @@ fn test_sftp_upload_nested_directory() {
 
 #[test]
 #[ignore] // Requires SFTP server running on localhost:2222
+fn test_sftp_upload_multiple_files_nested_directory() {
+    // Create two different test files
+    let test_data_1: Vec<u8> = (0..1024)
+        .map(|i| ((i * 3 + 5) % 256) as u8)
+        .collect();
+    let test_data_2: Vec<u8> = (0..2048)
+        .map(|i| ((i * 7 + 11) % 256) as u8)
+        .collect();
+
+    // Create temporary files
+    let temp_dir = TempDir::new().unwrap();
+    let local_file_1 = temp_dir.path().join("file1.bin");
+    let local_file_2 = temp_dir.path().join("file2.bin");
+    std::fs::write(&local_file_1, &test_data_1).unwrap();
+    std::fs::write(&local_file_2, &test_data_2).unwrap();
+
+    // Configure SFTP connection
+    let config = SftpConfig::with_password(
+        "localhost".to_string(),
+        2222,
+        "demo".to_string(),
+        "demo".to_string(),
+    );
+
+    // Connect to SFTP server
+    let client = SftpClient::connect(&config).expect("Failed to connect");
+
+    // Upload both files to the same nested directory
+    let remote_path_1 = Path::new("test/multi/level1/level2/first_file.bin");
+    let remote_path_2 = Path::new("test/multi/level1/level2/second_file.bin");
+    let options = UploadOptions::default();
+
+    client
+        .upload_file(&local_file_1, remote_path_1, &options)
+        .expect("Failed to upload first file");
+
+    println!("✓ First file uploaded to nested directory");
+
+    client
+        .upload_file(&local_file_2, remote_path_2, &options)
+        .expect("Failed to upload second file");
+
+    println!("✓ Second file uploaded to same nested directory");
+
+    // Verify both uploads with CRC32 validation
+    verify_upload_success(&client, remote_path_1, 1024, &test_data_1);
+    verify_upload_success(&client, remote_path_2, 2048, &test_data_2);
+
+    // Verify both files exist in the same directory
+    let remote_dir = remote_path_1.parent().unwrap();
+    let files = client
+        .list_files(remote_dir)
+        .expect("Failed to list directory");
+
+    println!("Files in nested directory: {:?}", files);
+
+    assert!(
+        files.contains(&"first_file.bin".to_string()),
+        "First file not found in directory"
+    );
+    assert!(
+        files.contains(&"second_file.bin".to_string()),
+        "Second file not found in directory"
+    );
+    assert_eq!(files.len(), 2, "Expected exactly 2 files in directory");
+
+    println!("✓ Both files verified in nested directory");
+
+    // Cleanup
+    client.disconnect().unwrap();
+}
+
+#[test]
+#[ignore] // Requires SFTP server running on localhost:2222
 fn test_sftp_upload_non_atomic() {
     // Create test data
     let test_data = vec![b'A'; 512];
