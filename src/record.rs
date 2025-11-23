@@ -170,11 +170,6 @@ pub fn cleanup_old_sections_with_params(
     Ok(())
 }
 
-/// Clean up old sections using the default RETENTION_HOURS constant
-fn cleanup_old_sections(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
-    cleanup_old_sections_with_retention(conn, RETENTION_HOURS)
-}
-
 /// Run the connection loop and handle recording with retries
 fn run_connection_loop(
     url: &str,
