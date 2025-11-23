@@ -221,7 +221,7 @@ fn sync_single_show(
                 [],
                 |row| row.get(0),
             )
-            .map_err(|_| "Local database missing version")?;
+            .map_err(|e| format!("Failed to read version from local database: {}", e))?;
 
         if local_version != EXPECTED_DB_VERSION {
             return Err(format!(
@@ -239,7 +239,7 @@ fn sync_single_show(
                 [],
                 |row| row.get(0),
             )
-            .map_err(|_| "Local database missing source_unique_id")?;
+            .map_err(|e| format!("Failed to read source_unique_id from local database: {}", e))?;
 
         if source_unique_id != metadata.unique_id {
             return Err(format!(
@@ -520,7 +520,7 @@ fn validate_metadata(
             [],
             |row| row.get(0),
         )
-        .map_err(|_| "Local database missing version")?;
+        .map_err(|e| format!("Failed to read version from local database: {}", e))?;
     if local_version != remote.version {
         return Err(format!(
             "Version mismatch: local='{}', remote='{}'. Cannot sync between different schema versions.",
@@ -536,7 +536,7 @@ fn validate_metadata(
             [],
             |row| row.get(0),
         )
-        .map_err(|_| "Local database missing audio_format")?;
+        .map_err(|e| format!("Failed to read audio_format from local database: {}", e))?;
     if local_format != remote.audio_format {
         return Err(format!(
             "Audio format mismatch: local='{}', remote='{}'",
@@ -552,7 +552,7 @@ fn validate_metadata(
             [],
             |row| row.get(0),
         )
-        .map_err(|_| "Local database missing split_interval")?;
+        .map_err(|e| format!("Failed to read split_interval from local database: {}", e))?;
     if local_interval != remote.split_interval {
         return Err(format!(
             "Split interval mismatch: local='{}', remote='{}'",
@@ -568,7 +568,7 @@ fn validate_metadata(
             [],
             |row| row.get(0),
         )
-        .map_err(|_| "Local database missing bitrate")?;
+        .map_err(|e| format!("Failed to read bitrate from local database: {}", e))?;
     if local_bitrate != remote.bitrate {
         return Err(format!(
             "Bitrate mismatch: local='{}', remote='{}'",
