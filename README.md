@@ -168,6 +168,8 @@ chunk_size = 100            # default: 100 (batch size for fetching chunks)
 | `audio_format` | Audio encoding: `aac`, `opus`, or `wav` | opus | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
 | `split_interval` | Split chunks every N seconds (0 = no split) | 0 | No |
+| `export_to_sftp` | Enable SFTP export for section exports | false | No |
+| `sftp_export` | SFTP configuration table (see SFTP Export Configuration) | - | If `export_to_sftp = true` |
 
 **Note:** The API server always runs in the main thread on the configured `api_port` (default: 3000). It provides synchronization endpoints for all shows being recorded, enabling remote access and database syncing while recording is in progress. The API server is required for sync functionality.
 
@@ -349,8 +351,11 @@ cargo test --test sftp_test -- --ignored
 **What Gets Tested:**
 - Small file uploads (1KB)
 - Large file uploads (10MB) with progress callbacks
-- Nested directory creation
+- Streaming uploads from memory without local files
+- Nested directory creation (including multiple files in same directory)
 - Atomic vs non-atomic upload modes
+- **CRC32 checksum validation** for all uploads (data integrity)
+- **Temporary file cleanup** verification (no `.tmpupload` files left behind)
 - Connection and authentication error handling
 
 ## Recording Session Boundaries
@@ -468,7 +473,7 @@ The export API allows you to export individual recording sections (sessions) as 
 **Endpoint:** `GET /api/sync/shows/{show_name}/sections/{section_id}/export`
 
 **Features:**
-- **No re-encoding**: Direct export from database to file
+- **No re-encoding**: Direct export from database to file or SFTP
 - **Format-specific output**:
   - Opus → `.ogg` file (Ogg container)
   - AAC → `.aac` file (raw ADTS frames)
@@ -476,7 +481,46 @@ The export API allows you to export individual recording sections (sessions) as 
   - Timestamp based on section start time
   - Section ID in hexadecimal for uniqueness
 - **Concurrent safety**: File locking prevents multiple simultaneous exports of the same section
-- **Saved to**: `tmp/` directory by default
+- **Export destinations**:
+  - Local files: `tmp/` directory by default
+  - SFTP: Direct streaming to remote server (see SFTP configuration below)
+
+#### SFTP Export Configuration
+
+When SFTP export is configured in a session, audio sections are streamed directly to the remote SFTP server from memory without creating local temporary files.
+
+**Session configuration with SFTP export:**
+
+```toml
+[[sessions]]
+url = 'https://stream.example.com/radio'
+name = 'myradio'
+record_start = '14:00'
+record_end = '16:00'
+
+# Enable SFTP export
+export_to_sftp = true
+
+[sessions.sftp_export]
+host = 'sftp.example.com'
+port = 22
+username = 'uploader'
+remote_directory = '/uploads/radio'
+
+# Choose one authentication method:
+# Password authentication:
+password = 'secret123'
+
+# OR Key-based authentication:
+# key_file = '/home/user/.ssh/id_rsa'
+# key_passphrase = 'optional_passphrase'  # Optional
+```
+
+**SFTP Export Features:**
+- **Zero-disk I/O**: Audio data streams directly from database to SFTP server without local file creation
+- **Atomic uploads**: Files are uploaded to a temporary location and renamed atomically to prevent partial uploads
+- **Data integrity**: CRC32 checksum validation ensures uploaded data matches the source
+- **Automatic cleanup**: No temporary files left behind on either local or remote systems
 
 **Example Usage:**
 
@@ -484,10 +528,18 @@ The export API allows you to export individual recording sections (sessions) as 
 # First, get available sections for a show
 curl http://localhost:3000/api/sync/shows/am1430/sections
 
-# Export a specific section
+# Export a specific section (with SFTP configured)
 curl http://localhost:3000/api/sync/shows/am1430/sections/1737550800000000/export
 
-# Response:
+# Response (SFTP upload):
+{
+  "remote_path": "sftp://sftp.example.com/uploads/radio/am1430_20250122_143000_62c4b12369400.ogg",
+  "section_id": 1737550800000000,
+  "format": "opus",
+  "duration_seconds": 3600.0
+}
+
+# Response (local file, when SFTP not configured):
 {
   "file_path": "tmp/am1430_20250122_143000_62c4b12369400.ogg",
   "section_id": 1737550800000000,
@@ -500,7 +552,7 @@ curl http://localhost:3000/api/sync/shows/am1430/sections/1737550800000000/expor
 
 - `404 Not Found`: Show or section doesn't exist
 - `409 Conflict`: Export already in progress for this section
-- `500 Internal Server Error`: Database or file system error
+- `500 Internal Server Error`: Database, file system, or SFTP connection error
 
 ### Development Workflow
 
