@@ -309,48 +309,39 @@ fn decode_aac_files(files: &[String]) -> Result<Vec<i16>, Box<dyn std::error::Er
             };
 
             // Decode the packet
-            match decoder.decode(&packet) {
-                Ok(decoded) => {
-                    // Convert decoded audio to i16 samples
-                    let samples: Vec<i16> = match decoded {
-                        AudioBufferRef::S16(buf) => {
-                            // Already i16, just copy
-                            buf.chan(0).to_vec()
-                        }
-                        AudioBufferRef::F32(buf) => {
-                            // Convert f32 to i16
-                            buf.chan(0)
-                                .iter()
-                                .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
-                                .collect()
-                        }
-                        AudioBufferRef::F64(buf) => {
-                            // Convert f64 to i16
-                            buf.chan(0)
-                                .iter()
-                                .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
-                                .collect()
-                        }
-                        _ => {
-                            return Err(format!(
-                                "Unsupported audio buffer format in {}",
-                                filename
-                            )
-                            .into());
-                        }
-                    };
+            let decoded = decoder.decode(&packet)
+                .map_err(|e| format!("Failed to decode packet in {}: {}", filename, e))?;
 
-                    file_samples.extend_from_slice(&samples);
+            // Convert decoded audio to i16 samples
+            let samples: Vec<i16> = match decoded {
+                AudioBufferRef::S16(buf) => {
+                    // Already i16, just copy
+                    buf.chan(0).to_vec()
                 }
-                Err(SymphoniaError::DecodeError(e)) => {
-                    // Ignore decode errors (likely priming frames with encoder delay)
-                    eprintln!("Warning: Decode error in {} (likely priming frame): {}", filename, e);
-                    continue;
+                AudioBufferRef::F32(buf) => {
+                    // Convert f32 to i16
+                    buf.chan(0)
+                        .iter()
+                        .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
+                        .collect()
                 }
-                Err(e) => {
-                    return Err(format!("Failed to decode packet in {}: {}", filename, e).into());
+                AudioBufferRef::F64(buf) => {
+                    // Convert f64 to i16
+                    buf.chan(0)
+                        .iter()
+                        .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
+                        .collect()
                 }
-            }
+                _ => {
+                    return Err(format!(
+                        "Unsupported audio buffer format in {}",
+                        filename
+                    )
+                    .into());
+                }
+            };
+
+            file_samples.extend_from_slice(&samples);
         }
 
         // Skip encoder delay at the start of each file for gapless playback
