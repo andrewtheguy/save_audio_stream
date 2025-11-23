@@ -19,19 +19,49 @@ pub fn open_database_connection(db_path: &Path) -> Result<Connection, Box<dyn st
 /// Open a read-only database connection (for web server handlers)
 /// Uses explicit read-only mode for safety
 /// Foreign keys are not enabled as no modifications are allowed
-/// mode=ro and immutable=1 are needed to open the database from network filesystems
-pub fn open_readonly_connection(
+/// The `immutable` parameter controls whether immutable=1 is set, which is needed
+/// for network filesystems but incompatible with active databases with WAL files
+pub fn open_readonly_connection_with_options(
     db_path: impl AsRef<Path>,
+    immutable: bool,
 ) -> Result<Connection, Box<dyn std::error::Error>> {
-    let mut uri = Url::from_file_path(db_path.as_ref())
-        .map_err(|_| format!("unable to convert path {:?} to file URI", db_path.as_ref()))?;
+    // Convert to absolute path if needed (from_file_path requires absolute paths)
+    let abs_path = if db_path.as_ref().is_absolute() {
+        db_path.as_ref().to_path_buf()
+    } else {
+        std::env::current_dir()?.join(db_path.as_ref())
+    };
+
+    let mut uri = Url::from_file_path(&abs_path)
+        .map_err(|_| format!("unable to convert path {:?} to file URI", abs_path))?;
     uri.query_pairs_mut()
-        .append_pair("mode", "ro")
-        .append_pair("immutable", "1");
+        .append_pair("mode", "ro");
+
+    if immutable {
+        uri.query_pairs_mut()
+            .append_pair("immutable", "1");
+    }
 
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
     let conn = Connection::open_with_flags(uri.as_str(), flags)?;
     Ok(conn)
+}
+
+/// Open a read-only database connection with immutable=1 for network filesystems
+/// IMPORTANT: Only use this for databases that are not being actively written to
+/// (i.e., no active WAL files). For active recording databases, use open_readonly_connection.
+pub fn open_readonly_connection_immutable(
+    db_path: impl AsRef<Path>,
+) -> Result<Connection, Box<dyn std::error::Error>> {
+    open_readonly_connection_with_options(db_path, true)
+}
+
+/// Open a read-only database connection without immutable flag
+/// Use this for active databases that may have WAL files
+pub fn open_readonly_connection(
+    db_path: impl AsRef<Path>,
+) -> Result<Connection, Box<dyn std::error::Error>> {
+    open_readonly_connection_with_options(db_path, false)
 }
 
 /// Create an in-memory database connection for testing

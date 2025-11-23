@@ -15,7 +15,10 @@
       "Bash(timeout 5 deno task:*)",
       "Bash(curl:*)",
       "Bash(cat:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(rustc:*)",
+      "Bash(pkill:*)",
+      "Bash(./target/release/save_audio_stream:*)"
     ],
     "deny": [],
     "ask": []
