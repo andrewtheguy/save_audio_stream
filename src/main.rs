@@ -50,6 +50,14 @@ enum Command {
         /// Port to listen on
         #[arg(short, long, default_value = "3000")]
         port: u16,
+
+        /// Use immutable mode (WORKAROUND for network/read-only filesystems)
+        /// WARNING: Only use for databases that cannot be modified. Setting immutable
+        /// on a database that can change will cause SQLITE_CORRUPT errors or incorrect
+        /// query results. This disables all locking and change detection.
+        /// See: https://www.sqlite.org/uri.html#uriimmutable
+        #[arg(long, default_value = "false")]
+        immutable: bool,
     },
     /// Sync show(s) from remote recording server to local database
     Sync {
@@ -66,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.command {
         Command::Record { config, port } => record_multi_session(config, port),
-        Command::Serve { sqlite_file, port } => serve::serve_audio(sqlite_file, port),
+        Command::Serve { sqlite_file, port, immutable } => serve::serve_audio(sqlite_file, port, immutable),
         Command::Sync { config } => sync_from_config(config),
     }
 }

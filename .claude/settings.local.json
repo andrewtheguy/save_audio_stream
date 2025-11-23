@@ -18,7 +18,8 @@
       "Bash(git stash:*)",
       "Bash(rustc:*)",
       "Bash(pkill:*)",
-      "Bash(./target/release/save_audio_stream:*)"
+      "Bash(./target/release/save_audio_stream:*)",
+      "Bash(timeout 2 ./target/release/save_audio_stream serve:*)"
     ],
     "deny": [],
     "ask": []

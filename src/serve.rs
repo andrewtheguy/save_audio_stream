@@ -6,6 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
+use log::{error, warn};
 
 #[cfg(not(debug_assertions))]
 use axum::response::Response;
@@ -55,12 +56,17 @@ struct AppState {
     output_dir: String,
     audio_format: String,
     sessions: Mutex<HashMap<String, AudioSession>>,
+    immutable: bool,
 }
 
 impl AppState {
-    /// Open a readonly connection
+    /// Open a readonly connection using the appropriate mode based on the immutable flag
     fn open_readonly(&self, path: impl AsRef<std::path::Path>) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
-        crate::db::open_readonly_connection(path)
+        if self.immutable {
+            crate::db::open_readonly_connection_immutable(path)
+        } else {
+            crate::db::open_readonly_connection(path)
+        }
     }
 }
 
@@ -86,6 +92,7 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
             output_dir: output_dir_str,
             audio_format: String::new(), // Not used for multi-show serving
             sessions: Mutex::new(HashMap::new()),
+            immutable: false, // Active recording databases - must not use immutable mode
         });
 
         // Spawn cleanup task for expired sessions
@@ -148,13 +155,25 @@ pub fn serve_for_sync(output_dir: PathBuf, port: u16) -> Result<(), Box<dyn std:
 }
 
 /// Serve a single database file (for serve command)
-pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Verify database exists and is Opus format
     if !sqlite_file.exists() {
         return Err(format!("Database file not found: {}", sqlite_file.display()).into());
     }
 
-    let conn = crate::db::open_readonly_connection(&sqlite_file)?;
+    // Warn if immutable mode is enabled
+    if immutable {
+        eprintln!("WARNING: Immutable mode enabled. Only use this for databases on read-only media");
+        eprintln!("WARNING: or network filesystems. Using immutable mode on databases that can be");
+        eprintln!("WARNING: modified will cause SQLITE_CORRUPT errors or incorrect query results.");
+        eprintln!("WARNING: See: https://www.sqlite.org/uri.html#uriimmutable");
+    }
+
+    let conn = if immutable {
+        crate::db::open_readonly_connection_immutable(&sqlite_file)?
+    } else {
+        crate::db::open_readonly_connection(&sqlite_file)?
+    };
 
     // Check version first
     let db_version: String = conn
@@ -226,6 +245,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16) -> Result<(), Box<dyn std::e
             output_dir,
             audio_format: audio_format.clone(),
             sessions: Mutex::new(HashMap::new()),
+            immutable,
         });
 
         // Spawn cleanup task for expired sessions
@@ -451,6 +471,7 @@ async fn audio_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -761,6 +782,7 @@ async fn mpd_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -878,6 +900,7 @@ async fn init_handler(State(state): State<StdArc<AppState>>) -> impl IntoRespons
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -994,6 +1017,7 @@ async fn segment_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1109,6 +1133,7 @@ async fn hls_playlist_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1250,6 +1275,7 @@ async fn aac_segment_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1361,6 +1387,7 @@ async fn opus_hls_playlist_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1533,6 +1560,7 @@ async fn opus_segment_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1670,6 +1698,7 @@ async fn segments_range_handler(State(state): State<StdArc<AppState>>) -> impl I
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1704,6 +1733,7 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1993,6 +2023,7 @@ async fn db_sections_handler(
     let conn = match state.open_readonly(path) {
         Ok(conn) => conn,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
@@ -2088,7 +2119,7 @@ async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl 
         let conn = match state.open_readonly(&path) {
             Ok(conn) => conn,
             Err(e) => {
-                eprintln!("Warning: Failed to open database {:?}: {}", path, e);
+                warn!("Failed to open database {:?} for show listing: {}", path, e);
                 continue;
             },
         };
@@ -2174,6 +2205,7 @@ async fn sync_show_metadata_handler(
     let conn = match state.open_readonly(path) {
         Ok(conn) => conn,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
@@ -2375,6 +2407,7 @@ async fn sync_show_segments_handler(
     let conn = match state.open_readonly(path) {
         Ok(conn) => conn,
         Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", db_path, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
