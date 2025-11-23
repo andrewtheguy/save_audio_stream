@@ -20,18 +20,6 @@ fi
 
 # Find available port starting from 2222
 PORT=2222
-MAX_PORT=2300
-while [ $PORT -le $MAX_PORT ]; do
-    if ! lsof -i:$PORT > /dev/null 2>&1; then
-        break
-    fi
-    PORT=$((PORT + 1))
-done
-
-if [ $PORT -gt $MAX_PORT ]; then
-    echo -e "${RED}Error: Could not find available port between 2222-$MAX_PORT${NC}"
-    exit 1
-fi
 
 echo -e "${GREEN}Starting rclone SFTP server on port $PORT...${NC}"
 
@@ -66,14 +54,6 @@ echo ""
 echo -e "${GREEN}Running SFTP integration tests...${NC}"
 echo ""
 
-# Update the port in the test file temporarily
-TEMP_TEST_FILE=$(mktemp)
-sed "s/2222/$PORT/g" tests/sftp_test.rs > "$TEMP_TEST_FILE"
-mv "$TEMP_TEST_FILE" tests/sftp_test.rs
-
-# Trap to restore original port on exit
-trap "sed -i.bak 's/$PORT/2222/g' tests/sftp_test.rs && rm -f tests/sftp_test.rs.bak; kill $RCLONE_PID 2>/dev/null || true; wait $RCLONE_PID 2>/dev/null || true" EXIT
-
 # Run tests
 if cargo test --test sftp_test -- --ignored; then
     echo ""
@@ -84,9 +64,5 @@ else
     echo -e "${RED}✗ Some SFTP tests failed${NC}"
     EXIT_CODE=1
 fi
-
-# Restore original port
-sed "s/$PORT/2222/g" tests/sftp_test.rs > "$TEMP_TEST_FILE"
-mv "$TEMP_TEST_FILE" tests/sftp_test.rs
 
 exit $EXIT_CODE
