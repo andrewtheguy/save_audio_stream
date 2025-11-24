@@ -30,11 +30,14 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      - name: Rename binary
+        run: mv target/release/save_audio_stream target/release/save_audio_stream-linux-${{ matrix.arch }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: save_audio_stream-linux-${{ matrix.arch }}
-          path: target/release/save_audio_stream
+          path: target/release/save_audio_stream-linux-${{ matrix.arch }}
 
   build-windows:
     runs-on: windows-latest
@@ -60,8 +63,35 @@ jobs:
           VCPKG_ROOT: C:\vcpkg
         run: cargo build --release
 
+      - name: Rename binary
+        run: mv target/release/save_audio_stream.exe target/release/save_audio_stream-windows-x86_64.exe
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: save_audio_stream-windows-x86_64
-          path: target/release/save_audio_stream.exe
+          path: target/release/save_audio_stream-windows-x86_64.exe
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Generate release name
+        id: release_name
+        run: echo "name=$(date -u +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_name.outputs.name }}
+          name: ${{ steps.release_name.outputs.name }}
+          files: artifacts/*
