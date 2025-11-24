@@ -558,6 +558,47 @@ curl http://localhost:3000/api/sync/shows/am1430/sections/1737550800000000/expor
 }
 ```
 
+**Testing with Local SFTP Server:**
+
+For development and testing, you can quickly spin up a local SFTP server using rclone:
+
+```bash
+# Create a test directory for uploads
+mkdir -p /tmp/sftp-uploads
+
+# Start rclone SFTP server
+rclone serve sftp /tmp/sftp-uploads --addr :2233 --user demo --pass demo
+```
+
+Then configure your session to use the local server:
+
+```toml
+[[sessions]]
+url = 'https://stream.example.com/radio'
+name = 'myradio'
+record_start = '14:00'
+record_end = '16:00'
+export_to_sftp = true
+
+[sessions.sftp_export]
+host = 'localhost'
+port = 2233
+username = 'demo'
+credential_profile = 'local-dev'  # Reference to ~/.config/save_audio_stream/credentials
+remote_directory = '/'
+```
+
+And add credentials:
+
+```bash
+# Create credentials file
+mkdir -p ~/.config/save_audio_stream
+cat > ~/.config/save_audio_stream/credentials << 'EOF'
+[local-dev]
+password = "demo"
+EOF
+```
+
 **Error Responses:**
 
 - `404 Not Found`: Show or section doesn't exist
