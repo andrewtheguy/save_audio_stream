@@ -1269,10 +1269,9 @@ pub fn record(
             loop {
                 let now = chrono::Utc::now();
                 let current_mins = time_to_minutes(now.hour(), now.minute());
-                let wait_secs = seconds_until_start(current_mins, start_mins);
 
-                if wait_secs <= 0 {
-                    // We've reached the start time
+                // Check if we've entered the active window
+                if is_in_active_window(current_mins, start_mins, end_mins) {
                     break;
                 }
 
