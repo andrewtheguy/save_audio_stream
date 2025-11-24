@@ -18,8 +18,7 @@ if ! command -v rclone &> /dev/null; then
     exit 1
 fi
 
-# Find available port starting from 2222
-PORT=2222
+PORT=13222
 
 echo -e "${GREEN}Starting rclone SFTP server on port $PORT...${NC}"
 

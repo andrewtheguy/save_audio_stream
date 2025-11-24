@@ -329,7 +329,6 @@ Use the provided helper script that automatically starts rclone and runs the tes
 ```
 
 The script will:
-- Find an available port (starting from 2222)
 - Start rclone SFTP server with `:memory:` backend
 - Run all SFTP integration tests
 - Automatically clean up the server when done
@@ -338,7 +337,7 @@ The script will:
 
 1. Start rclone SFTP test server in a separate terminal:
 ```bash
-rclone serve sftp :memory: --addr :2222 --user demo --pass demo
+rclone serve sftp :memory: --addr :13222 --user demo --pass demo
 ```
 
 2. Run the SFTP integration tests:

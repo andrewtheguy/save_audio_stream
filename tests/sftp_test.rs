@@ -3,6 +3,8 @@ use std::io::Cursor;
 use std::path::Path;
 use tempfile::TempDir;
 
+const TEST_PORT: u16 = 13222;
+
 /// Progress callback for testing
 fn progress_callback(uploaded: u64, total: u64) {
     println!(
@@ -101,7 +103,7 @@ fn verify_upload_success(
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_upload_small_file() {
     // Create test data
     let test_data = vec![b'A'; 1024]; // 1KB file
@@ -114,7 +116,7 @@ fn test_sftp_upload_small_file() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -140,7 +142,7 @@ fn test_sftp_upload_small_file() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_upload_large_file() {
     // Create large test data (10MB)
     let size = 10 * 1024 * 1024;
@@ -154,7 +156,7 @@ fn test_sftp_upload_large_file() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -184,7 +186,7 @@ fn test_sftp_upload_large_file() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_upload_nested_directory() {
     // Create test data
     let test_data = vec![b'A'; 2048]; // 2KB file
@@ -197,7 +199,7 @@ fn test_sftp_upload_nested_directory() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -223,7 +225,7 @@ fn test_sftp_upload_nested_directory() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_upload_multiple_files_nested_directory() {
     // Create two different test files
     let test_data_1: Vec<u8> = (0..1024)
@@ -243,7 +245,7 @@ fn test_sftp_upload_multiple_files_nested_directory() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -297,7 +299,7 @@ fn test_sftp_upload_multiple_files_nested_directory() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_upload_non_atomic() {
     // Create test data
     let test_data = vec![b'A'; 512];
@@ -310,7 +312,7 @@ fn test_sftp_upload_non_atomic() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -337,12 +339,12 @@ fn test_sftp_upload_non_atomic() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_mkdir_p() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -370,7 +372,7 @@ fn test_sftp_mkdir_p() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_upload_atomic() {
     // Create test data
     let test_data = vec![b'A'; 4096]; // 4KB file
@@ -383,7 +385,7 @@ fn test_sftp_upload_atomic() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -423,7 +425,7 @@ fn test_sftp_upload_atomic() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_connection_failure() {
     // Try to connect to non-existent server
     let config = SftpConfig::with_password(
@@ -442,12 +444,12 @@ fn test_sftp_connection_failure() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_auth_failure() {
     // Try to connect with wrong password
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "wrong_password".to_string(),
     );
@@ -461,7 +463,7 @@ fn test_sftp_auth_failure() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_upload_from_memory() {
     // Create test data in memory
     let test_data = b"Hello, SFTP! This is data uploaded from memory.";
@@ -470,7 +472,7 @@ fn test_sftp_upload_from_memory() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "demo".to_string(),
     );
@@ -497,7 +499,7 @@ fn test_sftp_upload_from_memory() {
 }
 
 #[test]
-#[ignore] // Requires SFTP server running on localhost:2222
+#[ignore] // Requires SFTP server running on localhost
 fn test_sftp_upload_large_data_from_memory() {
     // Create 5MB of test data
     let size = 5 * 1024 * 1024;
@@ -510,7 +512,7 @@ fn test_sftp_upload_large_data_from_memory() {
     // Configure SFTP connection
     let config = SftpConfig::with_password(
         "localhost".to_string(),
-        2222,
+        TEST_PORT,
         "demo".to_string(),
         "demo".to_string(),
     );
