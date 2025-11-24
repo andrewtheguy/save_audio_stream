@@ -2166,14 +2166,14 @@ struct ExportSectionPath {
 }
 
 #[derive(Serialize)]
-struct ExportResponse {
+pub struct ExportResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
-    file_path: Option<String>,
+    pub file_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    sftp_path: Option<String>,
-    section_id: i64,
-    format: String,
-    duration_seconds: f64,
+    pub sftp_path: Option<String>,
+    pub section_id: i64,
+    pub format: String,
+    pub duration_seconds: f64,
 }
 
 /// Upload data directly to SFTP using streaming
@@ -2218,77 +2218,50 @@ fn upload_to_sftp(
     upload_result.map(|_| remote_path_str).map_err(|e| e.into())
 }
 
-async fn export_section_handler(
-    State(state): State<StdArc<AppState>>,
-    Path(params): Path<ExportSectionPath>,
-) -> impl IntoResponse {
-    let show_name = params.show_name;
-    let section_id: i64 = match params.section_id.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({"error": "Invalid section_id"})),
-            )
-                .into_response();
-        }
-    };
-
+/// Export a section to file or SFTP with locking
+///
+/// This function handles the entire export process including:
+/// - Acquiring an exclusive lock to prevent concurrent exports
+/// - Reading section data from the database
+/// - Checking if the section was already exported to SFTP
+/// - Encoding audio data
+/// - Uploading to SFTP or saving to local file
+/// - Updating the is_exported_to_remote flag
+///
+/// Returns ExportResponse on success or an error message on failure.
+pub fn export_section(
+    output_dir: &str,
+    show_name: &str,
+    section_id: i64,
+    sftp_config: Option<&crate::config::SftpExportConfig>,
+) -> Result<ExportResponse, String> {
     // Create tmp directory for lock files if it doesn't exist
-    if let Err(e) = std::fs::create_dir_all("tmp") {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({"error": format!("Failed to create tmp directory: {}", e)})),
-        )
-            .into_response();
-    }
+    std::fs::create_dir_all("tmp")
+        .map_err(|e| format!("Failed to create tmp directory: {}", e))?;
 
     // Acquire exclusive lock to prevent concurrent exports of the same section
     let lock_path = format!("tmp/export_{}_{}.lock", show_name, section_id);
-    let _lock_file = match File::create(&lock_path) {
-        Ok(file) => file,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to create lock file '{}': {}", lock_path, e)})),
-            )
-                .into_response();
-        }
-    };
+    let _lock_file = File::create(&lock_path)
+        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path, e))?;
 
-    if let Err(e) = _lock_file.try_lock_exclusive() {
-        return (
-            StatusCode::CONFLICT,
-            axum::Json(serde_json::json!({"error": format!("Export already in progress for section {} of show '{}'. Lock file: {}. Error: {}", section_id, show_name, lock_path, e)})),
-        )
-            .into_response();
-    }
+    _lock_file.try_lock_exclusive()
+        .map_err(|e| format!("Export already in progress for section {} of show '{}'. Lock file: {}. Error: {}", section_id, show_name, lock_path, e))?;
     // Lock will be held until _lock_file is dropped (when function exits)
 
     // Construct database path
-    let db_path = crate::db::get_db_path(&state.output_dir, &show_name);
+    let db_path = crate::db::get_db_path(output_dir, show_name);
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
-        return (
-            StatusCode::NOT_FOUND,
-            axum::Json(serde_json::json!({"error": format!("Database '{}' not found", show_name)})),
-        )
-            .into_response();
+        return Err(format!("Database '{}' not found", show_name));
     }
 
-    // Open database
-    let conn = match state.open_readonly(path) {
-        Ok(conn) => conn,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", db_path, e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    // Open read/write database connection (needed for updating is_exported_to_remote)
+    let conn = crate::db::open_database_connection(path)
+        .map_err(|e| {
+            error!("Failed to open database connection at '{}': {}", db_path, e);
+            format!("Failed to open database: {}", e)
+        })?;
 
     // Get section info including is_exported_to_remote
     let section_info: Result<(i64, i64, Option<i64>), _> = conn.query_row(
@@ -2297,51 +2270,31 @@ async fn export_section_handler(
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     );
 
-    let (section_id, start_timestamp_ms, is_exported_to_remote) = match section_info {
-        Ok(info) => info,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(serde_json::json!({"error": format!("Section {} not found", section_id)})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to fetch section: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    let (section_id, start_timestamp_ms, is_exported_to_remote) = section_info
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => format!("Section {} not found", section_id),
+            _ => format!("Failed to fetch section: {}", e),
+        })?;
 
     // Get metadata
-    let audio_format: String = match conn.query_row(
+    let audio_format: String = conn.query_row(
         "SELECT value FROM metadata WHERE key = 'audio_format'",
         [],
         |row| row.get(0),
-    ) {
-        Ok(format) => format,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to read audio_format: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    )
+    .map_err(|e| format!("Failed to read audio_format: {}", e))?;
 
-    let sample_rate: u32 = match conn.query_row(
+    let sample_rate: u32 = conn.query_row(
         "SELECT value FROM metadata WHERE key = 'sample_rate'",
         [],
         |row| row.get::<_, String>(0),
-    ) {
-        Ok(rate) => rate.parse().unwrap_or(48000),
-        Err(_) => 48000,
-    };
+    )
+    .ok()
+    .and_then(|rate| rate.parse().ok())
+    .unwrap_or(48000);
 
     // If section has already been exported to remote and SFTP is configured, return the SFTP path directly
-    if is_exported_to_remote == Some(1) && state.sftp_config.is_some() {
+    if is_exported_to_remote == Some(1) && sftp_config.is_some() {
         // Format timestamp as yyyymmdd_hhmmss
         let datetime = chrono::DateTime::from_timestamp_millis(start_timestamp_ms);
         let formatted_time = match datetime {
@@ -2356,36 +2309,22 @@ async fn export_section_handler(
         let extension = match audio_format.as_str() {
             "opus" => "ogg",
             "aac" => "aac",
-            _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    axum::Json(serde_json::json!({"error": format!("Unsupported audio format: {}", audio_format)})),
-                )
-                    .into_response();
-            }
+            _ => return Err(format!("Unsupported audio format: {}", audio_format)),
         };
 
         // Generate filename
         let filename = format!("{}_{}._{}.{}", show_name, formatted_time, hex_section_id, extension);
 
         // Construct remote path
-        let sftp_config = state.sftp_config.as_ref().unwrap();
-        let remote_path = std::path::Path::new(&sftp_config.remote_dir).join(&filename);
+        let sftp_cfg = sftp_config.unwrap();
+        let remote_path = std::path::Path::new(&sftp_cfg.remote_dir).join(&filename);
         let remote_path_str = remote_path.to_string_lossy().to_string();
 
         // Query segments to calculate duration
-        let mut stmt = match conn.prepare(
+        let mut stmt = conn.prepare(
             "SELECT id, audio_data FROM segments WHERE section_id = ?1 ORDER BY id",
-        ) {
-            Ok(stmt) => stmt,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": format!("Failed to prepare query: {}", e)})),
-                )
-                    .into_response();
-            }
-        };
+        )
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
         let segments: Result<Vec<(i64, Vec<u8>)>, _> = stmt
             .query_map([section_id], |row| {
@@ -2393,23 +2332,12 @@ async fn export_section_handler(
             })
             .and_then(|rows| rows.collect());
 
-        let segments = match segments {
-            Ok(segs) if !segs.is_empty() => segs,
-            Ok(_) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    axum::Json(serde_json::json!({"error": format!("No segments found for section {}", section_id)})),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": format!("Failed to fetch segments: {}", e)})),
-                )
-                    .into_response();
-            }
-        };
+        let segments = segments
+            .map_err(|e| format!("Failed to fetch segments: {}", e))?;
+
+        if segments.is_empty() {
+            return Err(format!("No segments found for section {}", section_id));
+        }
 
         // Calculate duration
         let total_samples = if audio_format == "opus" {
@@ -2442,29 +2370,20 @@ async fn export_section_handler(
         let duration_secs = total_samples as f64 / sample_rate as f64;
 
         // Return cached export response
-        return axum::Json(ExportResponse {
+        return Ok(ExportResponse {
             file_path: None,
             sftp_path: Some(remote_path_str),
             section_id,
             format: audio_format,
             duration_seconds: duration_secs,
-        })
-        .into_response();
+        });
     }
 
     // Get all segments for this section
-    let mut stmt = match conn.prepare(
+    let mut stmt = conn.prepare(
         "SELECT id, audio_data FROM segments WHERE section_id = ?1 ORDER BY id",
-    ) {
-        Ok(stmt) => stmt,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to prepare query: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    )
+    .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
     let segments: Result<Vec<(i64, Vec<u8>)>, _> = stmt
         .query_map([section_id], |row| {
@@ -2472,23 +2391,12 @@ async fn export_section_handler(
         })
         .and_then(|rows| rows.collect());
 
-    let segments = match segments {
-        Ok(segs) if !segs.is_empty() => segs,
-        Ok(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(serde_json::json!({"error": format!("No segments found for section {}", section_id)})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to fetch segments: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    let segments = segments
+        .map_err(|e| format!("Failed to fetch segments: {}", e))?;
+
+    if segments.is_empty() {
+        return Err(format!("No segments found for section {}", section_id));
+    }
 
     // Format timestamp as yyyymmdd_hhmmss
     let datetime = chrono::DateTime::from_timestamp_millis(start_timestamp_ms);
@@ -2504,13 +2412,7 @@ async fn export_section_handler(
     let extension = match audio_format.as_str() {
         "opus" => "ogg",
         "aac" => "aac",
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({"error": format!("Unsupported audio format: {}", audio_format)})),
-            )
-                .into_response();
-        }
+        _ => return Err(format!("Unsupported audio format: {}", audio_format)),
     };
 
     // Generate filename
@@ -2547,85 +2449,97 @@ async fn export_section_handler(
     let duration_secs = total_samples as f64 / sample_rate as f64;
 
     // Export audio to memory buffer
-    let export_result = match audio_format.as_str() {
+    let audio_data = match audio_format.as_str() {
         "opus" => export_opus_section(&conn, section_id, sample_rate, duration_secs),
         "aac" => export_aac_section(&segments),
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "Unsupported format",
         )),
+    }
+    .map_err(|e| format!("Failed to export audio: {}", e))?;
+
+    // Upload to SFTP if configured, otherwise save to file
+    let (response_file_path, response_sftp_path) = if let Some(sftp_cfg) = sftp_config {
+        // Upload directly from memory to SFTP (atomic, no disk write)
+        let remote_path = upload_to_sftp(&audio_data, &filename, sftp_cfg)
+            .map_err(|e| format!("SFTP upload failed: {}", e))?;
+
+        // SFTP upload succeeded, update is_exported_to_remote column
+        if let Err(e) = conn.execute(
+            "UPDATE sections SET is_exported_to_remote = 1 WHERE id = ?1",
+            [section_id],
+        ) {
+            error!("Failed to update is_exported_to_remote for section {}: {}", section_id, e);
+            // Don't fail the request, just log the error
+        }
+
+        // Return remote path
+        (None, Some(remote_path))
+    } else {
+        // No SFTP configured, save to local file
+        // Create tmp directory if it doesn't exist
+        std::fs::create_dir_all("tmp")
+            .map_err(|e| format!("Failed to create tmp directory: {}", e))?;
+
+        let file_path = format!("tmp/{}", filename);
+        std::fs::write(&file_path, &audio_data)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+
+        (Some(file_path), None)
     };
 
-    match export_result {
-        Ok(audio_data) => {
-            // Upload to SFTP if configured, otherwise save to file
-            let (response_file_path, response_sftp_path) = if let Some(ref sftp_config) = state.sftp_config {
-                // Upload directly from memory to SFTP (atomic, no disk write)
-                match upload_to_sftp(&audio_data, &filename, sftp_config) {
-                    Ok(remote_path) => {
-                        // SFTP upload succeeded, update is_exported_to_remote column
-                        if let Err(e) = (|| -> Result<(), Box<dyn std::error::Error>> {
-                            let writable_conn = crate::db::open_database_connection(path)?;
-                            writable_conn.execute(
-                                "UPDATE sections SET is_exported_to_remote = 1 WHERE id = ?1",
-                                [section_id],
-                            )?;
-                            Ok(())
-                        })() {
-                            error!("Failed to update is_exported_to_remote for section {}: {}", section_id, e);
-                            // Don't fail the request, just log the error
-                        }
+    Ok(ExportResponse {
+        file_path: response_file_path,
+        sftp_path: response_sftp_path,
+        section_id,
+        format: audio_format,
+        duration_seconds: duration_secs,
+    })
+}
 
-                        // Return remote path
-                        (None, Some(remote_path))
-                    }
-                    Err(e) => {
-                        // SFTP upload failed
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            axum::Json(serde_json::json!({"error": format!("SFTP upload failed: {}", e)})),
-                        )
-                            .into_response();
-                    }
-                }
+async fn export_section_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(params): Path<ExportSectionPath>,
+) -> impl IntoResponse {
+    let show_name = params.show_name;
+    let section_id: i64 = match params.section_id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "Invalid section_id"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Call the export_section function
+    match export_section(
+        &state.output_dir,
+        &show_name,
+        section_id,
+        state.sftp_config.as_ref(),
+    ) {
+        Ok(response) => axum::Json(response).into_response(),
+        Err(error_msg) => {
+            // Determine appropriate status code based on error message
+            let status_code = if error_msg.contains("not found") || error_msg.contains("No segments") {
+                StatusCode::NOT_FOUND
+            } else if error_msg.contains("already in progress") {
+                StatusCode::CONFLICT
+            } else if error_msg.contains("Invalid") || error_msg.contains("Unsupported") {
+                StatusCode::BAD_REQUEST
             } else {
-                // No SFTP configured, save to local file
-                // Create tmp directory if it doesn't exist
-                if let Err(e) = std::fs::create_dir_all("tmp") {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        axum::Json(serde_json::json!({"error": format!("Failed to create tmp directory: {}", e)})),
-                    )
-                        .into_response();
-                }
-
-                let file_path = format!("tmp/{}", filename);
-                match std::fs::write(&file_path, &audio_data) {
-                    Ok(_) => (Some(file_path), None),
-                    Err(e) => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            axum::Json(serde_json::json!({"error": format!("Failed to write file: {}", e)})),
-                        )
-                            .into_response();
-                    }
-                }
+                StatusCode::INTERNAL_SERVER_ERROR
             };
 
-            axum::Json(ExportResponse {
-                file_path: response_file_path,
-                sftp_path: response_sftp_path,
-                section_id,
-                format: audio_format,
-                duration_seconds: duration_secs,
-            })
-            .into_response()
+            (
+                status_code,
+                axum::Json(serde_json::json!({"error": error_msg})),
+            )
+                .into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({"error": format!("Failed to export audio: {}", e)})),
-        )
-            .into_response(),
     }
 }
 
