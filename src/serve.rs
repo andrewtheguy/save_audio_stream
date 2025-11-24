@@ -2013,13 +2013,13 @@ pub fn export_section(
     std::fs::create_dir_all("tmp")
         .map_err(|e| format!("Failed to create tmp directory: {}", e))?;
 
-    // Acquire exclusive lock to prevent concurrent exports of the same section
-    let lock_path = format!("tmp/export_{}_{}.lock", show_name, section_id);
+    // Acquire exclusive lock to prevent concurrent exports of the same show
+    let lock_path = format!("tmp/export_{}.lock", show_name);
     let _lock_file = File::create(&lock_path)
         .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path, e))?;
 
     _lock_file.try_lock_exclusive()
-        .map_err(|e| format!("Export already in progress for section {} of show '{}'. Lock file: {}. Error: {}", section_id, show_name, lock_path, e))?;
+        .map_err(|e| format!("Export already in progress for show '{}'. Lock file: {}. Error: {}", show_name, lock_path, e))?;
     // Lock will be held until _lock_file is dropped (when function exits)
 
     // Construct database path
