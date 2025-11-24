@@ -169,6 +169,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
         let mut api_routes = Router::new()
             .route("/api/format", get(format_handler))
             .route("/api/segments/range", get(segments_range_handler))
+            .route("/api/metadata", get(metadata_handler))
             .route("/api/sessions", get(sessions_handler));
 
         // Add format-specific routes
@@ -236,6 +237,19 @@ struct SessionInfo {
 struct SessionsResponse {
     name: String,
     sessions: Vec<SessionInfo>,
+}
+
+#[derive(Serialize)]
+struct Metadata {
+    unique_id: String,
+    name: String,
+    audio_format: String,
+    split_interval: String,
+    bitrate: String,
+    sample_rate: String,
+    version: String,
+    min_id: i64,
+    max_id: i64,
 }
 
 // HLS playlist handler for AAC format
@@ -796,6 +810,178 @@ async fn segments_range_handler(State(state): State<StdArc<AppState>>) -> impl I
         }
         _ => (StatusCode::NOT_FOUND, "No segments found in database").into_response(),
     }
+}
+
+async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
+    let conn = match state.open_readonly(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response()
+        }
+    };
+
+    // Query all metadata fields
+    let unique_id: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'unique_id'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to query unique_id metadata: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    let name: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'name'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to query name metadata: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    let audio_format: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'audio_format'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to query audio_format metadata: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    let split_interval: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'split_interval'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to query split_interval metadata: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    let bitrate: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'bitrate'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to query bitrate metadata: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    let sample_rate: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'sample_rate'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to query sample_rate metadata: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    let version: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'version'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to query version metadata: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    // Get min/max segment IDs
+    let (min_id, max_id): (i64, i64) = match conn.query_row(
+        "SELECT MIN(id), MAX(id) FROM segments",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to query min/max segment IDs: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    let metadata = Metadata {
+        unique_id,
+        name,
+        audio_format,
+        split_interval,
+        bitrate,
+        sample_rate,
+        version,
+        min_id,
+        max_id,
+    };
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&metadata).unwrap(),
+    )
+        .into_response()
 }
 
 async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {

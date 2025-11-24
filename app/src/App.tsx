@@ -53,7 +53,7 @@ function App() {
         setData(sessionsData);
 
         // Fetch metadata to get database unique_id
-        return fetch(`/api/sync/shows/${sessionsData.name}/metadata`).then((r) => r.json())
+        return fetch(`/api/metadata`).then((r) => r.json())
           .then((metadata) => {
             setDbUniqueId(metadata.unique_id);
 
