@@ -2087,7 +2087,7 @@ pub fn export_section(
         };
 
         // Generate filename
-        let filename = format!("{}_{}._{}.{}", show_name, formatted_time, hex_section_id, extension);
+        let filename = format!("{}_{}_{}.{}", show_name, formatted_time, hex_section_id, extension);
 
         // Construct remote path
         let sftp_cfg = sftp_config.unwrap();
