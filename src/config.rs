@@ -60,6 +60,9 @@ pub struct MultiSessionConfig {
     pub export_to_sftp: Option<bool>,
     /// SFTP configuration (maps to [sftp] section in TOML)
     pub sftp: Option<SftpExportConfig>,
+    /// Enable periodic export of unexported sections to SFTP every hour (default: false)
+    /// Requires export_to_sftp to be true
+    pub export_to_remote_periodically: Option<bool>,
 }
 
 /// SFTP export configuration (maps to [sftp] section in TOML)
@@ -119,6 +122,7 @@ impl MultiSessionConfig {
     ///
     /// If `export_to_sftp` is true, ensures that the `sftp` configuration section exists
     /// and contains all required fields.
+    /// If `export_to_remote_periodically` is true, ensures that `export_to_sftp` is also true.
     pub fn validate_sftp(&self) -> Result<(), String> {
         if self.export_to_sftp.unwrap_or(false) {
             if self.sftp.is_none() {
@@ -127,6 +131,16 @@ impl MultiSessionConfig {
                 );
             }
         }
+
+        // Validate that periodic export requires SFTP export to be enabled
+        if self.export_to_remote_periodically.unwrap_or(false) {
+            if !self.export_to_sftp.unwrap_or(false) {
+                return Err(
+                    "export_to_remote_periodically requires export_to_sftp to be true".to_string(),
+                );
+            }
+        }
+
         Ok(())
     }
 }

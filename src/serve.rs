@@ -61,6 +61,7 @@ struct AppState {
     sessions: Mutex<HashMap<String, AudioSession>>,
     immutable: bool,
     sftp_config: Option<crate::config::SftpExportConfig>,
+    maintenance_lock: StdArc<std::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -79,6 +80,8 @@ pub fn serve_for_sync(
     output_dir: PathBuf,
     port: u16,
     sftp_config: Option<crate::config::SftpExportConfig>,
+    export_to_remote_periodically: bool,
+    session_names: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output_dir_str = output_dir.to_string_lossy().to_string();
 
@@ -101,20 +104,37 @@ pub fn serve_for_sync(
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
+        // Create shared maintenance lock for coordinating cleanup and export tasks
+        let maintenance_lock = StdArc::new(std::sync::Mutex::new(()));
+
+        // Clone sftp_config for periodic export task if needed
+        let sftp_config_for_export = sftp_config.clone();
+
         let app_state = StdArc::new(AppState {
             db_path: String::new(), // Not used for multi-show serving
-            output_dir: output_dir_str,
+            output_dir: output_dir_str.clone(),
             audio_format: String::new(), // Not used for multi-show serving
             sessions: Mutex::new(HashMap::new()),
             immutable: false, // Active recording databases - must not use immutable mode
             sftp_config,
+            maintenance_lock: maintenance_lock.clone(),
         });
 
         // Spawn cleanup task for expired sessions
         let cleanup_state = app_state.clone();
-        tokio::spawn(async move {
+        let cleanup_lock = maintenance_lock.clone();
+        tokio::task::spawn_blocking(move || {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
+                std::thread::sleep(std::time::Duration::from_secs(60 * 60));
+
+                // Acquire maintenance lock to ensure cleanup doesn't run concurrently with export
+                let _lock = match cleanup_lock.lock() {
+                    Ok(guard) => guard,
+                    Err(e) => {
+                        error!("Failed to acquire maintenance lock for cleanup: {}", e);
+                        continue;
+                    }
+                };
 
                 let expired: Vec<(String, PathBuf)> = {
                     let sessions = cleanup_state.sessions.lock().unwrap();
@@ -134,8 +154,24 @@ pub fn serve_for_sync(
                         println!("Cleaned up expired session: {}", id);
                     }
                 }
+                // Lock is released automatically when _lock goes out of scope
             }
         });
+
+        // Spawn periodic export task if enabled
+        if export_to_remote_periodically {
+            if let Some(sftp_cfg) = sftp_config_for_export {
+                println!("Periodic remote export: ENABLED (every hour)");
+                spawn_periodic_export_task(
+                    output_dir_str.clone(),
+                    sftp_cfg,
+                    maintenance_lock.clone(),
+                    session_names,
+                );
+            } else {
+                println!("Warning: export_to_remote_periodically is enabled but SFTP config is missing");
+            }
+        }
 
         let cors = CorsLayer::new()
             .allow_origin(Any)
@@ -271,6 +307,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
             sessions: Mutex::new(HashMap::new()),
             immutable,
             sftp_config: None, // SFTP not supported in serve command
+            maintenance_lock: StdArc::new(std::sync::Mutex::new(())), // Not used in serve mode
         });
 
         // Spawn cleanup task for expired sessions
@@ -2216,6 +2253,132 @@ fn upload_to_sftp(
 
     // Return the remote path if upload succeeded
     upload_result.map(|_| remote_path_str).map_err(|e| e.into())
+}
+
+/// Spawn a periodic task to export unexported sections to SFTP
+///
+/// This function spawns a background task that runs every hour and exports all
+/// sections that have not been exported to remote SFTP yet, excluding the pending
+/// (currently recording) section. Only processes databases for the specified session names.
+fn spawn_periodic_export_task(
+    output_dir: String,
+    sftp_config: crate::config::SftpExportConfig,
+    maintenance_lock: StdArc<std::sync::Mutex<()>>,
+    session_names: Vec<String>,
+) {
+    tokio::task::spawn_blocking(move || {
+        loop {
+            // Sleep for 1 hour
+            std::thread::sleep(std::time::Duration::from_secs(60 * 60));
+
+            // Acquire maintenance lock to ensure export doesn't run concurrently with cleanup
+            let _lock = match maintenance_lock.lock() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    error!("Failed to acquire maintenance lock for periodic export: {}", e);
+                    continue;
+                }
+            };
+
+            println!("Starting periodic export of unexported sections...");
+
+            // Process each session database
+            for show_name in &session_names {
+                let db_path = std::path::Path::new(&output_dir).join(format!("{}.sqlite", show_name));
+
+                // Open database to query for unexported sections
+                let conn = match crate::db::open_database_connection(&db_path) {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        error!("Failed to open database {}: {}", db_path.display(), e);
+                        continue;
+                    }
+                };
+
+                // Get pending section ID (to exclude from export)
+                let pending_section_id: Option<i64> = conn
+                    .query_row(
+                        "SELECT value FROM metadata WHERE key = 'pending_section_id'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok()
+                    .and_then(|s| s.parse().ok());
+
+                // Query for unexported sections
+                let unexported_sections: Vec<i64> = {
+                    let query = if let Some(_pending_id) = pending_section_id {
+                        "SELECT id FROM sections
+                         WHERE (is_exported_to_remote IS NULL OR is_exported_to_remote = 0)
+                           AND id != ?1"
+                    } else {
+                        "SELECT id FROM sections
+                         WHERE (is_exported_to_remote IS NULL OR is_exported_to_remote = 0)"
+                    };
+
+                    let mut stmt = match conn.prepare(query) {
+                        Ok(stmt) => stmt,
+                        Err(e) => {
+                            error!("Failed to prepare query for {}: {}", show_name, e);
+                            continue;
+                        }
+                    };
+
+                    let sections_result: Result<Vec<i64>, _> = if let Some(pending_id) = pending_section_id {
+                        stmt.query_map([pending_id], |row| row.get(0))
+                            .and_then(|rows| rows.collect())
+                    } else {
+                        stmt.query_map([], |row| row.get(0))
+                            .and_then(|rows| rows.collect())
+                    };
+
+                    match sections_result {
+                        Ok(sections) => sections,
+                        Err(e) => {
+                            error!("Failed to query unexported sections for {}: {}", show_name, e);
+                            continue;
+                        }
+                    }
+                };
+
+                // Export each unexported section
+                if unexported_sections.is_empty() {
+                    println!("No unexported sections found for show: {}", show_name);
+                } else {
+                    println!(
+                        "Found {} unexported section(s) for show: {}",
+                        unexported_sections.len(),
+                        show_name
+                    );
+
+                    for section_id in unexported_sections {
+                        match export_section(
+                            &output_dir,
+                            show_name,
+                            section_id,
+                            Some(&sftp_config),
+                        ) {
+                            Ok(response) => {
+                                println!(
+                                    "Successfully exported section {} of show {} to: {:?}",
+                                    section_id, show_name, response.sftp_path
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to export section {} of show {}: {}",
+                                    section_id, show_name, e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            println!("Periodic export completed.");
+            // Lock is released automatically when _lock goes out of scope
+        }
+    });
 }
 
 /// Export a section to file or SFTP with locking

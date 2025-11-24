@@ -133,6 +133,14 @@ fn record_multi_session(
         None
     };
 
+    // Extract periodic export flag
+    let export_to_remote_periodically = multi_config.export_to_remote_periodically.unwrap_or(false);
+
+    // Extract session names for periodic export
+    let session_names: Vec<String> = multi_config.sessions.iter()
+        .map(|s| s.name.clone())
+        .collect();
+
     // Create output directory if it doesn't exist
     let output_dir_path = PathBuf::from(output_dir.clone());
     std::fs::create_dir_all(&output_dir_path)?;
@@ -142,7 +150,13 @@ fn record_multi_session(
     println!("Starting API server on port {}", api_port);
 
     let api_handle = thread::spawn(move || {
-        if let Err(e) = serve::serve_for_sync(output_dir_path, api_port, sftp_config) {
+        if let Err(e) = serve::serve_for_sync(
+            output_dir_path,
+            api_port,
+            sftp_config,
+            export_to_remote_periodically,
+            session_names,
+        ) {
             eprintln!("API server failed: {}", e);
             std::process::exit(1);
         }
