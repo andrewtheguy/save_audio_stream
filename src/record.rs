@@ -882,11 +882,12 @@ fn run_connection_loop(
                               timestamp_ms: i64,
                               is_from_source: bool,
                               section_id: i64,
-                              data: &[u8]|
+                              data: &[u8],
+                              duration_samples: u64|
          -> Result<(), Box<dyn std::error::Error>> {
             conn.execute(
-            "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, section_id, audio_data) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![timestamp_ms, is_from_source as i32, section_id, data],
+            "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, section_id, audio_data, duration_samples) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![timestamp_ms, is_from_source as i32, section_id, data, duration_samples as i64],
         )?;
             Ok(())
         };
@@ -974,6 +975,7 @@ fn run_connection_loop(
                                                             segment_number == 0,
                                                             connection_section_id,
                                                             &segment_buffer,
+                                                            segment_samples,
                                                         )?;
                                                         debug!(
                                                             "Inserted segment {} ({} bytes)",
@@ -1018,6 +1020,7 @@ fn run_connection_loop(
                                                             segment_number == 0,
                                                             connection_section_id,
                                                             &segment_buffer,
+                                                            segment_samples,
                                                         )?;
                                                         debug!(
                                                             "Inserted segment {} ({} bytes)",
@@ -1055,6 +1058,7 @@ fn run_connection_loop(
                                                 segment_number == 0,
                                                 connection_section_id,
                                                 &segment_buffer,
+                                                segment_samples,
                                             )?;
                                             debug!(
                                                 "Inserted segment {} ({} bytes)",
@@ -1143,6 +1147,7 @@ fn run_connection_loop(
                 segment_number == 0,
                 connection_section_id,
                 &segment_buffer,
+                segment_samples,
             )?;
             println!(
                 "[{}] Inserted final segment {} ({} bytes)",

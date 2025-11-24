@@ -13,7 +13,7 @@ use axum::response::Response;
 
 #[cfg(debug_assertions)]
 use axum::response::Response;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc as StdArc;
@@ -21,13 +21,35 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::constants::EXPECTED_DB_VERSION;
 use crate::fmp4::{generate_init_segment, generate_media_segment};
-use crate::webm::{
-    write_ebml_binary, write_ebml_float, write_ebml_id, write_ebml_size, write_ebml_string,
-    write_ebml_uint,
-};
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 const INDEX_HTML: &[u8] = include_bytes!("../app/dist/index.html");
+
+/// Parse Opus packets from audio data for fMP4 generation
+/// Opus packets are stored as 2-byte little-endian length followed by packet data
+fn parse_opus_packets(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    let mut packets = Vec::new();
+    let mut pos = 0;
+
+    while pos + 2 <= data.len() {
+        // Read 2-byte little-endian length
+        let len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2;
+
+        if pos + len > data.len() {
+            break;
+        }
+
+        packets.push(data[pos..pos + len].to_vec());
+        pos += len;
+    }
+
+    if packets.is_empty() {
+        return Err("No valid Opus packets found".to_string());
+    }
+
+    Ok(packets)
+}
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 const STYLE_CSS: &[u8] = include_bytes!("../app/dist/assets/style.css");
@@ -120,9 +142,6 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
     println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
     println!("Endpoints:");
     if audio_format == "opus" {
-        println!("  GET /manifest.mpd?start_id=<N>&end_id=<N>  - DASH MPD");
-        println!("  GET /init.webm  - WebM initialization segment");
-        println!("  GET /segment/:id  - WebM audio segment");
         println!("  GET /opus-playlist.m3u8?start_id=<N>&end_id=<N>  - HLS/fMP4 playlist");
         println!("  GET /opus-segment/:id.m4s  - fMP4 audio segment");
     } else if audio_format == "aac" {
@@ -155,9 +174,6 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
         // Add format-specific routes
         if audio_format == "opus" {
             api_routes = api_routes
-                .route("/manifest.mpd", get(mpd_handler))
-                .route("/init.webm", get(init_handler))
-                .route("/segment/{id}", get(segment_handler))
                 .route("/opus-playlist.m3u8", get(opus_hls_playlist_handler))
                 .route("/opus-segment/{filename}", get(opus_segment_handler));
         } else if audio_format == "aac" {
@@ -200,378 +216,6 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
 // health_handler, ExportSectionPath, ExportResponse, upload_to_sftp,
 // spawn_periodic_export_task, to_url_safe_base64, generate_export_filename,
 // export_section, export_section_handler)
-
-/// Parse ADTS frames in AAC data and return total samples
-fn parse_adts_frames(data: &[u8], frame_size: u32) -> Result<u64, String> {
-    let mut total_samples = 0u64;
-    let mut pos = 0;
-
-    while pos + 7 < data.len() {
-        // Find ADTS sync word (0xFFF at start of header)
-        if data[pos] != 0xFF || (data[pos + 1] & 0xF0) != 0xF0 {
-            pos += 1;
-            continue;
-        }
-
-        // Extract frame length from ADTS header (13 bits)
-        let frame_len = (((data[pos + 3] & 0x03) as usize) << 11)
-            | ((data[pos + 4] as usize) << 3)
-            | ((data[pos + 5] as usize) >> 5);
-
-        if pos + frame_len > data.len() || frame_len < 7 {
-            break;
-        }
-
-        total_samples += frame_size as u64;
-        pos += frame_len;
-    }
-
-    if total_samples == 0 {
-        return Err("No valid ADTS frames found".to_string());
-    }
-
-    Ok(total_samples)
-}
-// Query parameters for MPD
-#[derive(Deserialize)]
-struct MpdQuery {
-    start_id: i64,
-    end_id: i64,
-}
-
-// DASH MPD manifest handler
-async fn mpd_handler(
-    State(state): State<StdArc<AppState>>,
-    Query(query): Query<MpdQuery>,
-) -> impl IntoResponse {
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
-        }
-    };
-
-    // Validate end_id
-    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
-        Ok(id) => id,
-        Err(e) => {
-            error!("Failed to query max segment ID: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
-        }
-    };
-
-    if query.end_id > max_id {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("end_id {} exceeds max id {}", query.end_id, max_id),
-        )
-            .into_response();
-    }
-
-    if query.start_id > query.end_id {
-        return (StatusCode::BAD_REQUEST, "start_id must be <= end_id").into_response();
-    }
-
-    // Get split_interval from metadata (in seconds)
-    let split_interval: f64 = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'split_interval'",
-            [],
-            |row| {
-                let val: String = row.get(0)?;
-                Ok(val.parse().unwrap_or(1.0))
-            },
-        )
-        .unwrap_or(1.0);
-
-    // Get sample_rate from metadata
-    let sample_rate: u32 = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'sample_rate'",
-            [],
-            |row| {
-                let val: String = row.get(0)?;
-                Ok(val.parse().unwrap_or(48000))
-            },
-        )
-        .unwrap_or(48000);
-
-    // Get bitrate from metadata
-    let bitrate_kbps: u32 = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'bitrate'",
-            [],
-            |row| {
-                let val: String = row.get(0)?;
-                Ok(val.parse().unwrap_or(16))
-            },
-        )
-        .unwrap_or(16);
-    let bandwidth = bitrate_kbps * 1000;
-
-    // Calculate total duration and segment repeat count
-    let segment_count = (query.end_id - query.start_id + 1) as u32;
-    let total_duration = segment_count as f64 * split_interval;
-
-    let duration_ms = (split_interval * 1000.0) as u32;
-    let repeat_count = segment_count.saturating_sub(1);
-
-    // Build DASH MPD with SegmentTemplate
-    let mpd = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
-     type="static"
-     mediaPresentationDuration="PT{:.3}S"
-     minBufferTime="PT2S"
-     profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
-  <Period duration="PT{:.3}S">
-    <AdaptationSet mimeType="audio/webm" codecs="opus" lang="en">
-      <SegmentTemplate
-        initialization="init.webm"
-        media="segment/$Number$?base={}"
-        startNumber="1"
-        timescale="1000">
-        <SegmentTimeline>
-          <S d="{}" r="{}"/>
-        </SegmentTimeline>
-      </SegmentTemplate>
-      <Representation id="audio" bandwidth="{}" audioSamplingRate="{}">
-        <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
-      </Representation>
-    </AdaptationSet>
-  </Period>
-</MPD>"#,
-        total_duration,
-        total_duration,
-        query.start_id,
-        duration_ms,
-        repeat_count,
-        bandwidth,
-        sample_rate
-    );
-
-    (
-        StatusCode::OK,
-        [("content-type", "application/dash+xml")],
-        mpd,
-    )
-        .into_response()
-}
-
-// Initialization segment handler
-async fn init_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
-        }
-    };
-
-    // Get sample_rate from metadata
-    let sample_rate: f64 = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'sample_rate'",
-            [],
-            |row| {
-                let val: String = row.get(0)?;
-                Ok(val.parse().unwrap_or(48000.0))
-            },
-        )
-        .unwrap_or(48000.0);
-
-    // Build WebM initialization segment
-    let mut webm = Vec::new();
-
-    // EBML Header
-    let mut ebml_header = Vec::new();
-    write_ebml_uint(&mut ebml_header, 0x4286, 1);
-    write_ebml_uint(&mut ebml_header, 0x42F7, 1);
-    write_ebml_uint(&mut ebml_header, 0x42F2, 4);
-    write_ebml_uint(&mut ebml_header, 0x42F3, 8);
-    write_ebml_string(&mut ebml_header, 0x4282, "webm");
-    write_ebml_uint(&mut ebml_header, 0x4287, 4);
-    write_ebml_uint(&mut ebml_header, 0x4285, 2);
-
-    write_ebml_id(&mut webm, 0x1A45DFA3);
-    write_ebml_size(&mut webm, ebml_header.len() as u64);
-    webm.extend_from_slice(&ebml_header);
-
-    // Build Segment content
-    let mut segment_content = Vec::new();
-
-    // Info
-    let mut info = Vec::new();
-    write_ebml_uint(&mut info, 0x2AD7B1, 1_000_000);
-    write_ebml_string(&mut info, 0x4D80, "save_audio_stream");
-    write_ebml_string(&mut info, 0x5741, "save_audio_stream");
-
-    write_ebml_id(&mut segment_content, 0x1549A966);
-    write_ebml_size(&mut segment_content, info.len() as u64);
-    segment_content.extend_from_slice(&info);
-
-    // Tracks
-    let mut tracks = Vec::new();
-    let mut track_entry = Vec::new();
-    write_ebml_uint(&mut track_entry, 0xD7, 1);
-    write_ebml_uint(&mut track_entry, 0x73C5, 1);
-    write_ebml_uint(&mut track_entry, 0x83, 2);
-    write_ebml_string(&mut track_entry, 0x86, "A_OPUS");
-
-    // CodecPrivate - OpusHead
-    let mut opus_head = Vec::new();
-    opus_head.extend_from_slice(b"OpusHead");
-    opus_head.push(1);
-    opus_head.push(1);
-    opus_head.extend_from_slice(&0u16.to_le_bytes());
-    opus_head.extend_from_slice(&(sample_rate as u32).to_le_bytes());
-    opus_head.extend_from_slice(&0i16.to_le_bytes());
-    opus_head.push(0);
-    write_ebml_binary(&mut track_entry, 0x63A2, &opus_head);
-
-    // Audio settings
-    let mut audio = Vec::new();
-    write_ebml_float(&mut audio, 0xB5, sample_rate);
-    write_ebml_uint(&mut audio, 0x9F, 1);
-
-    write_ebml_id(&mut track_entry, 0xE1);
-    write_ebml_size(&mut track_entry, audio.len() as u64);
-    track_entry.extend_from_slice(&audio);
-
-    write_ebml_id(&mut tracks, 0xAE);
-    write_ebml_size(&mut tracks, track_entry.len() as u64);
-    tracks.extend_from_slice(&track_entry);
-
-    write_ebml_id(&mut segment_content, 0x1654AE6B);
-    write_ebml_size(&mut segment_content, tracks.len() as u64);
-    segment_content.extend_from_slice(&tracks);
-
-    // Write Segment with unknown size
-    write_ebml_id(&mut webm, 0x18538067);
-    webm.extend_from_slice(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-    webm.extend_from_slice(&segment_content);
-
-    (StatusCode::OK, [("content-type", "video/webm")], webm).into_response()
-}
-
-// Segment handler
-#[derive(Deserialize)]
-struct SegmentQuery {
-    #[serde(default)]
-    base: Option<i64>,
-}
-
-async fn segment_handler(
-    State(state): State<StdArc<AppState>>,
-    Path(id): Path<i64>,
-    Query(query): Query<SegmentQuery>,
-) -> impl IntoResponse {
-    // Calculate actual segment ID
-    let actual_id = if let Some(base) = query.base {
-        base + (id - 1)
-    } else {
-        id
-    };
-
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
-        }
-    };
-
-    // Get the segment
-    let segment: Vec<u8> = match conn.query_row(
-        "SELECT audio_data FROM segments WHERE id = ?1",
-        [actual_id],
-        |row| row.get(0),
-    ) {
-        Ok(data) => data,
-        Err(e) => {
-            error!("Failed to query segment {}: {}", actual_id, e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error querying segment {}: {}", actual_id, e),
-            )
-                .into_response()
-        }
-    };
-
-    // Get split_interval and calculate timecode
-    let split_interval: u64 = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'split_interval'",
-            [],
-            |row| {
-                let val: String = row.get(0)?;
-                Ok(val.parse().unwrap_or(1))
-            },
-        )
-        .unwrap_or(1);
-
-    // Calculate timecode relative to the base (session start)
-    // If base is provided, use it; otherwise use global minimum
-    let base_id = if let Some(base) = query.base {
-        base
-    } else {
-        conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0))
-            .unwrap_or(1)
-    };
-
-    let relative_pos = (actual_id - base_id) as u64;
-    let timecode_ms = relative_pos * split_interval * 1000;
-
-    // Build Cluster
-    let mut cluster_content = Vec::new();
-    write_ebml_uint(&mut cluster_content, 0xE7, timecode_ms);
-
-    // Parse and write SimpleBlocks
-    let mut offset = 0;
-    let mut block_time: i16 = 0;
-    while offset + 2 <= segment.len() {
-        let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
-        offset += 2;
-
-        if offset + len > segment.len() {
-            break;
-        }
-
-        let packet = &segment[offset..offset + len];
-        offset += len;
-
-        let mut simple_block = Vec::new();
-        simple_block.push(0x81);
-        simple_block.extend_from_slice(&block_time.to_be_bytes());
-        simple_block.push(0x80);
-        simple_block.extend_from_slice(packet);
-
-        write_ebml_binary(&mut cluster_content, 0xA3, &simple_block);
-
-        block_time += 20;
-    }
-
-    // Write Cluster element
-    let mut webm = Vec::new();
-    write_ebml_id(&mut webm, 0x1F43B675);
-    write_ebml_size(&mut webm, cluster_content.len() as u64);
-    webm.extend_from_slice(&cluster_content);
-
-    (StatusCode::OK, [("content-type", "video/webm")], webm).into_response()
-}
 
 #[derive(Serialize)]
 struct SegmentRange {
@@ -624,18 +268,6 @@ async fn hls_playlist_handler(
         }
     };
 
-    let frame_size: u32 = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'aac_frame_size'",
-        [],
-        |row| row.get::<_, String>(0),
-    ) {
-        Ok(fs) => fs.parse().unwrap_or(1024),
-        Err(e) => {
-            error!("Failed to query aac_frame_size metadata: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
-        }
-    };
-
     // Determine segment range
     let start_id: i64 = params
         .get("start_id")
@@ -658,9 +290,9 @@ async fn hls_playlist_handler(
         }
     };
 
-    // Query segments and calculate durations
+    // Query segments using duration_samples (no need to parse audio_data)
     let mut stmt = match conn
-        .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
+        .prepare("SELECT id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
     {
         Ok(s) => s,
         Err(e) => {
@@ -673,7 +305,7 @@ async fn hls_playlist_handler(
     };
 
     let segments_iter = match stmt.query_map([start_id, end_id], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
     }) {
         Ok(iter) => iter,
         Err(e) => {
@@ -690,7 +322,7 @@ async fn hls_playlist_handler(
     let mut segment_durations = Vec::new();
 
     for segment_result in segments_iter {
-        let (seg_id, audio_data): (i64, Vec<u8>) = match segment_result {
+        let (seg_id, duration_samples): (i64, i64) = match segment_result {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Warning: Failed to fetch segment from database: {}", e);
@@ -698,15 +330,7 @@ async fn hls_playlist_handler(
             },
         };
 
-        let samples = match parse_adts_frames(&audio_data, frame_size) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Warning: Failed to parse ADTS frames for segment {}: {}", seg_id, e);
-                continue;
-            },
-        };
-
-        let duration = samples as f64 / sample_rate as f64;
+        let duration = duration_samples as f64 / sample_rate as f64;
         if duration > max_duration {
             max_duration = duration;
         }
@@ -830,31 +454,6 @@ async fn aac_segment_handler(
         .into_response()
 }
 
-/// Parse Opus packets from audio data and return both packet count and packet data
-/// Opus packets are stored as 2-byte little-endian length followed by packet data
-fn parse_opus_packets(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
-    let mut packets = Vec::new();
-    let mut pos = 0;
-
-    while pos + 2 <= data.len() {
-        // Read 2-byte little-endian length
-        let len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
-        pos += 2;
-
-        if pos + len > data.len() {
-            break;
-        }
-
-        packets.push(data[pos..pos + len].to_vec());
-        pos += len;
-    }
-
-    if packets.is_empty() {
-        return Err("No valid Opus packets found".to_string());
-    }
-
-    Ok(packets)
-}
 
 // HLS playlist handler for Opus format
 async fn opus_hls_playlist_handler(
@@ -886,9 +485,6 @@ async fn opus_hls_playlist_handler(
         }
     };
 
-    // Opus frame size is always 960 samples at 48kHz (20ms)
-    let samples_per_packet = 960u32;
-
     // Determine segment range
     let start_id: i64 = params
         .get("start_id")
@@ -911,9 +507,9 @@ async fn opus_hls_playlist_handler(
         }
     };
 
-    // Query segments and calculate durations
+    // Query segments using duration_samples (no need to parse audio_data)
     let mut stmt = match conn
-        .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
+        .prepare("SELECT id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
     {
         Ok(s) => s,
         Err(e) => {
@@ -926,7 +522,7 @@ async fn opus_hls_playlist_handler(
     };
 
     let segments_iter = match stmt.query_map([start_id, end_id], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
     }) {
         Ok(iter) => iter,
         Err(e) => {
@@ -943,7 +539,7 @@ async fn opus_hls_playlist_handler(
     let mut segment_durations = Vec::new();
 
     for segment_result in segments_iter {
-        let (seg_id, audio_data): (i64, Vec<u8>) = match segment_result {
+        let (seg_id, duration_samples): (i64, i64) = match segment_result {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Warning: Failed to fetch segment from database: {}", e);
@@ -951,16 +547,7 @@ async fn opus_hls_playlist_handler(
             },
         };
 
-        let packets = match parse_opus_packets(&audio_data) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Warning: Failed to parse Opus packets for segment {}: {}", seg_id, e);
-                continue;
-            },
-        };
-
-        // Each Opus packet is 20ms (960 samples at 48kHz)
-        let duration = (packets.len() as f64 * samples_per_packet as f64) / sample_rate as f64;
+        let duration = duration_samples as f64 / sample_rate as f64;
         if duration > max_duration {
             max_duration = duration;
         }

@@ -129,7 +129,8 @@ pub fn init_database_schema(conn: &Connection) -> Result<(), Box<dyn std::error:
             timestamp_ms INTEGER NOT NULL,
             is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,
             audio_data BLOB NOT NULL,
-            section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE
+            section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+            duration_samples INTEGER NOT NULL
         )",
         [],
     )?;

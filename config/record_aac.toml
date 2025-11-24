@@ -5,9 +5,9 @@ api_port = 17000   # Port for the optional API server
 
 # SFTP export configuration (optional)
 # Uncomment the following lines to enable SFTP upload for exported sections
-export_to_sftp = true
+export_to_sftp = false
 # Periodically export unexported sections to SFTP every hour (requires export_to_sftp = true)
-export_to_remote_periodically = true
+export_to_remote_periodically = false
 
 [sftp]
 host = 'localhost'
