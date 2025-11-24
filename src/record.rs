@@ -49,6 +49,168 @@ fn get_backoff_ms(elapsed_secs: u64) -> u64 {
     }
 }
 
+/// Test if a stream URL can be successfully decoded
+/// This connects to the stream, reads a small amount of data synchronously,
+/// and verifies it can be decoded. Runs fully synchronously without spawning threads.
+/// Returns Ok if the stream is decodable, Err otherwise
+fn test_url_decode(url: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("[{}] Testing stream URL: {}", name, url);
+
+    // Create HTTP client with connection timeout
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()?;
+
+    // Connect to the stream
+    let mut response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("[{}] Failed to connect: {}", name, e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("[{}] HTTP error: {}", name, response.status()).into());
+    }
+
+    // Extract content type
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .ok_or(format!("[{}] Missing Content-Type header", name))?
+        .to_str()
+        .map_err(|_| format!("[{}] Invalid Content-Type header encoding", name))?
+        .to_string();
+
+    // Determine codec from content type
+    let codec_hint = match content_type.as_str() {
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/aac" | "audio/aacp" | "audio/x-aac" => "aac",
+        _ => {
+            return Err(format!(
+                "[{}] Unsupported Content-Type: '{}'. Supported types: audio/mpeg, audio/mp3, audio/aac, audio/aacp, audio/x-aac",
+                name, content_type
+            )
+            .into());
+        }
+    };
+
+    println!("[{}] Content-Type: {} (codec: {})", name, content_type, codec_hint);
+
+    // Read a fixed amount of data for testing (200 KB should be enough for several packets)
+    let test_data_size = 200 * 1024; // 200 KB
+    let mut buffer = vec![0u8; test_data_size];
+    let bytes_read = response
+        .read(&mut buffer)
+        .map_err(|e| format!("[{}] Failed to read data: {}", name, e))?;
+
+    if bytes_read == 0 {
+        return Err(format!("[{}] No data received from stream", name).into());
+    }
+
+    buffer.truncate(bytes_read);
+    println!("[{}] Downloaded {} bytes for testing", name, bytes_read);
+
+    // Create a cursor from the buffer for synchronous reading
+    let cursor = std::io::Cursor::new(buffer);
+    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+
+    // Create a hint to help the format registry guess the format
+    let mut hint = Hint::new();
+    hint.with_extension(codec_hint);
+
+    // Use the default options for format reader and metadata
+    let format_opts = FormatOptions::default();
+    let metadata_opts = MetadataOptions::default();
+
+    // Probe the media source
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &format_opts, &metadata_opts)
+        .map_err(|e| format!("[{}] Failed to probe audio format: {}", name, e))?;
+
+    let mut format = probed.format;
+
+    // Find the first audio track
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        .ok_or(format!("[{}] No audio track found", name))?;
+
+    let track_id = track.id;
+    let codec_params = track.codec_params.clone();
+
+    // Create a decoder for the track
+    let decoder_opts = DecoderOptions::default();
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&codec_params, &decoder_opts)
+        .map_err(|e| format!("[{}] Failed to create decoder: {}", name, e))?;
+
+    // Get audio parameters
+    let src_sample_rate = codec_params
+        .sample_rate
+        .ok_or(format!("[{}] Unknown sample rate", name))?;
+    let src_channels = codec_params
+        .channels
+        .ok_or(format!("[{}] Unknown channel count", name))?
+        .count() as u16;
+
+    println!(
+        "[{}] Stream format: {} Hz, {} channels",
+        name, src_sample_rate, src_channels
+    );
+
+    // Try to decode a few packets to ensure decoding works
+    let mut packets_decoded = 0;
+    let target_packets = 5; // Decode 5 packets as a test
+
+    for _ in 0..20 {
+        // Try up to 20 packets to get 5 successful decodes
+        match format.next_packet() {
+            Ok(packet) => {
+                if packet.track_id() != track_id {
+                    continue;
+                }
+
+                match decoder.decode(&packet) {
+                    Ok(_decoded) => {
+                        packets_decoded += 1;
+                        if packets_decoded >= target_packets {
+                            break;
+                        }
+                    }
+                    Err(symphonia::core::errors::Error::DecodeError(e)) => {
+                        eprintln!("[{}] Decode error during test: {}", name, e);
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(format!("[{}] Fatal decode error: {}", name, e).into());
+                    }
+                }
+            }
+            Err(symphonia::core::errors::Error::IoError(e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(e) => {
+                return Err(format!("[{}] Format error during test: {}", name, e).into());
+            }
+        }
+    }
+
+    if packets_decoded == 0 {
+        return Err(format!("[{}] Failed to decode any packets", name).into());
+    }
+
+    println!(
+        "[{}] Successfully decoded {} packets - stream is valid",
+        name, packets_decoded
+    );
+
+    Ok(())
+}
+
 /// Helper to convert query Result to Option, preserving errors other than "no rows"
 /// - QueryReturnedNoRows -> Ok(None) (acceptable - key doesn't exist)
 /// - Other errors -> Err (corruption, locking, table missing, etc.)
@@ -1267,6 +1429,15 @@ pub fn run_multi_session(
         let _ = client.disconnect();
         println!("SFTP connection test: PASSED");
     }
+
+    // Test all stream URLs for decode capability
+    println!("Testing stream URLs for decode capability...");
+    for session_config in &multi_config.sessions {
+        println!("Testing session '{}' URL...", session_config.name);
+        test_url_decode(&session_config.url, &session_config.name)
+            .map_err(|e| format!("URL decode test failed for session '{}': {}", session_config.name, e))?;
+    }
+    println!("All stream URLs tested successfully");
 
     // Extract periodic export flag
     let export_to_remote_periodically = multi_config.export_to_remote_periodically.unwrap_or(false);
