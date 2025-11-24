@@ -170,7 +170,8 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
             .route("/api/format", get(format_handler))
             .route("/api/segments/range", get(segments_range_handler))
             .route("/api/metadata", get(metadata_handler))
-            .route("/api/sessions", get(sessions_handler));
+            .route("/api/sessions", get(sessions_handler))
+            .route("/api/session/{section_id}/latest", get(session_latest_handler));
 
         // Add format-specific routes
         if audio_format == "opus" {
@@ -1108,6 +1109,63 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         serde_json::to_string(&response).unwrap(),
     )
         .into_response()
+}
+
+#[derive(Serialize)]
+struct SessionLatestResponse {
+    section_id: i64,
+    current_end_id: i64,
+    segment_count: i64,
+}
+
+async fn session_latest_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(section_id): Path<i64>,
+) -> impl IntoResponse {
+    let conn = match state.open_readonly(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    // Get the max segment ID for this section
+    let result: Result<(i64, i64), _> = conn.query_row(
+        "SELECT MAX(id), COUNT(id) FROM segments WHERE section_id = ?1",
+        [section_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    );
+
+    match result {
+        Ok((max_id, count)) => {
+            let response = SessionLatestResponse {
+                section_id,
+                current_end_id: max_id,
+                segment_count: count,
+            };
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&response).unwrap(),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("Failed to query latest segment for section {}: {}", section_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+            )
+                .into_response()
+        }
+    }
 }
 
 #[cfg(debug_assertions)]
