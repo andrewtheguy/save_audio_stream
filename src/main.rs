@@ -1,34 +1,7 @@
-mod audio;
-mod config;
-mod constants;
-mod credentials;
-mod db;
-mod fmp4;
-mod record;
-mod schedule;
-mod serve;
-mod serve_record;
-mod sftp;
-mod streaming;
-mod sync;
-mod webm;
-
 use clap::{Parser, Subcommand};
-use config::{ConfigType, MultiSessionConfig, SyncConfig};
-use dashmap::DashMap;
+use save_audio_stream::config::{ConfigType, MultiSessionConfig, SyncConfig};
+use save_audio_stream::{record, serve, sync};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-
-// Define ShowLocks and get_show_lock for binary compilation
-// (same as in lib.rs, needed because modules are compiled as part of binary)
-pub type ShowLocks = Arc<DashMap<String, Arc<Mutex<()>>>>;
-
-pub fn get_show_lock(locks: &ShowLocks, show_name: &str) -> Arc<Mutex<()>> {
-    locks
-        .entry(show_name.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
-}
 
 #[derive(Parser, Debug)]
 #[command(
