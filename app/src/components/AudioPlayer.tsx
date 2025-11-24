@@ -45,6 +45,8 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const hlsRef = useRef<Hls | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const retryCountRef = useRef<number>(0);
+  const savedPositionRef = useRef<number | null>(null);
+  const wasPlayingRef = useRef<boolean>(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -131,17 +133,53 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         // Reset retry count and clear error on successful load
         retryCountRef.current = 0;
         setError(null);
-        // Restore initial playback position if provided
-        if (initialTime !== undefined && audioRef.current) {
+
+        // Restore position: prioritize saved position (from reload) over initialTime (from mount)
+        if (savedPositionRef.current !== null && audioRef.current) {
+          console.log(`Restoring position after reload: ${savedPositionRef.current}, wasPlaying: ${wasPlayingRef.current}`);
+          audioRef.current.currentTime = savedPositionRef.current;
+
+          // Restore play state
+          if (wasPlayingRef.current) {
+            audioRef.current.play().catch((err) => {
+              console.error("Failed to resume playback after reload:", err);
+              setError("Failed to resume playback");
+            });
+          }
+
+          // Clear saved state
+          savedPositionRef.current = null;
+          wasPlayingRef.current = false;
+        } else if (initialTime !== undefined && audioRef.current) {
+          // Initial mount: restore from localStorage
           audioRef.current.currentTime = initialTime;
         }
       });
     } else if (audioRef.current.canPlayType("application/vnd.apple.mpegurl")) {
       // Native HLS support (Safari)
       audioRef.current.src = streamUrl;
-      // Restore initial playback position after metadata loads
+      // Restore playback position after metadata loads
       const handleLoadedMetadata = () => {
-        if (initialTime !== undefined && audioRef.current) {
+        if (!audioRef.current) return;
+
+        // Restore position: prioritize saved position (from reload) over initialTime (from mount)
+        if (savedPositionRef.current !== null) {
+          console.log(`Restoring position after reload (Safari): ${savedPositionRef.current}, wasPlaying: ${wasPlayingRef.current}`);
+          audioRef.current.currentTime = savedPositionRef.current;
+
+          // Restore play state
+          if (wasPlayingRef.current) {
+            audioRef.current.play().catch((err) => {
+              console.error("Failed to resume playback after reload:", err);
+              setError("Failed to resume playback");
+            });
+          }
+
+          // Clear saved state
+          savedPositionRef.current = null;
+          wasPlayingRef.current = false;
+        } else if (initialTime !== undefined) {
+          // Initial mount: restore from localStorage
           audioRef.current.currentTime = initialTime;
         }
       };
@@ -152,6 +190,14 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     }
 
     return () => {
+      // Save current state before cleanup (for reload scenario)
+      // Only save if we're actually playing something (not initial mount)
+      if (audioRef.current && audioRef.current.currentTime > 0) {
+        savedPositionRef.current = audioRef.current.currentTime;
+        wasPlayingRef.current = !audioRef.current.paused;
+        console.log(`Cleanup: saving position ${savedPositionRef.current}, wasPlaying: ${wasPlayingRef.current}`);
+      }
+
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
