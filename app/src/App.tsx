@@ -42,6 +42,7 @@ function App() {
   const [selectedSessionIndex, setSelectedSessionIndex] = useState<number | null>(null);
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
   const [initialTime, setInitialTime] = useState<number | undefined>(undefined);
+  const [savedSectionId, setSavedSectionId] = useState<number | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -70,6 +71,7 @@ function App() {
                 if (sessionIndex !== -1) {
                   setSelectedSessionIndex(sessionIndex);
                   setInitialTime(position);
+                  setSavedSectionId(section_id);
                 }
               }
             } catch (err) {
@@ -180,7 +182,7 @@ function App() {
                         sessionTimestamp={session.timestamp_ms}
                         dbUniqueId={dbUniqueId}
                         sectionId={session.section_id}
-                        initialTime={initialTime}
+                        initialTime={session.section_id === savedSectionId ? initialTime : undefined}
                       />
                     </div>
                   )}

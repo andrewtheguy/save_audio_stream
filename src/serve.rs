@@ -332,6 +332,8 @@ async fn hls_playlist_handler(
     };
 
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
+    playlist.push_str("#EXT-X-PLAYLIST-TYPE:EVENT\n");
+
     let mut max_duration = 0.0f64;
     let mut segment_durations = Vec::new();
 
@@ -361,8 +363,6 @@ async fn hls_playlist_handler(
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
         playlist.push_str(&format!("/aac-segment/{}.aac\n", seg_id));
     }
-
-    playlist.push_str("#EXT-X-ENDLIST\n");
 
     (
         StatusCode::OK,
@@ -549,6 +549,8 @@ async fn opus_hls_playlist_handler(
     };
 
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:7\n");
+    playlist.push_str("#EXT-X-PLAYLIST-TYPE:EVENT\n");
+
     let mut max_duration = 0.0f64;
     let mut segment_durations = Vec::new();
 
@@ -581,8 +583,6 @@ async fn opus_hls_playlist_handler(
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
         playlist.push_str(&format!("/opus-segment/{}.m4s\n", seg_id));
     }
-
-    playlist.push_str("#EXT-X-ENDLIST\n");
 
     (
         StatusCode::OK,
