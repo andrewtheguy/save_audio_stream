@@ -37,7 +37,7 @@ const MAIN_JS: &[u8] = include_bytes!("../app/dist/assets/main.js");
 
 // State for audio serving handlers
 pub struct AppState {
-    pub db_path: String,
+    pub db_path: PathBuf,
     pub audio_format: String,
     pub immutable: bool,
 }
@@ -115,9 +115,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
         .into());
     }
 
-    let db_path = sqlite_file.to_string_lossy().to_string();
-
-    println!("Starting server for: {}", db_path);
+    println!("Starting server for: {}", sqlite_file.display());
     println!("Audio format: {}", audio_format);
     println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
     println!("Endpoints:");
@@ -139,7 +137,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let app_state = StdArc::new(AppState {
-            db_path,
+            db_path: sqlite_file.clone(),
             audio_format: audio_format.clone(),
             immutable,
         });
@@ -249,7 +247,7 @@ async fn mpd_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -370,7 +368,7 @@ async fn init_handler(State(state): State<StdArc<AppState>>) -> impl IntoRespons
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -487,7 +485,7 @@ async fn segment_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -604,7 +602,7 @@ async fn hls_playlist_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -753,7 +751,7 @@ async fn aac_segment_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -866,7 +864,7 @@ async fn opus_hls_playlist_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1043,7 +1041,7 @@ async fn opus_segment_handler(
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1182,7 +1180,7 @@ async fn segments_range_handler(State(state): State<StdArc<AppState>>) -> impl I
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
@@ -1217,7 +1215,7 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
     let conn = match state.open_readonly(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),

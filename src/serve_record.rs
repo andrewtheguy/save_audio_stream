@@ -21,7 +21,7 @@ use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_head
 
 // State for record mode API handlers
 pub struct AppState {
-    pub output_dir: String,
+    pub output_dir: PathBuf,
     pub sftp_config: Option<crate::config::SftpExportConfig>,
     pub credentials: Option<crate::credentials::Credentials>,
     pub show_locks: crate::ShowLocks,
@@ -44,10 +44,8 @@ pub fn serve_for_sync(
     credentials: Option<crate::credentials::Credentials>,
     show_locks: crate::ShowLocks,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let output_dir_str = output_dir.to_string_lossy().to_string();
-
     println!("Starting multi-show API server");
-    println!("Output directory: {}", output_dir_str);
+    println!("Output directory: {}", output_dir.display());
     if sftp_config.is_some() {
         println!("SFTP export: ENABLED");
     } else {
@@ -70,7 +68,7 @@ pub fn serve_for_sync(
         let sftp_config_for_export = sftp_config.clone();
 
         let app_state = StdArc::new(AppState {
-            output_dir: output_dir_str.clone(),
+            output_dir: output_dir.clone(),
             sftp_config,
             credentials: credentials.clone(),
             show_locks: show_locks.clone(),
@@ -81,7 +79,7 @@ pub fn serve_for_sync(
             if let Some(sftp_cfg) = sftp_config_for_export {
                 println!("Periodic remote export: ENABLED (every hour)");
                 spawn_periodic_export_task(
-                    output_dir_str.clone(),
+                    output_dir.clone(),
                     sftp_cfg,
                     session_names,
                     credentials.clone(),
@@ -187,8 +185,7 @@ struct SegmentData {
 
 pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
     // Scan output directory for .sqlite files
-    let output_dir = &state.output_dir;
-    let dir_path = std::path::Path::new(output_dir);
+    let dir_path = &state.output_dir;
 
     if !dir_path.exists() || !dir_path.is_dir() {
         return (
@@ -283,7 +280,7 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
         if let (Some(min_id), Some(max_id)) = (min_id, max_id) {
             shows.push(ShowInfo {
                 name,
-                database_file: path.file_name().unwrap().to_string_lossy().to_string(),
+                database_file: path.file_name().unwrap().to_str().unwrap().to_string(),
                 min_id,
                 max_id,
             });
@@ -298,7 +295,7 @@ pub async fn sync_show_metadata_handler(
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
     // Construct database path
-    let db_path = crate::db::get_db_path(&state.output_dir, &show_name);
+    let db_path = crate::db::get_db_path(state.output_dir.to_str().unwrap(), &show_name);
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
@@ -490,7 +487,7 @@ pub async fn db_sections_handler(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     // Construct database path
-    let db_path = crate::db::get_db_path(&state.output_dir, &name);
+    let db_path = crate::db::get_db_path(state.output_dir.to_str().unwrap(), &name);
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
@@ -551,7 +548,7 @@ pub async fn sync_show_segments_handler(
     Query(query): Query<SyncSegmentsQuery>,
 ) -> impl IntoResponse {
     // Construct database path
-    let db_path = crate::db::get_db_path(&state.output_dir, &show_name);
+    let db_path = crate::db::get_db_path(state.output_dir.to_str().unwrap(), &show_name);
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
@@ -688,8 +685,9 @@ fn upload_to_sftp(
         .map_err(|e| format!("Failed to resolve SFTP credentials: {}", e))?;
 
     let client = SftpClient::connect(&sftp_config)?;
-    let remote_path = std::path::Path::new(&config.remote_dir).join(filename);
-    let remote_path_str = remote_path.to_string_lossy().to_string();
+    // Construct remote path as string (SFTP paths are not local filesystem paths)
+    let remote_path_str = format!("{}/{}", config.remote_dir.trim_end_matches('/'), filename);
+    let remote_path = std::path::Path::new(&remote_path_str);
     let options = UploadOptions::default();
 
     // Upload from memory using streaming
@@ -714,7 +712,7 @@ fn upload_to_sftp(
 /// sections that have not been exported to remote SFTP yet, excluding the pending
 /// (currently recording) section. Only processes databases for the specified session names.
 fn spawn_periodic_export_task(
-    output_dir: String,
+    output_dir: PathBuf,
     sftp_config: crate::config::SftpExportConfig,
     session_names: Vec<String>,
     credentials: Option<crate::credentials::Credentials>,
@@ -726,7 +724,7 @@ fn spawn_periodic_export_task(
 
             // Process each session database
             for show_name in &session_names {
-                let db_path = std::path::Path::new(&output_dir).join(format!("{}.sqlite", show_name));
+                let db_path = output_dir.join(format!("{}.sqlite", show_name));
 
                 // Open database to query for unexported sections
                 let conn = match crate::db::open_database_connection(&db_path) {
@@ -1022,7 +1020,7 @@ fn export_aac_section(
 ///
 /// Returns ExportResponse on success or an error message on failure.
 pub fn export_section(
-    output_dir: &str,
+    output_dir: &std::path::Path,
     show_name: &str,
     section_id: i64,
     sftp_config: Option<&crate::config::SftpExportConfig>,
@@ -1042,17 +1040,16 @@ pub fn export_section(
     // Lock will be held until _lock_file is dropped (when function exits)
 
     // Construct database path
-    let db_path = crate::db::get_db_path(output_dir, show_name);
-    let path = std::path::Path::new(&db_path);
+    let db_path = output_dir.join(format!("{}.sqlite", show_name));
 
-    if !path.exists() {
+    if !db_path.exists() {
         return Err(format!("Database '{}' not found", show_name));
     }
 
     // Open read/write database connection (needed for updating is_exported_to_remote)
-    let conn = crate::db::open_database_connection(path)
+    let conn = crate::db::open_database_connection(&db_path)
         .map_err(|e| {
-            error!("Failed to open database connection at '{}': {}", db_path, e);
+            error!("Failed to open database connection at '{}': {}", db_path.display(), e);
             format!("Failed to open database: {}", e)
         })?;
 
@@ -1093,8 +1090,7 @@ pub fn export_section(
 
         // Construct remote path
         let sftp_cfg = sftp_config.unwrap();
-        let remote_path = std::path::Path::new(&sftp_cfg.remote_dir).join(&filename);
-        let remote_path_str = remote_path.to_string_lossy().to_string();
+        let remote_path_str = format!("{}/{}", sftp_cfg.remote_dir.trim_end_matches('/'), filename);
 
         // Query segments to calculate duration
         let mut stmt = conn.prepare(
