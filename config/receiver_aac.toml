@@ -1,8 +1,8 @@
 # Sync Configuration
 # This config is for syncing shows from a remote recording server to local databases
 
-# Required: Configuration type (must be 'sync')
-config_type = 'sync'
+# Required: Configuration type (must be 'receiver')
+config_type = 'receiver'
 
 # Required: URL of remote recording server
 remote_url = 'http://localhost:17000'
