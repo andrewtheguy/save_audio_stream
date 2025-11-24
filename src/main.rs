@@ -15,9 +15,12 @@ mod webm;
 use chrono::Timelike;
 use clap::{Parser, Subcommand};
 use config::{ConfigType, MultiSessionConfig, SyncConfig};
+use dashmap::DashMap;
 use reqwest::blocking::Client;
+use save_audio_stream::{ShowLocks, get_show_lock};
 use schedule::{parse_time, seconds_until_start, time_to_minutes};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -199,6 +202,11 @@ fn record_multi_session(
     std::fs::create_dir_all(&output_dir_path)?;
     println!("Output directory: {}", output_dir_path.display());
 
+    // Create shared locks for coordinating export and cleanup operations
+    let show_locks: ShowLocks = Arc::new(DashMap::new());
+    let locks_for_server = show_locks.clone();
+    let locks_for_recording = show_locks.clone();
+
     // Start API server first in a separate thread
     println!("Starting API server on port {}", api_port);
 
@@ -210,6 +218,7 @@ fn record_multi_session(
             export_to_remote_periodically,
             session_names,
             credentials,
+            locks_for_server,  // Pass locks to API server
         ) {
             eprintln!("API server failed: {}", e);
             std::process::exit(1);
@@ -281,13 +290,14 @@ fn record_multi_session(
 
         let session_name = session_config.name.clone();
         let session_name_for_handle = session_name.clone();
+        let locks_for_session = locks_for_recording.clone();
 
         let handle = thread::spawn(move || {
             // Supervision loop for this session
             loop {
                 println!("[{}] Starting recording session", session_name_for_handle);
 
-                match record::record(session_config.clone()) {
+                match record::record(session_config.clone(), locks_for_session.clone()) {
                     Ok(_) => {
                         // record() runs indefinitely, should never return Ok
                         eprintln!("[{}] Recording ended unexpectedly", session_name_for_handle);

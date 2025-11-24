@@ -1039,7 +1039,10 @@ fn run_connection_loop(
     Ok(())
 }
 
-pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
+pub fn record(
+    config: SessionConfig,
+    show_locks: crate::ShowLocks,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Setup per-session file logging
     let output_dir = config
         .output_dir
@@ -1163,6 +1166,12 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
             name, config.schedule.record_start
         );
 
+        // Acquire lock before cleanup to prevent concurrent export
+        let show_lock = crate::get_show_lock(&show_locks, &name);
+        println!("[{}] Acquiring cleanup lock...", name);
+        let _cleanup_guard = show_lock.lock().unwrap();  // BLOCKS if export is running
+        println!("[{}] Cleanup lock acquired", name);
+
         // Run cleanup of old sections - recreate connection for cleanup
         let db_path = crate::db::get_db_path(&output_dir, &name);
         if let Ok(cleanup_conn) =
@@ -1172,6 +1181,10 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e);
             }
         }
+
+        // Lock automatically released when _cleanup_guard drops
+        drop(_cleanup_guard);
+        println!("[{}] Cleanup lock released", name);
 
         // Loop and sleep 1 second at a time for more accurate timing
         loop {

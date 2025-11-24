@@ -50,6 +50,7 @@ struct AppState {
     immutable: bool,
     sftp_config: Option<crate::config::SftpExportConfig>,
     credentials: Option<crate::credentials::Credentials>,
+    show_locks: crate::ShowLocks,
 }
 
 impl AppState {
@@ -71,6 +72,7 @@ pub fn serve_for_sync(
     export_to_remote_periodically: bool,
     session_names: Vec<String>,
     credentials: Option<crate::credentials::Credentials>,
+    show_locks: crate::ShowLocks,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output_dir_str = output_dir.to_string_lossy().to_string();
 
@@ -104,6 +106,7 @@ pub fn serve_for_sync(
             immutable: false, // Active recording databases - must not use immutable mode
             sftp_config,
             credentials: credentials.clone(),
+            show_locks: show_locks.clone(),
         });
 
         // Spawn periodic export task if enabled
@@ -115,6 +118,7 @@ pub fn serve_for_sync(
                     sftp_cfg,
                     session_names,
                     credentials.clone(),
+                    show_locks.clone(),
                 );
             } else {
                 println!("Warning: export_to_remote_periodically is enabled but SFTP config is missing");
@@ -254,6 +258,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
             immutable,
             sftp_config: None, // SFTP not supported in serve command
             credentials: None, // Credentials not needed in serve mode
+            show_locks: std::sync::Arc::new(dashmap::DashMap::new()), // Not used in serve mode
         });
 
         let cors = CorsLayer::new()
@@ -1868,6 +1873,7 @@ fn spawn_periodic_export_task(
     sftp_config: crate::config::SftpExportConfig,
     session_names: Vec<String>,
     credentials: Option<crate::credentials::Credentials>,
+    show_locks: crate::ShowLocks,
 ) {
     tokio::task::spawn_blocking(move || {
         loop {
@@ -1946,6 +1952,12 @@ fn spawn_periodic_export_task(
                     );
 
                     for section_id in unexported_sections {
+                        // Acquire lock before export to prevent concurrent cleanup
+                        let show_lock = crate::get_show_lock(&show_locks, show_name);
+                        println!("[{}] Acquiring export lock for section {}...", show_name, section_id);
+                        let _export_guard = show_lock.lock().unwrap();  // BLOCKS if cleanup is running
+                        println!("[{}] Export lock acquired for section {}", show_name, section_id);
+
                         match export_section(
                             &output_dir,
                             show_name,
@@ -1966,6 +1978,10 @@ fn spawn_periodic_export_task(
                                 );
                             }
                         }
+
+                        // Lock automatically released when _export_guard drops
+                        drop(_export_guard);
+                        println!("[{}] Export lock released for section {}", show_name, section_id);
                     }
                 }
             }
@@ -2273,8 +2289,14 @@ async fn export_section_handler(
         }
     };
 
+    // Acquire lock before export to prevent concurrent cleanup
+    let show_lock = crate::get_show_lock(&state.show_locks, &show_name);
+    println!("[{}] Acquiring on-demand export lock for section {}...", show_name, section_id);
+    let _export_guard = show_lock.lock().unwrap();  // BLOCKS if cleanup is running
+    println!("[{}] On-demand export lock acquired for section {}", show_name, section_id);
+
     // Call the export_section function
-    match export_section(
+    let result = match export_section(
         &state.output_dir,
         &show_name,
         section_id,
@@ -2300,7 +2322,13 @@ async fn export_section_handler(
             )
                 .into_response()
         }
-    }
+    };
+
+    // Lock automatically released when _export_guard drops
+    drop(_export_guard);
+    println!("[{}] On-demand export lock released for section {}", show_name, section_id);
+
+    result
 }
 
 async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
