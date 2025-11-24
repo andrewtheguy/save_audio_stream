@@ -123,9 +123,9 @@ fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box
     })?;
 
     // Validate config type
-    if sync_config.config_type != ConfigType::Sync {
+    if sync_config.config_type != ConfigType::Receiver {
         return Err(format!(
-            "Config file '{}' has config_type = {:?}, but 'receiver' command requires config_type = 'sync'",
+            "Config file '{}' has config_type = {:?}, but 'receiver' command requires config_type = 'receiver'",
             config_path.display(),
             sync_config.config_type
         )

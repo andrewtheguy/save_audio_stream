@@ -105,7 +105,7 @@ config_type = 'record'
 
 # Global settings
 output_dir = 'recordings'  # default: 'tmp' (applies to all sessions)
-api_port = 3000            # default: 3000 (API server for all sessions)
+api_port = 17000           # default: 17000 (API server for all sessions)
 
 [[sessions]]
 # Required
@@ -138,8 +138,8 @@ record_end = '20:00'
 
 ```toml
 # Required
-config_type = 'sync'
-remote_url = 'http://remote:3000'  # URL of remote recording server
+config_type = 'receiver'
+remote_url = 'http://remote:17000'  # URL of remote recording server
 local_dir = './synced'              # Local directory for synced databases
 
 # Optional
@@ -164,7 +164,7 @@ sync_interval_seconds = 60  # default: 60 (polling interval for background sync)
 | Option | Description | Default |
 |--------|-------------|---------|
 | `output_dir` | Base output directory for all sessions | tmp |
-| `api_port` | Port for API server serving all sessions | 3000 |
+| `api_port` | Port for API server serving all sessions | 17000 |
 
 **Session Options:**
 
@@ -186,7 +186,7 @@ sync_interval_seconds = 60  # default: 60 (polling interval for background sync)
 | `record_start` | Recording start time in UTC (HH:MM format) | Yes |
 | `record_end` | Recording end time in UTC (HH:MM format) | Yes |
 
-**Note:** The API server always runs in the main thread on the configured `api_port` (default: 3000). It provides synchronization endpoints for all shows being recorded, enabling remote access and database syncing while recording is in progress. The API server is required for sync functionality.
+**Note:** The API server always runs in the main thread on the configured `api_port` (default: 17000). It provides synchronization endpoints for all shows being recorded, enabling remote access and database syncing while recording is in progress. The API server is required for sync functionality.
 
 #### Receiver/Sync Config Options
 
@@ -194,8 +194,8 @@ sync_interval_seconds = 60  # default: 60 (polling interval for background sync)
 
 | Option | Description |
 |--------|-------------|
-| `config_type` | Must be `'sync'` for receiver/sync configurations |
-| `remote_url` | URL of remote recording server (e.g., http://remote:3000) |
+| `config_type` | Must be `'receiver'` for receiver/sync configurations |
+| `remote_url` | URL of remote recording server (e.g., http://remote:17000) |
 | `local_dir` | Local directory for synced databases |
 
 **Optional:**
@@ -216,26 +216,40 @@ save_audio_stream record -c config/sessions.toml
 
 Override global API server port:
 ```bash
-save_audio_stream record -c config/sessions.toml -p 3000
+save_audio_stream record -c config/sessions.toml -p 17000
 ```
 
-### Other Commands
+### Receiver Command (Primary Serving Mode)
 
-**Inspect recorded audio:**
+The receiver command is the primary way to serve and browse recorded audio:
+
+```bash
+save_audio_stream receiver -c config/receiver.toml
+```
+
+**Features:**
+- Web UI for browsing and playing multiple shows
+- Background sync from remote recording server
+- Manual "Sync Now" button for on-demand syncing
+- Configurable sync intervals
+
+**Sync-only mode** (sync without starting server):
+```bash
+save_audio_stream receiver -c config/receiver.toml --sync-only
+```
+
+### Inspect Command (Single Database)
+
+The inspect command is for inspecting individual SQLite database files directly:
+
 ```bash
 save_audio_stream inspect <database.sqlite> [-p PORT]
 ```
 
-**Receive and browse synced shows:**
-```bash
-save_audio_stream receiver -c config/sync.toml
-```
-
-The receiver command:
-- Starts a web server with the same UI as `inspect`
-- Requires selecting a show first (since multiple shows can be synced)
-- Runs background sync continuously at configurable intervals
-- Provides a "Sync Now" button in the UI for manual sync trigger
+**Use cases:**
+- Debugging a specific database file
+- Quick preview of a single recording
+- Testing without a full receiver setup
 
 ## Output
 
@@ -404,16 +418,16 @@ Create a sync config file (e.g., `config/sync.toml`):
 
 **Sync all shows from remote (recommended):**
 ```toml
-config_type = 'sync'
-remote_url = 'http://remote:3000'
+config_type = 'receiver'
+remote_url = 'http://remote:17000'
 local_dir = './synced'
 # shows parameter is omitted - will sync all available shows
 ```
 
 **Or sync specific shows only (whitelist):**
 ```toml
-config_type = 'sync'
-remote_url = 'http://remote:3000'
+config_type = 'receiver'
+remote_url = 'http://remote:17000'
 local_dir = './synced'
 shows = ['myradio']  # or ['show1', 'show2'] for multiple shows
 ```
@@ -447,10 +461,10 @@ The tool includes an HTTP server to stream recorded audio from SQLite databases.
 ### Commands
 
 ```bash
-# Record audio to SQLite database
-save_audio_stream record -c config.toml
+# Primary: Receiver mode - serve multiple synced shows with background sync
+save_audio_stream receiver -c config/receiver.toml
 
-# Inspect audio via HTTP
+# Alternative: Inspect mode - serve a single database file directly
 save_audio_stream inspect <database.sqlite> [-p PORT]
 ```
 
@@ -463,7 +477,7 @@ save_audio_stream inspect <database.sqlite> [-p PORT]
 
 ### Available Endpoints
 
-#### Serve Command Endpoints
+#### Receiver/Inspect Endpoints
 
 **For Opus databases:**
 
@@ -526,7 +540,7 @@ When SFTP export is configured globally, audio sections are streamed directly to
 ```toml
 config_type = 'record'
 output_dir = './tmp/recorded'
-api_port = 3000
+api_port = 17000
 
 # Enable SFTP export (global setting)
 export_to_sftp = true
@@ -569,10 +583,10 @@ password = 'another_password'
 
 ```bash
 # First, get available sections for a show
-curl http://localhost:3000/api/sync/shows/am1430/sections
+curl http://localhost:17000/api/sync/shows/am1430/sections
 
 # Export a specific section (with SFTP configured)
-curl http://localhost:3000/api/sync/shows/am1430/sections/1737550800000000/export
+curl http://localhost:17000/api/sync/shows/am1430/sections/1737550800000000/export
 
 # Response (SFTP upload):
 {
@@ -655,10 +669,10 @@ Run the Vite dev server and Axum server in separate terminals:
 cd app && npm run dev
 
 # Terminal 2: Run the Axum server
-cargo run -- serve database.sqlite -p 3000
+cargo run -- inspect database.sqlite -p 16000
 ```
 
-Visit `http://localhost:3000` to access the web UI. The Axum server proxies frontend requests to Vite, enabling Hot Module Replacement (HMR) for live updates during development.
+Visit `http://localhost:16000` to access the web UI. The Axum server proxies frontend requests to Vite, enabling Hot Module Replacement (HMR) for live updates during development.
 
 **Prerequisites for development:**
 ```bash
@@ -675,7 +689,7 @@ Build and run the production server with embedded assets:
 cargo build --release
 
 # Run the server
-./target/release/save_audio_stream inspect database.sqlite -p 3000
+./target/release/save_audio_stream inspect database.sqlite -p 16000
 ```
 
 In release mode:
@@ -699,7 +713,7 @@ If npm is not available or the `web-frontend` feature is disabled, the frontend 
 
 ### Example Usage
 
-**Start server on default port (3000):**
+**Start server on default port (16000):**
 ```bash
 save_audio_stream inspect ./tmp/myradio.sqlite
 ```
@@ -711,7 +725,7 @@ save_audio_stream inspect ./tmp/myradio.sqlite -p 8080
 
 **Access the web UI:**
 ```
-http://localhost:3000
+http://localhost:16000
 ```
 
 The web UI displays:

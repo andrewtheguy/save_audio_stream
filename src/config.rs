@@ -7,8 +7,8 @@ use std::path::PathBuf;
 pub enum ConfigType {
     /// Recording configuration
     Record,
-    /// Syncing configuration
-    Sync,
+    /// Receiver configuration
+    Receiver,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Deserialize)]

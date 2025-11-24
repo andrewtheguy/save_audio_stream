@@ -46,7 +46,7 @@ save_audio_stream sync \
 
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
-| `--remote-url` | `-r` | URL of remote recording server (e.g., http://remote:3000) | Required |
+| `--remote-url` | `-r` | URL of remote recording server (e.g., http://remote:17000) | Required |
 | `--local-dir` | `-l` | Local base directory for synced databases | Required |
 | `--show` | `-n` | Show name(s) to sync (can specify multiple) | Required |
 | `--chunk-size` | `-s` | Batch size for segment fetching | 100 |
@@ -56,7 +56,7 @@ save_audio_stream sync \
 **Sync a single show:**
 ```bash
 save_audio_stream sync \
-  -r http://remote:3000 \
+  -r http://remote:17000 \
   -l ./synced \
   -n myradio
 ```
@@ -64,7 +64,7 @@ save_audio_stream sync \
 **Sync multiple shows:**
 ```bash
 save_audio_stream sync \
-  -r http://remote:3000 \
+  -r http://remote:17000 \
   -l ./synced \
   -n show1 -n show2 -n show3
 ```
@@ -72,7 +72,7 @@ save_audio_stream sync \
 **Sync with custom chunk size:**
 ```bash
 save_audio_stream sync \
-  -r http://remote:3000 \
+  -r http://remote:17000 \
   -l ./synced \
   -n myradio \
   -s 500
