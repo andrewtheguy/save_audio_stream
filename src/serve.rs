@@ -1991,10 +1991,23 @@ fn spawn_periodic_export_task(
     });
 }
 
+/// Convert a number to URL-safe base64 encoding
+/// Uses A-Za-z0-9-_ character set for compact, URL-safe representation
+/// Strips leading 'A's which represent zero bytes in the encoding
+fn to_url_safe_base64(num: i64) -> String {
+    // Convert i64 to bytes (big-endian for consistent ordering)
+    let bytes = num.to_be_bytes();
+
+    // Encode to URL-safe base64 without padding
+    base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &bytes)
+        .trim_start_matches('A') // Remove leading 'A's (which represent zero bytes)
+        .to_string()
+}
+
 /// Generate standardized filename for exported section
 ///
-/// Format: {show_name}_{yyyymmdd_hhmmss_fff}_{hex_section_id}.{extension}
-/// Example: am1430_20250122_143000_123_62c4b12369400.ogg
+/// Format: {show_name}_{yyyymmdd_hhmmss_fff}_{base64url_section_id}.{extension}
+/// Example: am1430_20250122_143000_123_Y0SxI2lA.ogg
 fn generate_export_filename(
     show_name: &str,
     start_timestamp_ms: i64,
@@ -2011,8 +2024,8 @@ fn generate_export_filename(
         None => format!("{}", start_timestamp_ms),
     };
 
-    // Format section_id as hex
-    let hex_section_id = format!("{:x}", section_id);
+    // Format section_id as URL-safe base64 for compact representation
+    let compact_section_id = to_url_safe_base64(section_id);
 
     // Determine extension
     let extension = match audio_format {
@@ -2021,7 +2034,7 @@ fn generate_export_filename(
         _ => return Err(format!("Unsupported audio format: {}", audio_format)),
     };
 
-    Ok(format!("{}_{}_{}.{}", show_name, formatted_time, hex_section_id, extension))
+    Ok(format!("{}_{}_{}.{}", show_name, formatted_time, compact_section_id, extension))
 }
 
 /// Export a section to file or SFTP with locking
