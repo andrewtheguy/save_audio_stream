@@ -7,6 +7,7 @@ mod fmp4;
 mod record;
 mod schedule;
 mod serve;
+mod serve_record;
 mod sftp;
 mod streaming;
 mod sync;
@@ -211,7 +212,7 @@ fn record_multi_session(
     println!("Starting API server on port {}", api_port);
 
     let api_handle = thread::spawn(move || {
-        if let Err(e) = serve::serve_for_sync(
+        if let Err(e) = serve_record::serve_for_sync(
             output_dir_path,
             api_port,
             sftp_config,

@@ -25,7 +25,8 @@
       "Bash(rclone serve sftp:*)",
       "Bash(rclone version:*)",
       "Bash(chmod:*)",
-      "Bash(./scripts/run-sftp-tests.sh:*)"
+      "Bash(./scripts/run-sftp-tests.sh:*)",
+      "Bash(git restore:*)"
     ],
     "deny": [],
     "ask": []
