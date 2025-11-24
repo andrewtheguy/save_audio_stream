@@ -1877,9 +1877,6 @@ fn spawn_periodic_export_task(
 ) {
     tokio::task::spawn_blocking(move || {
         loop {
-            // Sleep for 1 hour
-            std::thread::sleep(std::time::Duration::from_secs(60 * 60));
-
             println!("Starting periodic export of unexported sections...");
 
             // Process each session database
@@ -1986,8 +1983,10 @@ fn spawn_periodic_export_task(
                 }
             }
 
-            println!("Periodic export completed.");
-            // Lock is released automatically when _lock goes out of scope
+            println!("Periodic export completed. Sleeping for 1 hour until next run...");
+
+            // Sleep for 1 hour before next export cycle
+            std::thread::sleep(std::time::Duration::from_secs(60 * 60));
         }
     });
 }
