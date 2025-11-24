@@ -1297,3 +1297,817 @@ async fn assets_handler_release(Path(_path): Path<String>) -> Response {
 }
 
 // Sync handlers moved to serve_record.rs
+
+// ============================================================================
+// Receiver Mode - Multi-show frontend with background sync
+// ============================================================================
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use axum::routing::post;
+use serde::Deserialize;
+
+/// State for receiver mode (multi-show with background sync)
+pub struct ReceiverAppState {
+    pub local_dir: PathBuf,
+    pub remote_url: String,
+    pub shows_filter: Option<Vec<String>>,
+    pub chunk_size: u64,
+    pub sync_interval_seconds: u64,
+    pub sync_in_progress: StdArc<AtomicBool>,
+}
+
+/// Receiver mode: serve frontend with show selection and background sync
+pub fn receiver_audio(config: crate::config::SyncConfig) -> Result<(), Box<dyn std::error::Error>> {
+    // Create local_dir if it doesn't exist
+    if !config.local_dir.exists() {
+        std::fs::create_dir_all(&config.local_dir)?;
+    }
+
+    let port = config.port;
+    let sync_in_progress = StdArc::new(AtomicBool::new(false));
+
+    println!("Starting receiver server...");
+    println!("Local directory: {}", config.local_dir.display());
+    println!("Remote URL: {}", config.remote_url);
+    println!("Sync interval: {} seconds", config.sync_interval_seconds);
+    println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
+
+    // Clone values for background sync thread
+    let sync_remote_url = config.remote_url.clone();
+    let sync_local_dir = config.local_dir.clone();
+    let sync_shows = config.shows.clone();
+    let sync_chunk_size = config.chunk_size.unwrap_or(100);
+    let sync_interval = config.sync_interval_seconds;
+    let sync_flag = sync_in_progress.clone();
+
+    // Spawn background sync thread with continuous polling
+    std::thread::spawn(move || {
+        loop {
+            if !sync_flag.swap(true, Ordering::SeqCst) {
+                println!("[Sync] Starting background sync...");
+                match crate::sync::sync_shows(
+                    sync_remote_url.clone(),
+                    sync_local_dir.clone(),
+                    sync_shows.clone(),
+                    sync_chunk_size,
+                ) {
+                    Ok(_) => println!("[Sync] Background sync completed successfully"),
+                    Err(e) => eprintln!("[Sync] Background sync error: {}", e),
+                }
+                sync_flag.store(false, Ordering::SeqCst);
+            } else {
+                println!("[Sync] Sync already in progress, skipping this interval");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(sync_interval));
+        }
+    });
+
+    // Create tokio runtime and run server
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let app_state = StdArc::new(ReceiverAppState {
+            local_dir: config.local_dir.clone(),
+            remote_url: config.remote_url.clone(),
+            shows_filter: config.shows.clone(),
+            chunk_size: config.chunk_size.unwrap_or(100),
+            sync_interval_seconds: config.sync_interval_seconds,
+            sync_in_progress,
+        });
+
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
+
+        // API routes for receiver mode
+        let api_routes = Router::new()
+            // Show listing and selection
+            .route("/api/shows", get(receiver_shows_handler))
+            .route("/api/mode", get(receiver_mode_handler))
+            // Per-show routes
+            .route("/api/show/{show_name}/format", get(receiver_show_format_handler))
+            .route("/api/show/{show_name}/sessions", get(receiver_show_sessions_handler))
+            .route("/api/show/{show_name}/metadata", get(receiver_show_metadata_handler))
+            .route("/api/show/{show_name}/segments/range", get(receiver_show_segments_range_handler))
+            // HLS routes for selected show
+            .route("/show/{show_name}/opus-playlist.m3u8", get(receiver_opus_playlist_handler))
+            .route("/show/{show_name}/opus-segment/{filename}", get(receiver_opus_segment_handler))
+            .route("/show/{show_name}/playlist.m3u8", get(receiver_aac_playlist_handler))
+            .route("/show/{show_name}/aac-segment/{filename}", get(receiver_aac_segment_handler))
+            // Sync control
+            .route("/api/sync", post(receiver_trigger_sync_handler))
+            .route("/api/sync/status", get(receiver_sync_status_handler));
+
+        #[cfg(debug_assertions)]
+        let app = api_routes
+            .route("/", get(index_handler))
+            .route("/assets/{*path}", get(vite_assets_handler))
+            .route("/src/{*path}", get(vite_src_handler))
+            .route("/@vite/client", get(vite_client_handler))
+            .route("/@react-refresh", get(vite_react_refresh_handler))
+            .route("/@id/{*path}", get(vite_id_handler))
+            .route("/node_modules/{*path}", get(vite_node_modules_handler))
+            .layer(cors)
+            .with_state(app_state);
+
+        #[cfg(not(debug_assertions))]
+        let app = api_routes
+            .route("/", get(receiver_index_handler_release))
+            .route("/assets/{*path}", get(receiver_assets_handler_release))
+            .layer(cors)
+            .with_state(app_state);
+
+        let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port))
+            .await
+            .map_err(|e| format!("Failed to bind to port {}: {}", port, e))?;
+        axum::serve(listener, app)
+            .await
+            .map_err(|e| format!("Server error: {}", e))?;
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+}
+
+// ============================================================================
+// Receiver Mode Handlers
+// ============================================================================
+
+#[derive(Serialize)]
+struct ReceiverShowInfo {
+    name: String,
+    audio_format: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ReceiverShowsResponse {
+    shows: Vec<ReceiverShowInfo>,
+}
+
+#[derive(Serialize)]
+struct ReceiverModeResponse {
+    mode: String,
+}
+
+async fn receiver_mode_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&ReceiverModeResponse {
+            mode: "receiver".to_string(),
+        })
+        .unwrap(),
+    )
+}
+
+async fn receiver_shows_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+) -> impl IntoResponse {
+    // Scan local_dir for .sqlite files
+    let mut shows = Vec::new();
+
+    let entries = match std::fs::read_dir(&state.local_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            error!("Failed to read local directory: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&serde_json::json!({"error": format!("Failed to read directory: {}", e)})).unwrap(),
+            ).into_response();
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map_or(false, |ext| ext == "sqlite") {
+            let show_name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Filter by shows_filter if present
+            if let Some(ref filter) = state.shows_filter {
+                if !filter.contains(&show_name) {
+                    continue;
+                }
+            }
+
+            // Try to get audio format from database
+            let audio_format = if let Ok(conn) = crate::db::open_readonly_connection(&path) {
+                conn.query_row(
+                    "SELECT value FROM metadata WHERE key = 'audio_format'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok()
+            } else {
+                None
+            };
+
+            shows.push(ReceiverShowInfo {
+                name: show_name,
+                audio_format,
+            });
+        }
+    }
+
+    // Sort shows by name
+    shows.sort_by(|a, b| a.name.cmp(&b.name));
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&ReceiverShowsResponse { shows }).unwrap(),
+    )
+        .into_response()
+}
+
+fn get_show_db_path(state: &ReceiverAppState, show_name: &str) -> PathBuf {
+    state.local_dir.join(format!("{}.sqlite", show_name))
+}
+
+async fn receiver_show_format_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+    Path(show_name): Path<String>,
+) -> impl IntoResponse {
+    let db_path = get_show_db_path(&state, &show_name);
+
+    if !db_path.exists() {
+        return (StatusCode::NOT_FOUND, "Show not found").into_response();
+    }
+
+    let conn = match crate::db::open_readonly_connection(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to open database for show '{}': {}", show_name, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
+    };
+
+    let audio_format: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'audio_format'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to query audio_format for show '{}': {}", show_name, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&FormatResponse { format: audio_format }).unwrap(),
+    )
+        .into_response()
+}
+
+async fn receiver_show_sessions_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+    Path(show_name): Path<String>,
+) -> impl IntoResponse {
+    let db_path = get_show_db_path(&state, &show_name);
+
+    if !db_path.exists() {
+        return (StatusCode::NOT_FOUND, "Show not found").into_response();
+    }
+
+    let conn = match crate::db::open_readonly_connection(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to open database for show '{}': {}", show_name, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
+    };
+
+    // Get show name from metadata
+    let name: String = match conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'name'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            error!("Failed to query name metadata: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
+    };
+
+    // Get split interval
+    let split_interval: f64 = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'split_interval'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(10.0))
+            },
+        )
+        .unwrap_or(10.0);
+
+    // Get all sections with their start id and timestamp
+    let mut stmt = match conn.prepare(
+        "SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id
+         FROM sections s
+         JOIN segments seg ON seg.section_id = s.id
+         GROUP BY s.id
+         ORDER BY s.id",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response();
+        }
+    };
+
+    let boundaries: Vec<(i64, i64, i64)> =
+        match stmt.query_map([], |row| Ok((row.get(0)?, row.get(2)?, row.get(1)?))) {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response();
+            }
+        };
+
+    if boundaries.is_empty() {
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::to_string(&SessionsResponse { name, sessions: vec![] }).unwrap(),
+        ).into_response();
+    }
+
+    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+        Ok(id) => id,
+        Err(e) => {
+            error!("Failed to query max segment ID: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
+    };
+
+    let mut sessions = Vec::new();
+    for i in 0..boundaries.len() {
+        let (section_id, start_id, timestamp_ms) = boundaries[i];
+        let end_id = if i + 1 < boundaries.len() {
+            boundaries[i + 1].1 - 1
+        } else {
+            max_id
+        };
+
+        let segment_count = (end_id - start_id + 1) as f64;
+        let duration_seconds = segment_count * split_interval;
+
+        sessions.push(SessionInfo {
+            section_id,
+            start_id,
+            end_id,
+            timestamp_ms,
+            duration_seconds,
+        });
+    }
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&SessionsResponse { name, sessions }).unwrap(),
+    )
+        .into_response()
+}
+
+async fn receiver_show_metadata_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+    Path(show_name): Path<String>,
+) -> impl IntoResponse {
+    let db_path = get_show_db_path(&state, &show_name);
+
+    if !db_path.exists() {
+        return (StatusCode::NOT_FOUND, "Show not found").into_response();
+    }
+
+    let conn = match crate::db::open_readonly_connection(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to open database for show '{}': {}", show_name, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
+    };
+
+    // Query all metadata fields
+    let unique_id: String = conn.query_row("SELECT value FROM metadata WHERE key = 'unique_id'", [], |row| row.get(0)).unwrap_or_default();
+    let name: String = conn.query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| row.get(0)).unwrap_or_default();
+    let audio_format: String = conn.query_row("SELECT value FROM metadata WHERE key = 'audio_format'", [], |row| row.get(0)).unwrap_or_default();
+    let split_interval: String = conn.query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| row.get(0)).unwrap_or_default();
+    let bitrate: String = conn.query_row("SELECT value FROM metadata WHERE key = 'bitrate'", [], |row| row.get(0)).unwrap_or_default();
+    let sample_rate: String = conn.query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| row.get(0)).unwrap_or_default();
+    let version: String = conn.query_row("SELECT value FROM metadata WHERE key = 'version'", [], |row| row.get(0)).unwrap_or_default();
+
+    let (min_id, max_id): (i64, i64) = conn
+        .query_row("SELECT MIN(id), MAX(id) FROM segments", [], |row| Ok((row.get(0).unwrap_or(0), row.get(1).unwrap_or(0))))
+        .unwrap_or((0, 0));
+
+    let metadata = Metadata {
+        unique_id,
+        name,
+        audio_format,
+        split_interval,
+        bitrate,
+        sample_rate,
+        version,
+        min_id,
+        max_id,
+    };
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&metadata).unwrap(),
+    )
+        .into_response()
+}
+
+async fn receiver_show_segments_range_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+    Path(show_name): Path<String>,
+) -> impl IntoResponse {
+    let db_path = get_show_db_path(&state, &show_name);
+
+    if !db_path.exists() {
+        return (StatusCode::NOT_FOUND, "Show not found").into_response();
+    }
+
+    let conn = match crate::db::open_readonly_connection(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to open database for show '{}': {}", show_name, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
+    };
+
+    let min_id: Result<i64, _> = conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0));
+    let max_id: Result<i64, _> = conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0));
+
+    match (min_id, max_id) {
+        (Ok(min), Ok(max)) => {
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&SegmentRange { start_id: min, end_id: max }).unwrap(),
+            )
+                .into_response()
+        }
+        _ => (StatusCode::NOT_FOUND, "No segments found").into_response(),
+    }
+}
+
+// HLS handlers for receiver mode
+
+#[derive(Deserialize)]
+struct ReceiverPlaylistParams {
+    start_id: Option<i64>,
+    end_id: Option<i64>,
+}
+
+async fn receiver_opus_playlist_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+    Path(show_name): Path<String>,
+    Query(params): Query<ReceiverPlaylistParams>,
+) -> impl IntoResponse {
+    let db_path = get_show_db_path(&state, &show_name);
+
+    if !db_path.exists() {
+        return (StatusCode::NOT_FOUND, "Show not found").into_response();
+    }
+
+    let conn = match crate::db::open_readonly_connection(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to open database for show '{}': {}", show_name, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+        }
+    };
+
+    let sample_rate: u32 = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| row.get::<_, String>(0))
+        .map(|s| s.parse().unwrap_or(48000))
+        .unwrap_or(48000);
+
+    let start_id = params.start_id.unwrap_or(1);
+    let end_id = params.end_id.unwrap_or_else(|| {
+        conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)).unwrap_or(i64::MAX)
+    });
+
+    let mut stmt = match conn.prepare("SELECT id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
+    };
+
+    let segments: Vec<(i64, i64)> = match stmt.query_map([start_id, end_id], |row| Ok((row.get(0)?, row.get(1)?))) {
+        Ok(iter) => iter.filter_map(Result::ok).collect(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
+    };
+
+    let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:7\n");
+    let max_duration: f64 = segments.iter().map(|(_, d)| *d as f64 / sample_rate as f64).fold(0.0, f64::max);
+
+    playlist.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", start_id));
+    playlist.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
+    playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
+    playlist.push_str(&format!("#EXT-X-MAP:URI=\"/show/{}/opus-segment/init.mp4\"\n", show_name));
+
+    for (seg_id, duration_samples) in segments {
+        let duration = duration_samples as f64 / sample_rate as f64;
+        playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
+        playlist.push_str(&format!("/show/{}/opus-segment/{}.m4s\n", show_name, seg_id));
+    }
+
+    playlist.push_str("#EXT-X-ENDLIST\n");
+
+    (StatusCode::OK, [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")], playlist).into_response()
+}
+
+async fn receiver_opus_segment_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+    Path((show_name, filename)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let db_path = get_show_db_path(&state, &show_name);
+
+    if !db_path.exists() {
+        return (StatusCode::NOT_FOUND, "Show not found").into_response();
+    }
+
+    // Handle init segment
+    if filename == "init.mp4" {
+        let init_segment = match generate_init_segment(48000, 1, 1, 48000) {
+            Ok(data) => data,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate init segment: {}", e)).into_response(),
+        };
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
+             (header::CONTENT_LENGTH, HeaderValue::from_str(&init_segment.len().to_string()).unwrap())],
+            init_segment,
+        ).into_response();
+    }
+
+    let seg_id: i64 = match filename.strip_suffix(".m4s").and_then(|s| s.parse().ok()) {
+        Some(id) => id,
+        None => return (StatusCode::BAD_REQUEST, "Invalid segment filename").into_response(),
+    };
+
+    let conn = match crate::db::open_readonly_connection(&db_path) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+    };
+
+    let audio_data: Vec<u8> = match conn.query_row("SELECT audio_data FROM segments WHERE id = ?1", [seg_id], |row| row.get(0)) {
+        Ok(data) => data,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+    };
+
+    let opus_packets = match parse_opus_packets(&audio_data) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to parse Opus packets: {}", e)).into_response(),
+    };
+
+    let base_media_decode_time = ((seg_id - 1) as u64) * (opus_packets.len() as u64 * 960);
+    let media_segment = match generate_media_segment(seg_id as u32, 1, base_media_decode_time, &opus_packets, 48000, 960) {
+        Ok(data) => data,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate media segment: {}", e)).into_response(),
+    };
+
+    let total_len = media_segment.len() as u64;
+
+    // Handle Range requests
+    if let Some(range_header) = headers.get(header::RANGE) {
+        if let Ok(range_str) = range_header.to_str() {
+            if let Some(range) = range_str.strip_prefix("bytes=") {
+                let parts: Vec<&str> = range.split('-').collect();
+                if parts.len() == 2 {
+                    let start: u64 = parts[0].parse().unwrap_or(0);
+                    let end: u64 = if parts[1].is_empty() { total_len - 1 } else { parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1) };
+                    if start < total_len {
+                        let range_data = media_segment[start as usize..=(end as usize)].to_vec();
+                        return (
+                            StatusCode::PARTIAL_CONTENT,
+                            [(header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
+                             (header::CONTENT_RANGE, HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len)).unwrap()),
+                             (header::CONTENT_LENGTH, HeaderValue::from_str(&(end - start + 1).to_string()).unwrap())],
+                            range_data,
+                        ).into_response();
+                    }
+                }
+            }
+        }
+    }
+
+    (StatusCode::OK, [(header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")), (header::CONTENT_LENGTH, HeaderValue::from_str(&total_len.to_string()).unwrap())], media_segment).into_response()
+}
+
+async fn receiver_aac_playlist_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+    Path(show_name): Path<String>,
+    Query(params): Query<ReceiverPlaylistParams>,
+) -> impl IntoResponse {
+    let db_path = get_show_db_path(&state, &show_name);
+
+    if !db_path.exists() {
+        return (StatusCode::NOT_FOUND, "Show not found").into_response();
+    }
+
+    let conn = match crate::db::open_readonly_connection(&db_path) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+    };
+
+    let sample_rate: u32 = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| row.get::<_, String>(0))
+        .map(|s| s.parse().unwrap_or(16000))
+        .unwrap_or(16000);
+
+    let start_id = params.start_id.unwrap_or(1);
+    let end_id = params.end_id.unwrap_or_else(|| {
+        conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)).unwrap_or(i64::MAX)
+    });
+
+    let mut stmt = match conn.prepare("SELECT id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
+    };
+
+    let segments: Vec<(i64, i64)> = match stmt.query_map([start_id, end_id], |row| Ok((row.get(0)?, row.get(1)?))) {
+        Ok(iter) => iter.filter_map(Result::ok).collect(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
+    };
+
+    let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
+    let max_duration: f64 = segments.iter().map(|(_, d)| *d as f64 / sample_rate as f64).fold(0.0, f64::max);
+
+    playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
+
+    for (seg_id, duration_samples) in segments {
+        let duration = duration_samples as f64 / sample_rate as f64;
+        playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
+        playlist.push_str(&format!("/show/{}/aac-segment/{}.aac\n", show_name, seg_id));
+    }
+
+    playlist.push_str("#EXT-X-ENDLIST\n");
+
+    (StatusCode::OK, [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")], playlist).into_response()
+}
+
+async fn receiver_aac_segment_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+    Path((show_name, filename)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let db_path = get_show_db_path(&state, &show_name);
+
+    if !db_path.exists() {
+        return (StatusCode::NOT_FOUND, "Show not found").into_response();
+    }
+
+    let seg_id: i64 = match filename.strip_suffix(".aac").and_then(|s| s.parse().ok()) {
+        Some(id) => id,
+        None => return (StatusCode::BAD_REQUEST, "Invalid segment filename").into_response(),
+    };
+
+    let conn = match crate::db::open_readonly_connection(&db_path) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+    };
+
+    let audio_data: Vec<u8> = match conn.query_row("SELECT audio_data FROM segments WHERE id = ?1", [seg_id], |row| row.get(0)) {
+        Ok(data) => data,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+    };
+
+    let total_len = audio_data.len() as u64;
+
+    // Handle Range requests
+    if let Some(range_header) = headers.get(header::RANGE) {
+        if let Ok(range_str) = range_header.to_str() {
+            if let Some(range) = range_str.strip_prefix("bytes=") {
+                let parts: Vec<&str> = range.split('-').collect();
+                if parts.len() == 2 {
+                    let start: u64 = parts[0].parse().unwrap_or(0);
+                    let end: u64 = if parts[1].is_empty() { total_len - 1 } else { parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1) };
+                    if start < total_len {
+                        let range_data = audio_data[start as usize..=(end as usize)].to_vec();
+                        return (
+                            StatusCode::PARTIAL_CONTENT,
+                            [(header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
+                             (header::CONTENT_RANGE, HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len)).unwrap()),
+                             (header::CONTENT_LENGTH, HeaderValue::from_str(&(end - start + 1).to_string()).unwrap())],
+                            range_data,
+                        ).into_response();
+                    }
+                }
+            }
+        }
+    }
+
+    (StatusCode::OK, [(header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")), (header::CONTENT_LENGTH, HeaderValue::from_str(&total_len.to_string()).unwrap())], audio_data).into_response()
+}
+
+// Sync control handlers
+
+#[derive(Serialize)]
+struct SyncStatusResponse {
+    in_progress: bool,
+}
+
+async fn receiver_sync_status_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&SyncStatusResponse {
+            in_progress: state.sync_in_progress.load(Ordering::SeqCst),
+        })
+        .unwrap(),
+    )
+}
+
+#[derive(Serialize)]
+struct SyncTriggerResponse {
+    message: String,
+    already_in_progress: bool,
+}
+
+async fn receiver_trigger_sync_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+) -> impl IntoResponse {
+    if state.sync_in_progress.load(Ordering::SeqCst) {
+        return (
+            StatusCode::CONFLICT,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::to_string(&SyncTriggerResponse {
+                message: "Sync already in progress".to_string(),
+                already_in_progress: true,
+            })
+            .unwrap(),
+        )
+            .into_response();
+    }
+
+    // Spawn a new sync in a separate thread
+    let remote_url = state.remote_url.clone();
+    let local_dir = state.local_dir.clone();
+    let shows = state.shows_filter.clone();
+    let chunk_size = state.chunk_size;
+    let sync_flag = state.sync_in_progress.clone();
+
+    std::thread::spawn(move || {
+        sync_flag.store(true, Ordering::SeqCst);
+        println!("[Sync] Manual sync triggered...");
+        match crate::sync::sync_shows(remote_url, local_dir, shows, chunk_size) {
+            Ok(_) => println!("[Sync] Manual sync completed successfully"),
+            Err(e) => eprintln!("[Sync] Manual sync error: {}", e),
+        }
+        sync_flag.store(false, Ordering::SeqCst);
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&SyncTriggerResponse {
+            message: "Sync started".to_string(),
+            already_in_progress: false,
+        })
+        .unwrap(),
+    )
+        .into_response()
+}
+
+// Release mode handlers for receiver (reuse the same embedded assets)
+#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+async fn receiver_index_handler_release() -> Response {
+    let mut response = Response::new(Body::from(INDEX_HTML));
+    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+    response
+}
+
+#[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
+async fn receiver_index_handler_release() -> Response {
+    (StatusCode::NOT_FOUND, "Web frontend not available in this build").into_response()
+}
+
+#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+async fn receiver_assets_handler_release(Path(path): Path<String>) -> Response {
+    let (content, mime_type): (&[u8], &str) = match path.as_str() {
+        "style.css" => (STYLE_CSS, "text/css"),
+        "main.js" => (MAIN_JS, "application/javascript"),
+        _ => return (StatusCode::NOT_FOUND, "Asset not found").into_response(),
+    };
+    let mut response = Response::new(Body::from(content));
+    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
+    response
+}
+
+#[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
+async fn receiver_assets_handler_release(Path(_path): Path<String>) -> Response {
+    (StatusCode::NOT_FOUND, "Web frontend not available in this build").into_response()
+}

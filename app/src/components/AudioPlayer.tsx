@@ -9,6 +9,7 @@ interface AudioPlayerProps {
   dbUniqueId: string;
   sectionId: number;
   initialTime?: number;
+  showName?: string | null;
 }
 
 function formatTime(seconds: number): string {
@@ -40,7 +41,7 @@ function formatAbsoluteTime(timestampMs: number, offsetSeconds: number): string 
   }
 }
 
-export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime }: AudioPlayerProps) {
+export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime, showName }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const saveTimerRef = useRef<number | null>(null);
@@ -69,10 +70,12 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     }
   };
 
+  // Construct stream URL based on whether we're in receiver mode (showName provided) or inspect mode
+  const basePath = showName ? `/show/${showName}` : "";
   const streamUrl =
     format === "aac"
-      ? `/playlist.m3u8?start_id=${startId}&end_id=${endId}`
-      : `/opus-playlist.m3u8?start_id=${startId}&end_id=${endId}`;
+      ? `${basePath}/playlist.m3u8?start_id=${startId}&end_id=${endId}`
+      : `${basePath}/opus-playlist.m3u8?start_id=${startId}&end_id=${endId}`;
 
   useEffect(() => {
     if (!audioRef.current) return;
@@ -203,7 +206,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         hlsRef.current = null;
       }
     };
-  }, [format, streamUrl]);
+  }, [format, streamUrl, showName]);
 
   useEffect(() => {
     const audio = audioRef.current;

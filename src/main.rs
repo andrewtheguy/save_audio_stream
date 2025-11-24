@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use save_audio_stream::config::{ConfigType, MultiSessionConfig, SyncConfig};
-use save_audio_stream::{record, serve, sync};
+use save_audio_stream::{record, serve};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -43,9 +43,9 @@ enum Command {
         #[arg(long, default_value = "false")]
         immutable: bool,
     },
-    /// Sync show(s) from remote recording server to local database
-    Sync {
-        /// Path to sync config file (TOML format)
+    /// Receive and browse synced shows from remote server
+    Receiver {
+        /// Path to receiver config file (TOML format, same as sync config)
         #[arg(short, long)]
         config: PathBuf,
     },
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
         Command::Record { config, port } => record_multi_session(config, port),
         Command::Inspect { sqlite_file, port, immutable } => serve::inspect_audio(sqlite_file, port, immutable),
-        Command::Sync { config } => sync_from_config(config),
+        Command::Receiver { config } => receiver_from_config(config),
     }
 }
 
@@ -101,8 +101,8 @@ fn record_multi_session(
     record::run_multi_session(multi_config, port_override)
 }
 
-fn sync_from_config(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    // Load sync config file
+fn receiver_from_config(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    // Load receiver/sync config file
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
             "Failed to read config file '{}': {}",
@@ -121,20 +121,13 @@ fn sync_from_config(config_path: PathBuf) -> Result<(), Box<dyn std::error::Erro
     // Validate config type
     if sync_config.config_type != ConfigType::Sync {
         return Err(format!(
-            "Config file '{}' has config_type = {:?}, but 'sync' command requires config_type = 'sync'",
+            "Config file '{}' has config_type = {:?}, but 'receiver' command requires config_type = 'sync'",
             config_path.display(),
             sync_config.config_type
         )
         .into());
     }
 
-    // Call sync function with config values
-    let chunk_size = sync_config.chunk_size.unwrap_or(100);
-
-    sync::sync_shows(
-        sync_config.remote_url,
-        sync_config.local_dir,
-        sync_config.shows,
-        chunk_size,
-    )
+    // Call receiver function which starts the server and background sync
+    serve::receiver_audio(sync_config)
 }

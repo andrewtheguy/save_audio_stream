@@ -134,7 +134,7 @@ record_start = '18:00'
 record_end = '20:00'
 ```
 
-#### Sync Config
+#### Receiver/Sync Config
 
 ```toml
 # Required
@@ -145,6 +145,8 @@ local_dir = './synced'              # Local directory for synced databases
 # Optional
 shows = ['show1', 'show2']  # Show names to sync (omit to sync all shows from remote)
 chunk_size = 100            # default: 100 (batch size for fetching chunks)
+port = 18000                # default: 18000 (HTTP server port for web UI)
+sync_interval_seconds = 60  # default: 60 (polling interval for background sync)
 ```
 
 ### Config Options
@@ -186,13 +188,13 @@ chunk_size = 100            # default: 100 (batch size for fetching chunks)
 
 **Note:** The API server always runs in the main thread on the configured `api_port` (default: 3000). It provides synchronization endpoints for all shows being recorded, enabling remote access and database syncing while recording is in progress. The API server is required for sync functionality.
 
-#### Sync Config Options
+#### Receiver/Sync Config Options
 
 **Required:**
 
 | Option | Description |
 |--------|-------------|
-| `config_type` | Must be `'sync'` for sync configurations |
+| `config_type` | Must be `'sync'` for receiver/sync configurations |
 | `remote_url` | URL of remote recording server (e.g., http://remote:3000) |
 | `local_dir` | Local directory for synced databases |
 
@@ -202,6 +204,8 @@ chunk_size = 100            # default: 100 (batch size for fetching chunks)
 |--------|-------------|---------|
 | `shows` | Array of show names to sync (whitelist) | All shows from remote |
 | `chunk_size` | Batch size for fetching chunks | 100 |
+| `port` | HTTP server port for web UI | 18000 |
+| `sync_interval_seconds` | Polling interval for background sync | 60 |
 
 ### Examples
 
@@ -222,10 +226,16 @@ save_audio_stream record -c config/sessions.toml -p 3000
 save_audio_stream inspect <database.sqlite> [-p PORT]
 ```
 
-**Sync from remote server:**
+**Receive and browse synced shows:**
 ```bash
-save_audio_stream sync -c config/sync.toml
+save_audio_stream receiver -c config/sync.toml
 ```
+
+The receiver command:
+- Starts a web server with the same UI as `inspect`
+- Requires selecting a show first (since multiple shows can be synced)
+- Runs background sync continuously at configurable intervals
+- Provides a "Sync Now" button in the UI for manual sync trigger
 
 ## Output
 
@@ -408,13 +418,16 @@ local_dir = './synced'
 shows = ['myradio']  # or ['show1', 'show2'] for multiple shows
 ```
 
-Run the sync command:
+Run the receiver command:
 
 ```bash
-save_audio_stream sync -c config/sync.toml
+save_audio_stream receiver -c config/sync.toml
 ```
 
 **Key Features:**
+- **Web UI with show selection**: Browse and play synced shows through a web interface
+- **Background continuous sync**: Automatic polling at configurable intervals
+- **Manual sync trigger**: "Sync Now" button in UI for on-demand syncing
 - Resumable sync with automatic checkpoint tracking
 - Database protection with `is_recipient` flag prevents recording to sync targets
 - Sequential processing with fail-fast error handling

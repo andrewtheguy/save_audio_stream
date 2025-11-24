@@ -80,7 +80,15 @@ pub struct SftpExportConfig {
     pub remote_dir: String,
 }
 
-/// Sync configuration file structure
+fn default_receiver_port() -> u16 {
+    18000
+}
+
+fn default_sync_interval() -> u64 {
+    60
+}
+
+/// Sync configuration file structure (used by receiver command)
 #[derive(Debug, Deserialize)]
 pub struct SyncConfig {
     /// Configuration type (must be "sync")
@@ -93,6 +101,12 @@ pub struct SyncConfig {
     pub shows: Option<Vec<String>>,
     /// Chunk size for batch fetching (default: 100)
     pub chunk_size: Option<u64>,
+    /// Port for the receiver HTTP server (default: 18000)
+    #[serde(default = "default_receiver_port")]
+    pub port: u16,
+    /// Interval in seconds between sync polling (default: 60)
+    #[serde(default = "default_sync_interval")]
+    pub sync_interval_seconds: u64,
 }
 
 /// Single session configuration
