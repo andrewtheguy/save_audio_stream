@@ -311,14 +311,19 @@ function ShowDetail({
         </div>
       )}
 
-      {newDataAvailable && (
-        <div className="new-data-banner" onClick={handleReloadSessions}>
-          New data available. Click to reload.
-        </div>
-      )}
-
       <div className="sessions-container">
         <h2>Recording Sessions</h2>
+        <div className="new-data-banner-container">
+          {newDataAvailable ? (
+            <div className="new-data-banner">
+              New data available. Click "Reload Sessions" to refresh.
+            </div>
+          ) : (
+            <div className="new-data-banner default">
+              Up to date
+            </div>
+          )}
+        </div>
         {data.sessions.length === 0 ? (
           <p>No recording sessions found.</p>
         ) : (
