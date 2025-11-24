@@ -1,5 +1,12 @@
+# Deno stage
+FROM denoland/deno:2.5.6 AS deno
+
 # Build stage
 FROM rust:1.91-slim-trixie AS builder
+ARG TARGETARCH
+
+# Copy Deno from official image
+COPY --from=deno /usr/bin/deno /usr/local/bin/deno
 
 # Enable contrib and non-free repositories for fdk-aac
 RUN echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/debian.sources.list
@@ -7,18 +14,11 @@ RUN echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    curl \
-    unzip \
     libfdk-aac-dev \
     libopus-dev \
     libssl-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Deno
-RUN curl -fsSL https://deno.land/install.sh | sh
-ENV DENO_INSTALL="/root/.deno"
-ENV PATH="$DENO_INSTALL/bin:$PATH"
 
 # Set working directory
 WORKDIR /build
@@ -26,9 +26,9 @@ WORKDIR /build
 # Copy source code
 COPY . .
 
-# Build the release binary with cache mounts
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
+# Build the release binary with architecture-specific cache mounts
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-${TARGETARCH} \
+    --mount=type=cache,target=/build/target,id=cargo-target-${TARGETARCH} \
     cargo build --release && \
     cp target/release/save_audio_stream /save_audio_stream
 
