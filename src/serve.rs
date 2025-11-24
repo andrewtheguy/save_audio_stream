@@ -2290,14 +2290,14 @@ async fn export_section_handler(
         }
     };
 
-    // Get section info
-    let section_info: Result<(i64, i64), _> = conn.query_row(
-        "SELECT id, start_timestamp_ms FROM sections WHERE id = ?1",
+    // Get section info including is_exported_to_remote
+    let section_info: Result<(i64, i64, Option<i64>), _> = conn.query_row(
+        "SELECT id, start_timestamp_ms, is_exported_to_remote FROM sections WHERE id = ?1",
         [section_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     );
 
-    let (section_id, start_timestamp_ms) = match section_info {
+    let (section_id, start_timestamp_ms, is_exported_to_remote) = match section_info {
         Ok(info) => info,
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             return (
@@ -2339,6 +2339,118 @@ async fn export_section_handler(
         Ok(rate) => rate.parse().unwrap_or(48000),
         Err(_) => 48000,
     };
+
+    // If section has already been exported to remote and SFTP is configured, return the SFTP path directly
+    if is_exported_to_remote == Some(1) && state.sftp_config.is_some() {
+        // Format timestamp as yyyymmdd_hhmmss
+        let datetime = chrono::DateTime::from_timestamp_millis(start_timestamp_ms);
+        let formatted_time = match datetime {
+            Some(dt) => dt.format("%Y%m%d_%H%M%S").to_string(),
+            None => format!("{}", start_timestamp_ms),
+        };
+
+        // Format section_id as hex
+        let hex_section_id = format!("{:x}", section_id);
+
+        // Determine extension
+        let extension = match audio_format.as_str() {
+            "opus" => "ogg",
+            "aac" => "aac",
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({"error": format!("Unsupported audio format: {}", audio_format)})),
+                )
+                    .into_response();
+            }
+        };
+
+        // Generate filename
+        let filename = format!("{}_{}._{}.{}", show_name, formatted_time, hex_section_id, extension);
+
+        // Construct remote path
+        let sftp_config = state.sftp_config.as_ref().unwrap();
+        let remote_path = std::path::Path::new(&sftp_config.remote_dir).join(&filename);
+        let remote_path_str = remote_path.to_string_lossy().to_string();
+
+        // Query segments to calculate duration
+        let mut stmt = match conn.prepare(
+            "SELECT id, audio_data FROM segments WHERE section_id = ?1 ORDER BY id",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Failed to prepare query: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
+
+        let segments: Result<Vec<(i64, Vec<u8>)>, _> = stmt
+            .query_map([section_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .and_then(|rows| rows.collect());
+
+        let segments = match segments {
+            Ok(segs) if !segs.is_empty() => segs,
+            Ok(_) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    axum::Json(serde_json::json!({"error": format!("No segments found for section {}", section_id)})),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Failed to fetch segments: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
+
+        // Calculate duration
+        let total_samples = if audio_format == "opus" {
+            let samples_per_packet = 960u64; // 48kHz Opus, 20ms packets
+            let mut total_packets = 0u64;
+            for (_, segment) in &segments {
+                let mut offset = 0;
+                while offset + 2 <= segment.len() {
+                    let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
+                    offset += 2;
+                    if offset + len > segment.len() {
+                        break;
+                    }
+                    offset += len;
+                    total_packets += 1;
+                }
+            }
+            total_packets * samples_per_packet
+        } else {
+            // AAC - approximate based on frame size
+            let frame_samples = 1024u64; // AAC frame size
+            let mut total_frames = 0u64;
+            for (_, segment) in &segments {
+                // Count ADTS frames (rough estimate)
+                total_frames += segment.len() as u64 / 200; // Approximate
+            }
+            total_frames * frame_samples
+        };
+
+        let duration_secs = total_samples as f64 / sample_rate as f64;
+
+        // Return cached export response
+        return axum::Json(ExportResponse {
+            file_path: None,
+            sftp_path: Some(remote_path_str),
+            section_id,
+            format: audio_format,
+            duration_seconds: duration_secs,
+        })
+        .into_response();
+    }
 
     // Get all segments for this section
     let mut stmt = match conn.prepare(
