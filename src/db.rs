@@ -1,10 +1,10 @@
 use rusqlite::{Connection, OpenFlags};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use url::Url;
 
 /// Get the database path for a given output directory and name
-pub fn get_db_path(output_dir: &str, name: &str) -> String {
-    format!("{}/{}.sqlite", output_dir, name)
+pub fn get_db_path(output_dir: &Path, name: &str) -> PathBuf {
+    output_dir.join(format!("{}.sqlite", name))
 }
 
 /// Open a database connection with a full path (for read-write access)

@@ -29,7 +29,7 @@ pub struct AppState {
     pub sftp_config: Option<crate::config::SftpExportConfig>,
     pub credentials: Option<crate::credentials::Credentials>,
     pub show_locks: ShowLocks,
-    pub db_paths: std::collections::HashMap<String, String>,
+    pub db_paths: std::collections::HashMap<String, PathBuf>,
 }
 
 impl AppState {
@@ -48,7 +48,7 @@ pub fn serve_for_sync(
     session_names: Vec<String>,
     credentials: Option<crate::credentials::Credentials>,
     show_locks: ShowLocks,
-    db_paths: std::collections::HashMap<String, String>,
+    db_paths: std::collections::HashMap<String, PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting multi-show API server");
     println!("Output directory: {}", output_dir.display());
@@ -302,8 +302,8 @@ pub async fn sync_show_metadata_handler(
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
     // Get database path from pre-initialized HashMap
-    let db_path = match state.db_paths.get(&show_name) {
-        Some(path) => path.clone(),
+    let path = match state.db_paths.get(&show_name) {
+        Some(p) => p.as_path(),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -311,7 +311,6 @@ pub async fn sync_show_metadata_handler(
             ).into_response();
         }
     };
-    let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
         return (
@@ -325,7 +324,7 @@ pub async fn sync_show_metadata_handler(
     let conn = match state.open_readonly(path) {
         Ok(conn) => conn,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
@@ -502,8 +501,8 @@ pub async fn db_sections_handler(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     // Get database path from pre-initialized HashMap
-    let db_path = match state.db_paths.get(&name) {
-        Some(path) => path.clone(),
+    let path = match state.db_paths.get(&name) {
+        Some(p) => p.as_path(),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -511,7 +510,6 @@ pub async fn db_sections_handler(
             ).into_response();
         }
     };
-    let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
         return (
@@ -525,7 +523,7 @@ pub async fn db_sections_handler(
     let conn = match state.open_readonly(path) {
         Ok(conn) => conn,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
@@ -594,7 +592,7 @@ pub async fn sync_show_segments_handler(
     let conn = match state.open_readonly(path) {
         Ok(conn) => conn,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", db_path, e);
+            error!("Failed to open readonly database connection at '{}': {}", path.display(), e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),

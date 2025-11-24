@@ -1,5 +1,6 @@
 use clap::ValueEnum;
 use serde::Deserialize;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -15,9 +16,8 @@ pub enum ConfigType {
 pub enum AudioFormat {
     /// AAC-LC format (16kHz mono, 32kbps)
     ///
-    /// ⚠️ EXPERIMENTAL: AAC encoding has known limitations:
-    /// - May not provide gapless playback when splitting files
-    /// - The fdk-aac library binding has stability issues
+    /// ⚠️ EXPERIMENTAL:
+    /// - The fdk-aac library binding is not widely used
     /// - May be replaced with FFmpeg-based encoding in the future
     ///
     /// Recommendation: Use Opus for production workloads
@@ -52,7 +52,7 @@ pub struct MultiSessionConfig {
     /// Array of recording sessions
     pub sessions: Vec<SessionConfig>,
     /// Global output directory for all sessions (default: tmp)
-    pub output_dir: Option<String>,
+    pub output_dir: Option<PathBuf>,
     /// Global API server port for all sessions (default: 3000)
     #[serde(default = "default_api_port")]
     pub api_port: u16,
@@ -88,7 +88,7 @@ pub struct SyncConfig {
     /// URL of remote recording server (e.g., http://remote:3000)
     pub remote_url: String,
     /// Local base directory for synced databases
-    pub local_dir: String,
+    pub local_dir: PathBuf,
     /// Show names to sync (optional - if not specified, sync all shows from remote)
     pub shows: Option<Vec<String>>,
     /// Chunk size for batch fetching (default: 100)
@@ -114,7 +114,7 @@ pub struct SessionConfig {
     pub retention_hours: Option<i64>,
     /// Output directory (populated from global config, not in TOML)
     #[serde(skip)]
-    pub output_dir: Option<String>,
+    pub output_dir: Option<PathBuf>,
 }
 
 impl MultiSessionConfig {

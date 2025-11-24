@@ -9,6 +9,7 @@ use crate::streaming::StreamingSource;
 
 // Import ShowLocks and get_show_lock from the crate root
 use crate::{ShowLocks, get_show_lock};
+use std::path::{Path, PathBuf};
 use chrono::{DateTime, Timelike, Utc};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use fdk_aac::enc::{
@@ -179,12 +180,12 @@ fn run_connection_loop(
     audio_format: AudioFormat,
     bitrate_kbps: u32,
     name: &str,
-    db_path: &str,
+    db_path: &Path,
     split_interval: u64,
     duration: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize database once before the connection loop with WAL mode enabled
-    let mut conn = crate::db::open_database_connection(&std::path::Path::new(db_path))?;
+    let mut conn = crate::db::open_database_connection(db_path)?;
 
     // Initialize schema using common helper
     crate::db::init_database_schema(&conn)?;
@@ -1043,7 +1044,7 @@ fn run_connection_loop(
 pub fn record(
     config: SessionConfig,
     show_locks: ShowLocks,
-    db_path: String,
+    db_path: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Extract config values with defaults
     let url = config.url.clone();
@@ -1053,20 +1054,20 @@ pub fn record(
     let output_dir = config
         .output_dir
         .clone()
-        .unwrap_or_else(|| "tmp".to_string());
+        .unwrap_or_else(|| PathBuf::from("tmp"));
     let split_interval = config.split_interval.unwrap_or(0);
     let retention_hours = config.retention_hours.unwrap_or(RETENTION_HOURS);
 
     // Acquire exclusive lock to prevent multiple instances
     std::fs::create_dir_all(&output_dir)
-        .map_err(|e| format!("Failed to create output directory '{}': {}", output_dir, e))?;
-    let lock_path = format!("{}/{}.lock", output_dir, name);
+        .map_err(|e| format!("Failed to create output directory '{}': {}", output_dir.display(), e))?;
+    let lock_path = output_dir.join(format!("{}.lock", name));
     let _lock_file = File::create(&lock_path)
-        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path, e))?;
+        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path.display(), e))?;
     _lock_file.try_lock_exclusive().map_err(|_| {
         format!(
             "Another instance is already recording '{}'. Lock file: {}",
-            name, lock_path
+            name, lock_path.display()
         )
     })?;
     // Lock will be held until lock_file is dropped (end of function)
@@ -1155,7 +1156,7 @@ pub fn record(
 
         // Run cleanup of old sections - recreate connection for cleanup
         if let Ok(cleanup_conn) =
-            crate::db::open_database_connection(&std::path::Path::new(&db_path))
+            crate::db::open_database_connection(&db_path)
         {
             if let Err(e) = cleanup_old_sections_with_retention(&cleanup_conn, retention_hours) {
                 eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e);
@@ -1213,10 +1214,10 @@ pub fn run_multi_session(
     };
 
     // Determine output directory and API port
-    let output_dir = multi_config
+    let output_dir_path = multi_config
         .output_dir
         .clone()
-        .unwrap_or_else(|| "tmp".to_string());
+        .unwrap_or_else(|| PathBuf::from("tmp"));
     let api_port = port_override.unwrap_or(multi_config.api_port);
 
     // Extract SFTP config for API server
@@ -1276,7 +1277,6 @@ pub fn run_multi_session(
         .collect();
 
     // Create output directory if it doesn't exist
-    let output_dir_path = std::path::PathBuf::from(output_dir.clone());
     std::fs::create_dir_all(&output_dir_path)?;
     println!("Output directory: {}", output_dir_path.display());
 
@@ -1290,10 +1290,10 @@ pub fn run_multi_session(
     let mut db_paths = std::collections::HashMap::new();
 
     for session_config in &multi_config.sessions {
-        let db_path = crate::db::get_db_path(&output_dir, &session_config.name);
-        println!("Initializing database for session '{}' at {}", session_config.name, db_path);
+        let db_path = crate::db::get_db_path(&output_dir_path, &session_config.name);
+        println!("Initializing database for session '{}' at {}", session_config.name, db_path.display());
 
-        let conn = crate::db::open_database_connection(&std::path::Path::new(&db_path))
+        let conn = crate::db::open_database_connection(&db_path)
             .map_err(|e| format!("Failed to open database for session '{}': {}", session_config.name, e))?;
 
         crate::db::init_database_schema(&conn)
@@ -1310,9 +1310,10 @@ pub fn run_multi_session(
     // Start API server first in a separate thread
     println!("Starting API server on port {}", api_port);
 
+    let output_dir_path_for_server = output_dir_path.clone();
     let api_handle = thread::spawn(move || {
         if let Err(e) = crate::serve_record::serve_for_sync(
-            output_dir_path,
+            output_dir_path_for_server,
             api_port,
             sftp_config,
             export_to_remote_periodically,
@@ -1389,7 +1390,7 @@ pub fn run_multi_session(
     let mut recording_handles = Vec::new();
     for (_session_idx, mut session_config) in multi_config.sessions.into_iter().enumerate() {
         // Copy global output_dir to session config
-        session_config.output_dir = Some(output_dir.clone());
+        session_config.output_dir = Some(output_dir_path.clone());
 
         let session_name = session_config.name.clone();
         let session_name_for_handle = session_name.clone();

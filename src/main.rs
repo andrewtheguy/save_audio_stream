@@ -129,12 +129,11 @@ fn sync_from_config(config_path: PathBuf) -> Result<(), Box<dyn std::error::Erro
     }
 
     // Call sync function with config values
-    let local_dir = PathBuf::from(&sync_config.local_dir);
     let chunk_size = sync_config.chunk_size.unwrap_or(100);
 
     sync::sync_shows(
         sync_config.remote_url,
-        local_dir,
+        sync_config.local_dir,
         sync_config.shows,
         chunk_size,
     )
