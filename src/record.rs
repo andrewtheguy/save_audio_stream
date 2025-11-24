@@ -8,7 +8,6 @@ use crate::schedule::{
 use crate::streaming::StreamingSource;
 
 // Import ShowLocks and get_show_lock from the crate root
-// (defined in both lib.rs and main.rs)
 use crate::{ShowLocks, get_show_lock};
 use chrono::{DateTime, Timelike, Utc};
 use crossbeam_channel::{bounded, Receiver, Sender};
