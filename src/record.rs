@@ -1043,28 +1043,11 @@ pub fn record(
     config: SessionConfig,
     show_locks: crate::ShowLocks,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Setup per-session file logging
+    // Extract config values with defaults
     let output_dir = config
         .output_dir
         .clone()
         .unwrap_or_else(|| "tmp".to_string());
-    let log_path = format!("{}/{}.log", output_dir, config.name);
-
-    // Create output directory for log file
-    std::fs::create_dir_all(&output_dir).ok();
-
-    // Setup file logger for this session
-    let _log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("Failed to open log file '{}': {}", log_path, e))?;
-
-    // Note: Separate log files are created per session
-    // TODO: Implement proper file-based logging redirection for this thread
-    println!("[{}] Session logging to: {}", config.name, log_path);
-
-    // Extract config values with defaults
     let url = config.url.clone();
     let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
     let bitrate = config.bitrate;

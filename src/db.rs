@@ -134,21 +134,6 @@ pub fn init_database_schema(conn: &Connection) -> Result<(), Box<dyn std::error:
         [],
     )?;
 
-    // Migration: Add is_exported_to_remote column to existing sections table if it doesn't exist
-    // Check if column exists by querying pragma
-    let column_exists: bool = {
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM pragma_table_info('sections') WHERE name='is_exported_to_remote'")?;
-        let count: i64 = stmt.query_row([], |row| row.get(0))?;
-        count > 0
-    };
-
-    if !column_exists {
-        conn.execute(
-            "ALTER TABLE sections ADD COLUMN is_exported_to_remote INTEGER",
-            [],
-        )?;
-    }
-
     // Create indexes for efficient queries
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_segments_boundary
