@@ -41,7 +41,7 @@ pub struct Schedule {
 }
 
 fn default_api_port() -> u16 {
-    3000
+    17000
 }
 
 /// Multi-session recording configuration file structure
@@ -53,7 +53,7 @@ pub struct MultiSessionConfig {
     pub sessions: Vec<SessionConfig>,
     /// Global output directory for all sessions (default: tmp)
     pub output_dir: Option<PathBuf>,
-    /// Global API server port for all sessions (default: 3000)
+    /// Global API server port for all sessions (default: 17000)
     #[serde(default = "default_api_port")]
     pub api_port: u16,
     /// Enable SFTP export for section exports (default: false)

@@ -32,7 +32,7 @@ enum Command {
         sqlite_file: PathBuf,
 
         /// Port to listen on
-        #[arg(short, long, default_value = "3000")]
+        #[arg(short, long, default_value = "16000")]
         port: u16,
 
         /// Use immutable mode (WORKAROUND for network/read-only filesystems)
