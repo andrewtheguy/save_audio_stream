@@ -1991,6 +1991,39 @@ fn spawn_periodic_export_task(
     });
 }
 
+/// Generate standardized filename for exported section
+///
+/// Format: {show_name}_{yyyymmdd_hhmmss_fff}_{hex_section_id}.{extension}
+/// Example: am1430_20250122_143000_123_62c4b12369400.ogg
+fn generate_export_filename(
+    show_name: &str,
+    start_timestamp_ms: i64,
+    section_id: i64,
+    audio_format: &str,
+) -> Result<String, String> {
+    // Format timestamp as yyyymmdd_hhmmss_fff (with milliseconds padded to 3 digits)
+    let datetime = chrono::DateTime::from_timestamp_millis(start_timestamp_ms);
+    let formatted_time = match datetime {
+        Some(dt) => {
+            let millis = (start_timestamp_ms % 1000) as u32;
+            format!("{}_{:03}", dt.format("%Y%m%d_%H%M%S"), millis)
+        }
+        None => format!("{}", start_timestamp_ms),
+    };
+
+    // Format section_id as hex
+    let hex_section_id = format!("{:x}", section_id);
+
+    // Determine extension
+    let extension = match audio_format {
+        "opus" => "ogg",
+        "aac" => "aac",
+        _ => return Err(format!("Unsupported audio format: {}", audio_format)),
+    };
+
+    Ok(format!("{}_{}_{}.{}", show_name, formatted_time, hex_section_id, extension))
+}
+
 /// Export a section to file or SFTP with locking
 ///
 /// This function handles the entire export process including:
@@ -2069,25 +2102,8 @@ pub fn export_section(
 
     // If section has already been exported to remote and SFTP is configured, return the SFTP path directly
     if is_exported_to_remote == Some(1) && sftp_config.is_some() {
-        // Format timestamp as yyyymmdd_hhmmss
-        let datetime = chrono::DateTime::from_timestamp_millis(start_timestamp_ms);
-        let formatted_time = match datetime {
-            Some(dt) => dt.format("%Y%m%d_%H%M%S").to_string(),
-            None => format!("{}", start_timestamp_ms),
-        };
-
-        // Format section_id as hex
-        let hex_section_id = format!("{:x}", section_id);
-
-        // Determine extension
-        let extension = match audio_format.as_str() {
-            "opus" => "ogg",
-            "aac" => "aac",
-            _ => return Err(format!("Unsupported audio format: {}", audio_format)),
-        };
-
-        // Generate filename
-        let filename = format!("{}_{}_{}.{}", show_name, formatted_time, hex_section_id, extension);
+        // Generate filename using helper function
+        let filename = generate_export_filename(show_name, start_timestamp_ms, section_id, &audio_format)?;
 
         // Construct remote path
         let sftp_cfg = sftp_config.unwrap();
@@ -2172,25 +2188,8 @@ pub fn export_section(
         return Err(format!("No segments found for section {}", section_id));
     }
 
-    // Format timestamp as yyyymmdd_hhmmss
-    let datetime = chrono::DateTime::from_timestamp_millis(start_timestamp_ms);
-    let formatted_time = match datetime {
-        Some(dt) => dt.format("%Y%m%d_%H%M%S").to_string(),
-        None => format!("{}", start_timestamp_ms),
-    };
-
-    // Format section_id as hex
-    let hex_section_id = format!("{:x}", section_id);
-
-    // Determine extension
-    let extension = match audio_format.as_str() {
-        "opus" => "ogg",
-        "aac" => "aac",
-        _ => return Err(format!("Unsupported audio format: {}", audio_format)),
-    };
-
-    // Generate filename
-    let filename = format!("{}_{}_{}.{}", show_name, formatted_time, hex_section_id, extension);
+    // Generate filename using helper function
+    let filename = generate_export_filename(show_name, start_timestamp_ms, section_id, &audio_format)?;
 
     // Calculate duration in seconds
     let total_samples = if audio_format == "opus" {
