@@ -19,12 +19,17 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
 
+// Import ShowLocks and get_show_lock from the crate root
+// (defined in both lib.rs and main.rs)
+use crate::{ShowLocks, get_show_lock};
+
 // State for record mode API handlers
 pub struct AppState {
     pub output_dir: PathBuf,
     pub sftp_config: Option<crate::config::SftpExportConfig>,
     pub credentials: Option<crate::credentials::Credentials>,
-    pub show_locks: crate::ShowLocks,
+    pub show_locks: ShowLocks,
+    pub db_paths: std::collections::HashMap<String, String>,
 }
 
 impl AppState {
@@ -42,7 +47,8 @@ pub fn serve_for_sync(
     export_to_remote_periodically: bool,
     session_names: Vec<String>,
     credentials: Option<crate::credentials::Credentials>,
-    show_locks: crate::ShowLocks,
+    show_locks: ShowLocks,
+    db_paths: std::collections::HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting multi-show API server");
     println!("Output directory: {}", output_dir.display());
@@ -72,6 +78,7 @@ pub fn serve_for_sync(
             sftp_config,
             credentials: credentials.clone(),
             show_locks: show_locks.clone(),
+            db_paths: db_paths.clone(),
         });
 
         // Spawn periodic export task if enabled
@@ -294,8 +301,16 @@ pub async fn sync_show_metadata_handler(
     State(state): State<StdArc<AppState>>,
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
-    // Construct database path
-    let db_path = crate::db::get_db_path(state.output_dir.to_str().unwrap(), &show_name);
+    // Get database path from pre-initialized HashMap
+    let db_path = match state.db_paths.get(&show_name) {
+        Some(path) => path.clone(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
+            ).into_response();
+        }
+    };
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
@@ -486,8 +501,16 @@ pub async fn db_sections_handler(
     State(state): State<StdArc<AppState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    // Construct database path
-    let db_path = crate::db::get_db_path(state.output_dir.to_str().unwrap(), &name);
+    // Get database path from pre-initialized HashMap
+    let db_path = match state.db_paths.get(&name) {
+        Some(path) => path.clone(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({"error": format!("Show '{}' not found", name)})),
+            ).into_response();
+        }
+    };
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
@@ -547,8 +570,16 @@ pub async fn sync_show_segments_handler(
     Path(show_name): Path<String>,
     Query(query): Query<SyncSegmentsQuery>,
 ) -> impl IntoResponse {
-    // Construct database path
-    let db_path = crate::db::get_db_path(state.output_dir.to_str().unwrap(), &show_name);
+    // Get database path from pre-initialized HashMap
+    let db_path = match state.db_paths.get(&show_name) {
+        Some(path) => path.clone(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
+            ).into_response();
+        }
+    };
     let path = std::path::Path::new(&db_path);
 
     if !path.exists() {
@@ -716,7 +747,7 @@ fn spawn_periodic_export_task(
     sftp_config: crate::config::SftpExportConfig,
     session_names: Vec<String>,
     credentials: Option<crate::credentials::Credentials>,
-    show_locks: crate::ShowLocks,
+    show_locks: ShowLocks,
 ) {
     tokio::task::spawn_blocking(move || {
         loop {
@@ -793,7 +824,7 @@ fn spawn_periodic_export_task(
 
                     for section_id in unexported_sections {
                         // Acquire lock before export to prevent concurrent cleanup
-                        let show_lock = crate::get_show_lock(&show_locks, show_name);
+                        let show_lock = get_show_lock(&show_locks, show_name);
                         println!("[{}] Acquiring export lock for section {}...", show_name, section_id);
                         let _export_guard = show_lock.lock().unwrap();  // BLOCKS if cleanup is running
                         println!("[{}] Export lock acquired for section {}", show_name, section_id);
@@ -1270,7 +1301,7 @@ async fn export_section_handler(
     };
 
     // Acquire lock before export to prevent concurrent cleanup
-    let show_lock = crate::get_show_lock(&state.show_locks, &show_name);
+    let show_lock = get_show_lock(&state.show_locks, &show_name);
     println!("[{}] Acquiring on-demand export lock for section {}...", show_name, section_id);
     let _export_guard = show_lock.lock().unwrap();  // BLOCKS if cleanup is running
     println!("[{}] On-demand export lock acquired for section {}", show_name, section_id);

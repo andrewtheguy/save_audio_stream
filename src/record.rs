@@ -6,6 +6,10 @@ use crate::schedule::{
     is_in_active_window, parse_time, seconds_until_end, seconds_until_start, time_to_minutes,
 };
 use crate::streaming::StreamingSource;
+
+// Import ShowLocks and get_show_lock from the crate root
+// (defined in both lib.rs and main.rs)
+use crate::{ShowLocks, get_show_lock};
 use chrono::{DateTime, Timelike, Utc};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use fdk_aac::enc::{
@@ -176,14 +180,12 @@ fn run_connection_loop(
     audio_format: AudioFormat,
     bitrate_kbps: u32,
     name: &str,
-    output_dir: &str,
+    db_path: &str,
     split_interval: u64,
     duration: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let db_path = crate::db::get_db_path(output_dir, name);
-
     // Initialize database once before the connection loop with WAL mode enabled
-    let mut conn = crate::db::open_database_connection(&std::path::Path::new(&db_path))?;
+    let mut conn = crate::db::open_database_connection(&std::path::Path::new(db_path))?;
 
     // Initialize schema using common helper
     crate::db::init_database_schema(&conn)?;
@@ -1041,13 +1043,10 @@ fn run_connection_loop(
 
 pub fn record(
     config: SessionConfig,
-    show_locks: crate::ShowLocks,
+    show_locks: ShowLocks,
+    db_path: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Extract config values with defaults
-    let output_dir = config
-        .output_dir
-        .clone()
-        .unwrap_or_else(|| "tmp".to_string());
     let url = config.url.clone();
     let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
     let bitrate = config.bitrate;
@@ -1135,7 +1134,7 @@ pub fn record(
             audio_format,
             bitrate.unwrap_or(0),
             &name,
-            &output_dir,
+            &db_path,
             split_interval,
             duration,
         )?;
@@ -1150,13 +1149,12 @@ pub fn record(
         );
 
         // Acquire lock before cleanup to prevent concurrent export
-        let show_lock = crate::get_show_lock(&show_locks, &name);
+        let show_lock = get_show_lock(&show_locks, &name);
         println!("[{}] Acquiring cleanup lock...", name);
         let _cleanup_guard = show_lock.lock().unwrap();  // BLOCKS if export is running
         println!("[{}] Cleanup lock acquired", name);
 
         // Run cleanup of old sections - recreate connection for cleanup
-        let db_path = crate::db::get_db_path(&output_dir, &name);
         if let Ok(cleanup_conn) =
             crate::db::open_database_connection(&std::path::Path::new(&db_path))
         {
@@ -1184,4 +1182,274 @@ pub fn record(
         }
         // Continue to next day's recording
     } // End of daily loop - runs indefinitely
+}
+
+/// Run multi-session recording with API server and supervision
+pub fn run_multi_session(
+    multi_config: crate::config::MultiSessionConfig,
+    port_override: Option<u16>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use dashmap::DashMap;
+    use reqwest::blocking::Client;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    // Validate SFTP configuration if enabled
+    if let Err(e) = multi_config.validate_sftp() {
+        return Err(format!("SFTP configuration error: {}", e).into());
+    }
+
+    // Load credentials file if SFTP export is enabled
+    let credentials = if multi_config.export_to_sftp.unwrap_or(false) {
+        println!("Loading credentials from {}...", crate::credentials::get_credentials_path().display());
+        match crate::credentials::load_credentials() {
+            Ok(creds) => creds,
+            Err(e) => {
+                return Err(format!("Failed to load credentials: {}", e).into());
+            }
+        }
+    } else {
+        None
+    };
+
+    // Determine output directory and API port
+    let output_dir = multi_config
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| "tmp".to_string());
+    let api_port = port_override.unwrap_or(multi_config.api_port);
+
+    // Extract SFTP config for API server
+    let sftp_config = if multi_config.export_to_sftp.unwrap_or(false) {
+        multi_config.sftp.clone()
+    } else {
+        None
+    };
+
+    // begin testing, don't start until all checks pass
+
+    // Test SFTP connection if enabled
+    if let Some(ref config) = sftp_config {
+        use crate::sftp::{SftpClient, SftpConfig};
+
+        println!("Testing SFTP connection to {}:{}...", config.host, config.port);
+
+        let sftp_test_config = SftpConfig::from_export_config(config, &credentials)
+            .map_err(|e| format!("Failed to create SFTP config: {}", e))?;
+
+        let client = SftpClient::connect(&sftp_test_config)
+            .map_err(|e| format!("Failed to connect to SFTP server: {}", e))?;
+
+        // Try to write a test file
+        let test_filename = format!("test_connection_{}.txt", chrono::Utc::now().timestamp());
+        let test_path = std::path::Path::new(&config.remote_dir).join(&test_filename);
+        let test_data = b"SFTP connection test";
+
+        println!("Writing test file to {}...", test_path.display());
+        let mut cursor = std::io::Cursor::new(test_data);
+        let options = crate::sftp::UploadOptions::default();
+
+        client.upload_stream(
+            &mut cursor,
+            &test_path,
+            test_data.len() as u64,
+            &options,
+        ).map_err(|e| format!("Failed to write test file to SFTP: {}", e))?;
+
+        println!("Successfully wrote test file, cleaning up...");
+
+        // Clean up test file
+        if let Err(e) = client.remove_file(&test_path) {
+            println!("Warning: Failed to remove test file {}: {}", test_path.display(), e);
+        }
+
+        let _ = client.disconnect();
+        println!("SFTP connection test: PASSED");
+    }
+
+    // Extract periodic export flag
+    let export_to_remote_periodically = multi_config.export_to_remote_periodically.unwrap_or(false);
+
+    // Extract session names for periodic export
+    let session_names: Vec<String> = multi_config.sessions.iter()
+        .map(|s| s.name.clone())
+        .collect();
+
+    // Create output directory if it doesn't exist
+    let output_dir_path = std::path::PathBuf::from(output_dir.clone());
+    std::fs::create_dir_all(&output_dir_path)?;
+    println!("Output directory: {}", output_dir_path.display());
+
+    // Create shared locks for coordinating export and cleanup operations
+    let show_locks: ShowLocks = Arc::new(DashMap::new());
+    let locks_for_server = show_locks.clone();
+    let locks_for_recording = show_locks.clone();
+
+    // Initialize databases for all sessions BEFORE starting any services
+    println!("Initializing databases for {} session(s)...", multi_config.sessions.len());
+    let mut db_paths = std::collections::HashMap::new();
+
+    for session_config in &multi_config.sessions {
+        let db_path = crate::db::get_db_path(&output_dir, &session_config.name);
+        println!("Initializing database for session '{}' at {}", session_config.name, db_path);
+
+        let conn = crate::db::open_database_connection(&std::path::Path::new(&db_path))
+            .map_err(|e| format!("Failed to open database for session '{}': {}", session_config.name, e))?;
+
+        crate::db::init_database_schema(&conn)
+            .map_err(|e| format!("Failed to initialize schema for session '{}': {}", session_config.name, e))?;
+
+        db_paths.insert(session_config.name.clone(), db_path.clone());
+        println!("Database initialized successfully for session '{}'", session_config.name);
+    }
+    println!("All databases initialized successfully");
+
+    // Clone db_paths for the API server thread
+    let db_paths_for_server = db_paths.clone();
+
+    // Start API server first in a separate thread
+    println!("Starting API server on port {}", api_port);
+
+    let api_handle = thread::spawn(move || {
+        if let Err(e) = crate::serve_record::serve_for_sync(
+            output_dir_path,
+            api_port,
+            sftp_config,
+            export_to_remote_periodically,
+            session_names,
+            credentials,
+            locks_for_server,  // Pass locks to API server
+            db_paths_for_server,  // Pass pre-initialized db paths
+        ) {
+            eprintln!("API server failed: {}", e);
+            std::process::exit(1);
+        }
+    });
+
+    // Give the API server a moment to start up
+    println!("Waiting for API server to start...");
+    thread::sleep(Duration::from_secs(2));
+
+    // Check if API server thread is still running (didn't panic/exit immediately)
+    if api_handle.is_finished() {
+        return Err("API server failed to start".into());
+    }
+
+    // Perform healthcheck to verify API server is responding
+    println!("Performing API server healthcheck...");
+    let healthcheck_url = format!("http://localhost:{}/health", api_port);
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let mut healthcheck_passed = false;
+    for attempt in 1..=5 {
+        match client.get(&healthcheck_url).send() {
+            Ok(response) if response.status().is_success() => {
+                println!("API server healthcheck passed (attempt {})", attempt);
+                healthcheck_passed = true;
+                break;
+            }
+            Ok(response) => {
+                eprintln!(
+                    "API server healthcheck failed with status {} (attempt {})",
+                    response.status(),
+                    attempt
+                );
+            }
+            Err(e) => {
+                eprintln!("API server healthcheck failed: {} (attempt {})", e, attempt);
+            }
+        }
+
+        // Check if server thread crashed
+        if api_handle.is_finished() {
+            return Err("API server thread terminated during healthcheck".into());
+        }
+
+        if attempt < 5 {
+            thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+    if !healthcheck_passed {
+        return Err("API server healthcheck failed after 5 attempts".into());
+    }
+
+    println!("API server is healthy and ready");
+    println!(
+        "Starting {} recording session(s)",
+        multi_config.sessions.len()
+    );
+
+    // end testing
+
+    // Now spawn recording session threads (they run in background with supervision)
+    let mut recording_handles = Vec::new();
+    for (_session_idx, mut session_config) in multi_config.sessions.into_iter().enumerate() {
+        // Copy global output_dir to session config
+        session_config.output_dir = Some(output_dir.clone());
+
+        let session_name = session_config.name.clone();
+        let session_name_for_handle = session_name.clone();
+        let locks_for_session = locks_for_recording.clone();
+
+        // Get pre-initialized db path for this session
+        let db_path = db_paths.get(&session_name)
+            .ok_or_else(|| format!("Database path not found for session '{}'", session_name))?
+            .clone();
+
+        let handle = thread::spawn(move || {
+            // Supervision loop for this session
+            loop {
+                println!("[{}] Starting recording session", session_name_for_handle);
+
+                match record(session_config.clone(), locks_for_session.clone(), db_path.clone()) {
+                    Ok(_) => {
+                        // record() runs indefinitely, should never return Ok
+                        eprintln!("[{}] Recording ended unexpectedly", session_name_for_handle);
+                    }
+                    Err(e) => {
+                        eprintln!("[{}] Recording failed: {}", session_name_for_handle, e);
+                    }
+                }
+
+                // Calculate wait time until next scheduled start
+                if let Ok((start_hour, start_min)) =
+                    crate::schedule::parse_time(&session_config.schedule.record_start)
+                {
+                    let start_mins = crate::schedule::time_to_minutes(start_hour, start_min);
+                    let now = chrono::Utc::now();
+                    let current_mins = crate::schedule::time_to_minutes(now.hour(), now.minute());
+                    let wait_secs = crate::schedule::seconds_until_start(current_mins, start_mins);
+
+                    println!(
+                        "[{}] Restarting at next scheduled time ({} UTC) in {} seconds ({:.1} hours)",
+                        session_name_for_handle,
+                        session_config.schedule.record_start,
+                        wait_secs,
+                        wait_secs as f64 / 3600.0
+                    );
+                    thread::sleep(Duration::from_secs(wait_secs));
+                } else {
+                    eprintln!(
+                        "[{}] Invalid schedule time, waiting 60 seconds before retry",
+                        session_name_for_handle
+                    );
+                    thread::sleep(Duration::from_secs(60));
+                }
+            }
+        });
+
+        recording_handles.push((session_name, handle));
+    }
+
+    // Wait for API server thread (blocking) - if it fails, return error
+    api_handle
+        .join()
+        .map_err(|e| format!("API server thread panicked: {:?}", e))?;
+
+    Ok(())
 }

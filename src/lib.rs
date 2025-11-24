@@ -13,6 +13,7 @@ pub mod fmp4;
 pub mod record;
 pub mod schedule;
 pub mod serve;
+pub mod serve_record;
 pub mod sftp;
 pub mod streaming;
 pub mod sync;
