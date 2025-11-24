@@ -133,6 +133,44 @@ fn record_multi_session(
         None
     };
 
+    // Test SFTP connection if enabled
+    if let Some(ref config) = sftp_config {
+        use sftp::{SftpClient, SftpConfig};
+
+        println!("Testing SFTP connection to {}:{}...", config.host, config.port);
+
+        let sftp_test_config = SftpConfig::from_export_config(config);
+
+        let client = SftpClient::connect(&sftp_test_config)
+            .map_err(|e| format!("Failed to connect to SFTP server: {}", e))?;
+
+        // Try to write a test file
+        let test_filename = format!("test_connection_{}.txt", chrono::Utc::now().timestamp());
+        let test_path = std::path::Path::new(&config.remote_dir).join(&test_filename);
+        let test_data = b"SFTP connection test";
+
+        println!("Writing test file to {}...", test_path.display());
+        let mut cursor = std::io::Cursor::new(test_data);
+        let options = sftp::UploadOptions::default();
+
+        client.upload_stream(
+            &mut cursor,
+            &test_path,
+            test_data.len() as u64,
+            &options,
+        ).map_err(|e| format!("Failed to write test file to SFTP: {}", e))?;
+
+        println!("Successfully wrote test file, cleaning up...");
+
+        // Clean up test file
+        if let Err(e) = client.remove_file(&test_path) {
+            println!("Warning: Failed to remove test file {}: {}", test_path.display(), e);
+        }
+
+        let _ = client.disconnect();
+        println!("SFTP connection test: PASSED");
+    }
+
     // Extract periodic export flag
     let export_to_remote_periodically = multi_config.export_to_remote_periodically.unwrap_or(false);
 

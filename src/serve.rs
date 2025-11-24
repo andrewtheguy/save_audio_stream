@@ -2227,12 +2227,7 @@ fn upload_to_sftp(
     use std::io::Cursor;
 
     // Upload to SFTP
-    let sftp_config = SftpConfig::with_password(
-        config.host.clone(),
-        config.port,
-        config.username.clone(),
-        config.password.clone(),
-    );
+    let sftp_config = SftpConfig::from_export_config(config);
 
     let client = SftpClient::connect(&sftp_config)?;
     let remote_path = std::path::Path::new(&config.remote_dir).join(filename);

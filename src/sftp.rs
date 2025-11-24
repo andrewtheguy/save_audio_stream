@@ -118,6 +118,16 @@ impl SftpConfig {
             auth: SftpAuth::KeyFile(key_path, passphrase),
         }
     }
+
+    /// Create an SFTP configuration from the config file structure
+    pub fn from_export_config(config: &crate::config::SftpExportConfig) -> Self {
+        Self::with_password(
+            config.host.clone(),
+            config.port,
+            config.username.clone(),
+            config.password.clone(),
+        )
+    }
 }
 
 /// Options for file upload
@@ -471,6 +481,16 @@ impl SftpClient {
         })?;
 
         Ok(buffer)
+    }
+
+    /// Remove a file from the remote server
+    pub fn remove_file(&self, remote_path: &Path) -> Result<()> {
+        self.sftp.unlink(remote_path).map_err(|e| {
+            SftpError::RemoteFileError(
+                remote_path.to_path_buf(),
+                format!("Failed to remove file: {}", e),
+            )
+        })
     }
 
     /// Close the SFTP connection
