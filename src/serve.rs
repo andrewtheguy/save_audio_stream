@@ -331,7 +331,18 @@ async fn hls_playlist_handler(
         }
     };
 
+    // Check if this is a pending/growing session by comparing end_id with current max_id
+    let current_max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+        Ok(id) => id,
+        Err(_) => end_id, // If query fails, assume not pending
+    };
+    let is_pending = end_id >= current_max_id;
+
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
+    if is_pending {
+        playlist.push_str("#EXT-X-PLAYLIST-TYPE:EVENT\n");
+    }
+
     let mut max_duration = 0.0f64;
     let mut segment_durations = Vec::new();
 
@@ -362,7 +373,10 @@ async fn hls_playlist_handler(
         playlist.push_str(&format!("/aac-segment/{}.aac\n", seg_id));
     }
 
-    playlist.push_str("#EXT-X-ENDLIST\n");
+    // Only add ENDLIST for completed sessions
+    if !is_pending {
+        playlist.push_str("#EXT-X-ENDLIST\n");
+    }
 
     (
         StatusCode::OK,
@@ -548,7 +562,18 @@ async fn opus_hls_playlist_handler(
         }
     };
 
+    // Check if this is a pending/growing session by comparing end_id with current max_id
+    let current_max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+        Ok(id) => id,
+        Err(_) => end_id, // If query fails, assume not pending
+    };
+    let is_pending = end_id >= current_max_id;
+
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:7\n");
+    if is_pending {
+        playlist.push_str("#EXT-X-PLAYLIST-TYPE:EVENT\n");
+    }
+
     let mut max_duration = 0.0f64;
     let mut segment_durations = Vec::new();
 
@@ -582,7 +607,10 @@ async fn opus_hls_playlist_handler(
         playlist.push_str(&format!("/opus-segment/{}.m4s\n", seg_id));
     }
 
-    playlist.push_str("#EXT-X-ENDLIST\n");
+    // Only add ENDLIST for completed sessions
+    if !is_pending {
+        playlist.push_str("#EXT-X-ENDLIST\n");
+    }
 
     (
         StatusCode::OK,
