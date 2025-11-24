@@ -271,7 +271,6 @@ AAC encoding support is **experimental** and has known limitations:
 - **Not gapless**: AAC files may not provide seamless playback when concatenated
 - **Stability issues**: The underlying `fdk-aac` library binding may have stability issues because it is not widely used in Rust
 - **Encoder priming delay**: AAC has inherent encoder padding that affects split files
-- **Future migration**: May switch to FFmpeg-based encoding in future versions for better stability
 
 **Recommendation**: Use **Opus** for production workloads. It provides better quality at lower bitrates and guaranteed gapless playback.
 

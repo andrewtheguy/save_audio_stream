@@ -11,7 +11,7 @@ export_to_remote_periodically = true
 
 [sftp]
 host = 'localhost'
-port = 1123
+port = 2233
 username = 'demo'
 credential_profile = 'default'  # Profile name from ~/.config/save_audio_stream/credentials
 remote_dir = '/test'
