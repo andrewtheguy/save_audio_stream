@@ -2451,7 +2451,20 @@ async fn export_section_handler(
                 // Upload directly from memory to SFTP (atomic, no disk write)
                 match upload_to_sftp(&audio_data, &filename, sftp_config) {
                     Ok(remote_path) => {
-                        // SFTP upload succeeded, return remote path
+                        // SFTP upload succeeded, update is_exported_to_remote column
+                        if let Err(e) = (|| -> Result<(), Box<dyn std::error::Error>> {
+                            let writable_conn = crate::db::open_database_connection(path)?;
+                            writable_conn.execute(
+                                "UPDATE sections SET is_exported_to_remote = 1 WHERE id = ?1",
+                                [section_id],
+                            )?;
+                            Ok(())
+                        })() {
+                            error!("Failed to update is_exported_to_remote for section {}: {}", section_id, e);
+                            // Don't fail the request, just log the error
+                        }
+
+                        // Return remote path
                         (None, Some(remote_path))
                     }
                     Err(e) => {
