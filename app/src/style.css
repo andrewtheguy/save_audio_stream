@@ -544,10 +544,17 @@ h2 {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  text-decoration: none;
+  color: inherit;
 }
 
 .show-card.clickable {
   cursor: pointer;
+}
+
+a.show-card {
+  text-decoration: none;
+  color: inherit;
 }
 
 .show-card.clickable:hover {

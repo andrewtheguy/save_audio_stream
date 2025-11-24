@@ -4,6 +4,7 @@
     "react/": "https://esm.sh/react@18.3.1/",
     "react-dom": "https://esm.sh/react-dom@18.3.1",
     "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "react-router-dom": "https://esm.sh/react-router-dom@6.28.0?deps=react@18.3.1",
     "dashjs": "https://esm.sh/dashjs@4.7.4",
     "hls.js": "https://esm.sh/hls.js@1.6.15",
     "@/": "./src/"
