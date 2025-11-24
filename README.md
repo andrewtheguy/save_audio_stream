@@ -444,9 +444,8 @@ save_audio_stream serve <database.sqlite> [-p PORT]
 ### Server Features
 
 - **Web UI**: Browse and access recorded audio segments
-- **HLS Streaming**: HTTP Live Streaming with Opus audio (recommended)
-- **DASH Streaming**: Dynamic Adaptive Streaming over HTTP with MPD manifests
-- **WebM/fMP4 Segments**: Individual audio segments for player compatibility
+- **HLS Streaming**: HTTP Live Streaming with Opus or AAC audio
+- **fMP4 Segments**: Individual audio segments for player compatibility
 - **REST API**: Query segment ranges and metadata
 
 ### Available Endpoints
@@ -458,11 +457,8 @@ save_audio_stream serve <database.sqlite> [-p PORT]
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | Web UI with dynamic segment URLs |
-| `GET /opus-playlist.m3u8?start_id=N&end_id=N` | HLS playlist (recommended for Opus) |
+| `GET /opus-playlist.m3u8?start_id=N&end_id=N` | HLS playlist for Opus |
 | `GET /opus-segment/{id}.m4s` | fMP4 audio segment for HLS |
-| `GET /manifest.mpd?start_id=N&end_id=N` | DASH MPD manifest (fallback) |
-| `GET /init.webm` | WebM initialization segment for DASH |
-| `GET /segment/{id}` | Individual WebM audio segment for DASH |
 | `GET /api/segments/range` | JSON with min/max segment IDs |
 | `GET /api/sessions` | List all recording sessions with metadata |
 
@@ -707,13 +703,10 @@ http://localhost:3000
 
 The web UI displays:
 - **For Opus databases:**
-  - HLS URL: `/opus-playlist.m3u8?start_id={min}&end_id={max}` (recommended)
-  - DASH URL: `/manifest.mpd?start_id={min}&end_id={max}` (fallback)
+  - HLS URL: `/opus-playlist.m3u8?start_id={min}&end_id={max}`
 - **For AAC databases:**
   - HLS URL: `/playlist.m3u8?start_id={min}&end_id={max}`
 - Current segment range from the database
-
-**Recommended format for Opus:** Use HLS (`/opus-playlist.m3u8`) as it has better compatibility across media players despite being non-standard. See [OPUS_FORMATS.md](OPUS_FORMATS.md) for details.
 
 ## License
 
