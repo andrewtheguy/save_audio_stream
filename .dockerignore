@@ -1,0 +1,13 @@
+/target
+*.opus
+*.flac
+*.m4a
+*.mp3
+*.wav
+*.aac
+*.ogg
+tmp/
+app/node_modules/
+app/dist/
+app/dist-dev/
+.idea/

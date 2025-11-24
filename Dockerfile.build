@@ -1,0 +1,37 @@
+# Build stage
+FROM rust:1.91-slim-trixie AS builder
+
+# Enable contrib and non-free repositories for fdk-aac
+RUN echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/debian.sources.list
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    unzip \
+    libfdk-aac-dev \
+    libopus-dev \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Deno
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV DENO_INSTALL="/root/.deno"
+ENV PATH="$DENO_INSTALL/bin:$PATH"
+
+# Set working directory
+WORKDIR /build
+
+# Copy source code
+COPY . .
+
+# Build the release binary with cache mounts
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release && \
+    cp target/release/save_audio_stream /save_audio_stream
+
+# Final stage - copy binary to /tmp
+FROM scratch AS export
+COPY --from=builder /save_audio_stream /save_audio_stream
