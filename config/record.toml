@@ -10,7 +10,7 @@ api_port = 17000   # Port for the optional API server
 # host = 'sftp.example.com'
 # port = 22
 # username = 'uploader'
-# password = 'your_password_here'
+# credential_profile = 'my-sftp-server'  # Reference to ~/.config/save_audio_stream/credentials
 # remote_dir = '/uploads/audio'
 
 [[sessions]]

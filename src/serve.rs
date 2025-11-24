@@ -49,7 +49,6 @@ struct AppState {
     audio_format: String,
     immutable: bool,
     sftp_config: Option<crate::config::SftpExportConfig>,
-    maintenance_lock: StdArc<std::sync::Mutex<()>>,
     credentials: Option<crate::credentials::Credentials>,
 }
 
@@ -94,8 +93,6 @@ pub fn serve_for_sync(
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        // Create shared maintenance lock for coordinating cleanup and export tasks
-        let maintenance_lock = StdArc::new(std::sync::Mutex::new(()));
 
         // Clone sftp_config for periodic export task if needed
         let sftp_config_for_export = sftp_config.clone();
@@ -106,7 +103,6 @@ pub fn serve_for_sync(
             audio_format: String::new(), // Not used for multi-show serving
             immutable: false, // Active recording databases - must not use immutable mode
             sftp_config,
-            maintenance_lock: maintenance_lock.clone(),
             credentials: credentials.clone(),
         });
 
@@ -117,7 +113,6 @@ pub fn serve_for_sync(
                 spawn_periodic_export_task(
                     output_dir_str.clone(),
                     sftp_cfg,
-                    maintenance_lock.clone(),
                     session_names,
                     credentials.clone(),
                 );
@@ -258,7 +253,6 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
             audio_format: audio_format.clone(),
             immutable,
             sftp_config: None, // SFTP not supported in serve command
-            maintenance_lock: StdArc::new(std::sync::Mutex::new(())), // Not used in serve mode
             credentials: None, // Credentials not needed in serve mode
         });
 
@@ -1872,7 +1866,6 @@ fn upload_to_sftp(
 fn spawn_periodic_export_task(
     output_dir: String,
     sftp_config: crate::config::SftpExportConfig,
-    maintenance_lock: StdArc<std::sync::Mutex<()>>,
     session_names: Vec<String>,
     credentials: Option<crate::credentials::Credentials>,
 ) {
@@ -1880,15 +1873,6 @@ fn spawn_periodic_export_task(
         loop {
             // Sleep for 1 hour
             std::thread::sleep(std::time::Duration::from_secs(60 * 60));
-
-            // Acquire maintenance lock to ensure export doesn't run concurrently with cleanup
-            let _lock = match maintenance_lock.lock() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    error!("Failed to acquire maintenance lock for periodic export: {}", e);
-                    continue;
-                }
-            };
 
             println!("Starting periodic export of unexported sections...");
 

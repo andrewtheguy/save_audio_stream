@@ -111,18 +111,25 @@ api_port = 3000            # default: 3000 (API server for all sessions)
 # Required
 url = 'https://stream.example.com/radio'
 name = 'myradio'
-record_start = '14:00'     # UTC time to start recording (HH:MM)
-record_end = '16:00'       # UTC time to stop recording (HH:MM)
 
 # Optional (with defaults)
 audio_format = 'opus'      # default: 'opus' (options: aac, opus, wav)
 bitrate = 24               # default: 32 for AAC, 16 for Opus
 split_interval = 300       # default: 0 (no splitting, in seconds)
+storage_format = 'sqlite'  # default: 'sqlite'
+retention_hours = 72       # Optional: auto-delete old recordings after N hours
+
+# Schedule configuration (required)
+[sessions.schedule]
+record_start = '14:00'     # UTC time to start recording (HH:MM)
+record_end = '16:00'       # UTC time to stop recording (HH:MM)
 
 [[sessions]]
 # Add more sessions as needed
 url = 'https://stream2.example.com/radio'
 name = 'myradio2'
+
+[sessions.schedule]
 record_start = '18:00'
 record_end = '20:00'
 ```
@@ -163,13 +170,19 @@ chunk_size = 100            # default: 100 (batch size for fetching chunks)
 |--------|-------------|---------|----------|
 | `url` | URL of the Shoutcast/Icecast stream | - | Yes |
 | `name` | Name prefix for output | - | Yes |
-| `record_start` | Recording start time in UTC (HH:MM) | - | Yes |
-| `record_end` | Recording end time in UTC (HH:MM) | - | Yes |
+| `schedule` | Schedule configuration table (contains `record_start` and `record_end`) | - | Yes |
 | `audio_format` | Audio encoding: `aac`, `opus`, or `wav` | opus | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
 | `split_interval` | Split chunks every N seconds (0 = no split) | 0 | No |
-| `export_to_sftp` | Enable SFTP export for section exports | false | No |
-| `sftp_export` | SFTP configuration table (see SFTP Export Configuration) | - | If `export_to_sftp = true` |
+| `storage_format` | Storage format (currently only `sqlite` supported) | sqlite | No |
+| `retention_hours` | Auto-delete recordings older than N hours | None (keep forever) | No |
+
+**Schedule Options (inside `[sessions.schedule]`):**
+
+| Option | Description | Required |
+|--------|-------------|----------|
+| `record_start` | Recording start time in UTC (HH:MM format) | Yes |
+| `record_end` | Recording end time in UTC (HH:MM format) | Yes |
 
 **Note:** The API server always runs in the main thread on the configured `api_port` (default: 3000). It provides synchronization endpoints for all shows being recorded, enabling remote access and database syncing while recording is in progress. The API server is required for sync functionality.
 
@@ -497,33 +510,44 @@ The export API allows you to export individual recording sections (sessions) as 
 
 #### SFTP Export Configuration
 
-When SFTP export is configured in a session, audio sections are streamed directly to the remote SFTP server from memory without creating local temporary files.
+When SFTP export is configured globally, audio sections are streamed directly to the remote SFTP server from memory without creating local temporary files.
 
-**Session configuration with SFTP export:**
+**Configuration with SFTP export:**
 
 ```toml
-[[sessions]]
-url = 'https://stream.example.com/radio'
-name = 'myradio'
-record_start = '14:00'
-record_end = '16:00'
+config_type = 'record'
+output_dir = './tmp/recorded'
+api_port = 3000
 
-# Enable SFTP export
+# Enable SFTP export (global setting)
 export_to_sftp = true
+export_to_remote_periodically = true  # Optional: periodic auto-export
 
-[sessions.sftp_export]
+# SFTP configuration (global)
+[sftp]
 host = 'sftp.example.com'
 port = 22
 username = 'uploader'
-remote_directory = '/uploads/radio'
+credential_profile = 'my-sftp-server'  # Reference to ~/.config/save_audio_stream/credentials
+remote_dir = '/uploads/radio'
 
-# Choose one authentication method:
-# Password authentication:
+[[sessions]]
+url = 'https://stream.example.com/radio'
+name = 'myradio'
+
+[sessions.schedule]
+record_start = '14:00'
+record_end = '16:00'
+```
+
+**Credential file format** (`~/.config/save_audio_stream/credentials`):
+
+```toml
+[my-sftp-server]
 password = 'secret123'
 
-# OR Key-based authentication:
-# key_file = '/home/user/.ssh/id_rsa'
-# key_passphrase = 'optional_passphrase'  # Optional
+[another-server]
+password = 'another_password'
 ```
 
 **SFTP Export Features:**
@@ -573,19 +597,23 @@ rclone serve sftp /tmp/sftp-uploads --addr :2233 --user demo --pass demo
 Then configure your session to use the local server:
 
 ```toml
-[[sessions]]
-url = 'https://stream.example.com/radio'
-name = 'myradio'
-record_start = '14:00'
-record_end = '16:00'
+config_type = 'record'
 export_to_sftp = true
 
-[sessions.sftp_export]
+[sftp]
 host = 'localhost'
 port = 2233
 username = 'demo'
 credential_profile = 'local-dev'  # Reference to ~/.config/save_audio_stream/credentials
-remote_directory = '/'
+remote_dir = '/'
+
+[[sessions]]
+url = 'https://stream.example.com/radio'
+name = 'myradio'
+
+[sessions.schedule]
+record_start = '14:00'
+record_end = '16:00'
 ```
 
 And add credentials:
