@@ -164,7 +164,7 @@ fn sync_single_show(
     let client = Client::new();
 
     // Fetch remote metadata (no retry on network error)
-    println!("  Fetching metadata from remote...");
+    println!("[{}]   Fetching metadata from remote...", show_name);
     let metadata_url = format!("{}/api/sync/shows/{}/metadata", remote_url, show_name);
     let metadata: ShowMetadata = client
         .get(&metadata_url)
@@ -181,8 +181,8 @@ fn sync_single_show(
         })?;
 
     println!(
-        "  Remote: unique_id={}, min_id={}, max_id={}",
-        metadata.unique_id, metadata.min_id, metadata.max_id
+        "[{}]   Remote: unique_id={}, min_id={}, max_id={}",
+        show_name, metadata.unique_id, metadata.min_id, metadata.max_id
     );
 
     // Validate remote version BEFORE doing anything else
@@ -211,8 +211,8 @@ fn sync_single_show(
 
     let start_id = if let Some(existing_unique_id) = existing_unique_id {
         // Existing database - validate and resume
-        println!("  Found existing local database");
-        println!("  Existing target unique_id: {}", existing_unique_id);
+        println!("[{}]   Found existing local database", show_name);
+        println!("[{}]   Existing target unique_id: {}", show_name, existing_unique_id);
 
         // Validate local version matches expected version
         let local_version: String = conn
@@ -286,14 +286,14 @@ fn sync_single_show(
             )?;
         }
 
-        println!("  Resuming from segment {}", last_synced_id + 1);
+        println!("[{}]   Resuming from segment {}", show_name, last_synced_id + 1);
         last_synced_id + 1
     } else {
         // New database - initialize
         // Generate a new unique_id for this target database
         let target_unique_id = crate::constants::generate_db_unique_id();
-        println!("  Creating new local database");
-        println!("  Initialized with target unique_id: {}", target_unique_id);
+        println!("[{}]   Creating new local database", show_name);
+        println!("[{}]   Initialized with target unique_id: {}", show_name, target_unique_id);
 
         // Initialize schema using common helper
         crate::db::init_database_schema(&conn)?;
@@ -349,7 +349,7 @@ fn sync_single_show(
     };
 
     // Sync sections table first
-    println!("  Syncing sections metadata...");
+    println!("[{}]   Syncing sections metadata...", show_name);
     let sections_url = format!("{}/api/sync/shows/{}/sections", remote_url, show_name);
     let sections: Vec<SectionData> = client
         .get(&sections_url)
@@ -368,7 +368,7 @@ fn sync_single_show(
             rusqlite::params![section.id, section.start_timestamp_ms],
         )?;
     }
-    println!("  Synced {} sections", sections_count);
+    println!("[{}]   Synced {} sections", show_name, sections_count);
 
     // Sync segments in batches
     let target_max_id = metadata.max_id;
@@ -376,16 +376,16 @@ fn sync_single_show(
 
     if current_id > target_max_id {
         println!(
-            "  Already up to date (local_id {} >= remote_max {})",
-            current_id - 1,
+            "[{}]   Already up to date (local_id {} >= remote_max {})",
+            show_name, current_id - 1,
             target_max_id
         );
         return Ok(());
     }
 
     println!(
-        "  Syncing segments {} to {} (chunk_size={})",
-        current_id, target_max_id, chunk_size
+        "[{}]   Syncing segments {} to {} (chunk_size={})",
+        show_name, current_id, target_max_id, chunk_size
     );
 
     while current_id <= target_max_id {
@@ -455,8 +455,8 @@ fn sync_single_show(
         let last_id = segments.last().unwrap().id;
 
         println!(
-            "  Synced segments {} to {} ({}/{} segments, {:.1}% complete)",
-            current_id,
+            "[{}]   Synced segments {} to {} ({}/{} segments, {:.1}% complete)",
+            show_name, current_id,
             last_id,
             last_id - start_id + 1,
             target_max_id - start_id + 1,
@@ -467,8 +467,8 @@ fn sync_single_show(
     }
 
     println!(
-        "  ✓ Sync complete: {} segments",
-        target_max_id - start_id + 1
+        "[{}]   ✓ Sync complete: {} segments",
+        show_name, target_max_id - start_id + 1
     );
     Ok(())
 }

@@ -331,7 +331,7 @@ fn run_connection_loop(
             }
         }
 
-        println!("Session ID existing db: {}", db_unique_id);
+        println!("[{}] Session ID existing db: {}", name, db_unique_id);
     } else {
         // Determine bitrate and sample rate for new database
         let (output_sample_rate, _, default_bitrate) = match audio_format {
@@ -408,7 +408,7 @@ fn run_connection_loop(
             }
         }
 
-        println!("Session ID new db: {}", session_unique_id);
+        println!("[{}] Session ID new db: {}", name, session_unique_id);
     }
 
     // Calculate absolute end time based on schedule
@@ -427,7 +427,7 @@ fn run_connection_loop(
     'connection: loop {
         // Check if we've reached the schedule end time
         if Instant::now() >= recording_end_time {
-            println!("Recording schedule end time reached");
+            println!("[{}] Recording schedule end time reached", name);
             break 'connection;
         }
 
@@ -437,11 +437,11 @@ fn run_connection_loop(
                 resp
             }
             Err(e) => {
-                eprintln!("Connection error: {}", e);
+                eprintln!("[{}] Connection error: {}", name, e);
 
                 // Check if we've reached schedule end
                 if Instant::now() >= recording_end_time {
-                    println!("Recording schedule end time reached during retry");
+                    println!("[{}] Recording schedule end time reached during retry", name);
                     break 'connection;
                 }
 
@@ -450,7 +450,7 @@ fn run_connection_loop(
                 }
 
                 let backoff_ms = get_backoff_ms(retry_start.unwrap().elapsed().as_secs());
-                println!("Retrying in {}ms...", backoff_ms);
+                println!("[{}] Retrying in {}ms...", name, backoff_ms);
                 thread::sleep(Duration::from_millis(backoff_ms));
                 continue 'connection;
             }
@@ -458,11 +458,11 @@ fn run_connection_loop(
 
         if !response.status().is_success() {
             let status = response.status();
-            eprintln!("HTTP error: {}", status);
+            eprintln!("[{}] HTTP error: {}", name, status);
 
             // Check if we've reached schedule end
             if Instant::now() >= recording_end_time {
-                println!("Recording schedule end time reached during retry");
+                println!("[{}] Recording schedule end time reached during retry", name);
                 break 'connection;
             }
 
@@ -471,7 +471,7 @@ fn run_connection_loop(
             }
 
             let backoff_ms = get_backoff_ms(retry_start.unwrap().elapsed().as_secs());
-            println!("Retrying in {}ms...", backoff_ms);
+            println!("[{}] Retrying in {}ms...", name, backoff_ms);
             thread::sleep(Duration::from_millis(backoff_ms));
             continue 'connection;
         }
@@ -513,13 +513,13 @@ fn run_connection_loop(
         };
 
         println!(
-            "Source codec: {} (Content-Type: {})",
-            codec_hint, content_type
+            "[{}] Source codec: {} (Content-Type: {})",
+            name, codec_hint, content_type
         );
-        println!("Target format: {:?}", audio_format);
-        println!("Storage: SQLite");
+        println!("[{}] Target format: {:?}", name, audio_format);
+        println!("[{}] Storage: SQLite", name);
         if split_interval > 0 {
-            println!("Split interval: {} seconds", split_interval);
+            println!("[{}] Split interval: {} seconds", name, split_interval);
         }
 
         // Create channel for streaming data
@@ -529,6 +529,9 @@ fn run_connection_loop(
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = Arc::clone(&stop_flag);
 
+        // Clone name for the download thread
+        let name_clone = name.to_string();
+
         // Spawn download thread
         let download_handle = thread::spawn(move || {
             let start_time = Instant::now();
@@ -536,12 +539,12 @@ fn run_connection_loop(
             let mut chunk = [0u8; 8192];
             let mut bytes_downloaded = 0u64;
 
-            println!("Downloading audio data...");
+            println!("[{}] Downloading audio data...", name_clone);
 
             while !stop_flag_clone.load(Ordering::Relaxed) {
                 match reader.read(&mut chunk) {
                     Ok(0) => {
-                        println!("Stream ended");
+                        println!("[{}] Stream ended", name_clone);
                         break;
                     }
                     Ok(n) => {
@@ -554,15 +557,15 @@ fn run_connection_loop(
                         }
                     }
                     Err(e) => {
-                        eprintln!("Read error: {}", e);
+                        eprintln!("[{}] Read error: {}", name_clone, e);
                         break;
                     }
                 }
             }
 
             println!(
-                "Download complete: {} bytes in {:.1} seconds",
-                bytes_downloaded,
+                "[{}] Download complete: {} bytes in {:.1} seconds",
+                name_clone, bytes_downloaded,
                 start_time.elapsed().as_secs_f64()
             );
 
@@ -584,7 +587,7 @@ fn run_connection_loop(
         let metadata_opts = MetadataOptions::default();
 
         // Probe the media source
-        println!("Probing audio format...");
+        println!("[{}] Probing audio format...", name);
         let probed =
             symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)?;
 
@@ -611,7 +614,7 @@ fn run_connection_loop(
             .ok_or("Unknown channel count")?
             .count() as u16;
 
-        println!("Source: {} Hz, {} channels", src_sample_rate, src_channels);
+        println!("[{}] Source: {} Hz, {} channels", name, src_sample_rate, src_channels);
 
         // Format-specific setup
         let (output_sample_rate, frame_size, default_bitrate) = match audio_format {
@@ -627,10 +630,10 @@ fn run_connection_loop(
         let bitrate = bitrate_kbps_resolved as i32 * 1000;
 
         match audio_format {
-            AudioFormat::Wav => println!("Target: {} Hz, mono, lossless WAV", output_sample_rate),
+            AudioFormat::Wav => println!("[{}] Target: {} Hz, mono, lossless WAV", name, output_sample_rate),
             _ => println!(
-                "Target: {} Hz, mono, {} kbps {:?}",
-                output_sample_rate, bitrate_kbps_resolved, audio_format
+                "[{}] Target: {} Hz, mono, {} kbps {:?}",
+                name, output_sample_rate, bitrate_kbps_resolved, audio_format
             ),
         }
 
@@ -725,7 +728,7 @@ fn run_connection_loop(
         };
 
         // Decode and encode in real-time
-        println!("Reencoding to {:?}...", audio_format);
+        println!("[{}] Reencoding to {:?}...", name, audio_format);
         let mut total_input_samples = 0usize;
         let mut packets_decoded = 0usize;
         let mut total_output_samples: u64 = 0;
@@ -821,7 +824,7 @@ fn run_connection_loop(
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("AAC encode error: {:?}", e);
+                                                    eprintln!("[{}] AAC encode error: {:?}", name, e);
                                                 }
                                             }
                                         }
@@ -865,7 +868,7 @@ fn run_connection_loop(
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("Opus encode error: {:?}", e);
+                                                    eprintln!("[{}] Opus encode error: {:?}", name, e);
                                                 }
                                             }
                                         }
@@ -912,11 +915,11 @@ fn run_connection_loop(
                             }
                         }
                         Err(symphonia::core::errors::Error::DecodeError(e)) => {
-                            eprintln!("\nDecode error: {}", e);
+                            eprintln!("[{}] Decode error: {}", name, e);
                             continue;
                         }
                         Err(e) => {
-                            eprintln!("\nFatal decode error: {}", e);
+                            eprintln!("[{}] Fatal decode error: {}", name, e);
                             break;
                         }
                     }
@@ -928,7 +931,7 @@ fn run_connection_loop(
                     break;
                 }
                 Err(e) => {
-                    eprintln!("\nFormat error: {}", e);
+                    eprintln!("[{}] Format error: {}", name, e);
                     stop_flag.store(true, Ordering::Relaxed);
                     break;
                 }
@@ -978,8 +981,8 @@ fn run_connection_loop(
                 &segment_buffer,
             )?;
             println!(
-                "\nInserted final segment {} ({} bytes)",
-                segment_number,
+                "[{}] Inserted final segment {} ({} bytes)",
+                name, segment_number,
                 segment_buffer.len()
             );
         }
@@ -995,14 +998,14 @@ fn run_connection_loop(
         let duration_secs =
             total_input_samples as f64 / (src_sample_rate as f64 * src_channels as f64);
         println!(
-            "Decoded {} samples from {} packets",
-            total_input_samples, packets_decoded
+            "[{}] Decoded {} samples from {} packets",
+            name, total_input_samples, packets_decoded
         );
 
         let total_segments = segment_number + 1;
         println!(
-            "Successfully saved {} segments ({:.1} seconds of audio, {} bytes downloaded)",
-            total_segments, duration_secs, bytes_downloaded
+            "[{}] Successfully saved {} segments ({:.1} seconds of audio, {} bytes downloaded)",
+            name, total_segments, duration_secs, bytes_downloaded
         );
 
         // Check if target was reached
@@ -1013,13 +1016,13 @@ fn run_connection_loop(
 
         // Stream ended early - check if we should retry
         eprintln!(
-            "\nStream ended before target duration reached ({} / {} samples)",
-            total_output_samples, target_samples
+            "[{}] Stream ended before target duration reached ({} / {} samples)",
+            name, total_output_samples, target_samples
         );
 
         // Check if we've reached schedule end
         if Instant::now() >= recording_end_time {
-            println!("Recording schedule end time reached");
+            println!("[{}] Recording schedule end time reached", name);
             break 'connection;
         }
 
@@ -1028,7 +1031,7 @@ fn run_connection_loop(
         }
 
         let backoff_ms = get_backoff_ms(retry_start.unwrap().elapsed().as_secs());
-        println!("Retrying connection in {}ms...", backoff_ms);
+        println!("[{}] Retrying connection in {}ms...", name, backoff_ms);
         thread::sleep(Duration::from_millis(backoff_ms));
         // Continue to next connection attempt
     } // End of 'connection loop
@@ -1056,7 +1059,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     // Note: Separate log files are created per session
     // TODO: Implement proper file-based logging redirection for this thread
-    println!("Session '{}' logging to: {}", config.name, log_path);
+    println!("[{}] Session logging to: {}", config.name, log_path);
 
     // Extract config values with defaults
     let url = config.url.clone();
@@ -1102,12 +1105,12 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         let duration = if !is_in_active_window(current_mins, start_mins, end_mins) {
             // Wait until start time
             println!(
-                "Current time is outside recording window ({} to {} UTC)",
-                config.schedule.record_start, config.schedule.record_end
+                "[{}] Current time is outside recording window ({} to {} UTC)",
+                config.name, config.schedule.record_start, config.schedule.record_end
             );
             println!(
-                "Waiting until {} UTC...",
-                config.schedule.record_start
+                "[{}] Waiting until {} UTC...",
+                config.name, config.schedule.record_start
             );
 
             // Loop and sleep 1 second at a time for more accurate timing
@@ -1134,10 +1137,10 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
             seconds_until_end(current_mins, end_mins)
         };
 
-        println!("Connecting to: {}", url);
+        println!("[{}] Connecting to: {}", name, url);
         println!(
-            "Recording until {} UTC ({} seconds)",
-            config.schedule.record_end, duration
+            "[{}] Recording until {} UTC ({} seconds)",
+            name, config.schedule.record_end, duration
         );
 
         // Run the connection loop and record audio
@@ -1156,8 +1159,8 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
         let start_mins = time_to_minutes(start_hour, start_min);
 
         println!(
-            "\nRecording window complete. Next window starts at {} UTC.",
-            config.schedule.record_start
+            "[{}] Recording window complete. Next window starts at {} UTC.",
+            name, config.schedule.record_start
         );
 
         // Run cleanup of old sections - recreate connection for cleanup
@@ -1166,7 +1169,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
             crate::db::open_database_connection(&std::path::Path::new(&db_path))
         {
             if let Err(e) = cleanup_old_sections_with_retention(&cleanup_conn, retention_hours) {
-                eprintln!("Warning: Failed to clean up old sections: {}", e);
+                eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e);
             }
         }
 
