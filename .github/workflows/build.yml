@@ -25,9 +25,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get install -y libfdk-aac-dev libopus-dev pkg-config
+          sudo apt-get install -y libopus-dev pkg-config
 
-      - name: Build
+      - name: Build (static)
+        env:
+          LIBOPUS_STATIC: "1"
         run: cargo build --release
 
       - name: Rename binary

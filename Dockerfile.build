@@ -8,13 +8,9 @@ ARG TARGETARCH
 # Copy Deno from official image
 COPY --from=deno /usr/bin/deno /usr/local/bin/deno
 
-# Enable contrib and non-free repositories for fdk-aac
-RUN echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/debian.sources.list
-
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libfdk-aac-dev \
     libopus-dev \
     libssl-dev \
     pkg-config \
@@ -26,7 +22,8 @@ WORKDIR /build
 # Copy source code
 COPY . .
 
-# Build the release binary with architecture-specific cache mounts
+# Build the release binary with architecture-specific cache mounts (static linking)
+ENV LIBOPUS_STATIC=1
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-${TARGETARCH} \
     --mount=type=cache,target=/build/target,id=cargo-target-${TARGETARCH} \
     cargo build --release && \
