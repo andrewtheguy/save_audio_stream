@@ -17,10 +17,47 @@ body {
   padding: 2rem;
 }
 
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
 h1 {
   font-size: 2.5rem;
-  margin-bottom: 2rem;
+  margin: 0;
   color: #1a1a1a;
+}
+
+.reload-sessions-btn {
+  background: #0066cc;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.reload-sessions-btn:hover:not(:disabled) {
+  background: #0052a3;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 102, 204, 0.3);
+}
+
+.reload-sessions-btn:disabled {
+  background: #6c757d;
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 h2 {
@@ -171,8 +208,18 @@ h2 {
     padding: 1rem;
   }
 
+  .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
   h1 {
     font-size: 2rem;
+  }
+
+  .reload-sessions-btn {
+    width: 100%;
+    justify-content: center;
   }
 
   .session-header {

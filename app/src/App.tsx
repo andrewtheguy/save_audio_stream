@@ -43,6 +43,7 @@ function App() {
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
   const [initialTime, setInitialTime] = useState<number | undefined>(undefined);
   const [savedSectionId, setSavedSectionId] = useState<number | null>(null);
+  const [isReloading, setIsReloading] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -90,6 +91,28 @@ function App() {
       });
   }, []);
 
+  const handleReloadSessions = async () => {
+    if (isReloading) return;
+
+    setIsReloading(true);
+    try {
+      const sessionsData = await fetch("/api/sessions").then((r) => r.json());
+      setData(sessionsData);
+
+      // If a session is currently selected, update it with the new data
+      if (selectedSessionIndex !== null && sessionsData.sessions[selectedSessionIndex]) {
+        // The AudioPlayer will automatically re-render with the new end_id from props
+        // We don't need to do anything special here
+      }
+
+      setIsReloading(false);
+    } catch (err) {
+      console.error("Failed to reload sessions:", err);
+      setError(`Failed to reload sessions: ${err instanceof Error ? err.message : String(err)}`);
+      setIsReloading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div id="app">
@@ -114,7 +137,18 @@ function App() {
 
   return (
     <div id="app">
-      <h1>Audio Stream Server - {data.name}</h1>
+      <div className="app-header">
+        <h1>Audio Stream Server - {data.name}</h1>
+        <button
+          className="reload-sessions-btn"
+          onClick={handleReloadSessions}
+          disabled={isReloading}
+          title="Reload sessions to check for new recordings"
+          aria-label="Reload sessions"
+        >
+          {isReloading ? "⏳ Reloading..." : "🔄 Reload Sessions"}
+        </button>
+      </div>
 
       <div className="sessions-container">
         <h2>Recording Sessions</h2>
