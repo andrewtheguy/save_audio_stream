@@ -16,3 +16,5 @@ else
     echo "Build failed"
     exit 1
 fi
+
+# run scp -i ~/.ssh/id_rsa_oracle tmp/save_audio_stream opc@private.hpmp.net:~/ to update the server binary

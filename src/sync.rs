@@ -39,6 +39,7 @@ struct SegmentData {
     #[serde(with = "serde_bytes")]
     audio_data: Vec<u8>,
     section_id: i64,
+    duration_samples: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -427,8 +428,8 @@ fn sync_single_show(
                 }
 
                 tx.execute(
-                    "INSERT INTO segments (id, timestamp_ms, is_timestamp_from_source, audio_data, section_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![segment.id, segment.timestamp_ms, segment.is_timestamp_from_source, &segment.audio_data, segment.section_id],
+                    "INSERT INTO segments (id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![segment.id, segment.timestamp_ms, segment.is_timestamp_from_source, &segment.audio_data, segment.section_id, segment.duration_samples],
                 )?;
 
                 prev_section_id = Some(segment.section_id);

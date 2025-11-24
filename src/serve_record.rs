@@ -188,6 +188,7 @@ struct SegmentData {
     #[serde(with = "serde_bytes")]
     audio_data: Vec<u8>,
     section_id: i64,
+    duration_samples: i64,
 }
 
 pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
@@ -623,7 +624,7 @@ pub async fn sync_show_segments_handler(
     // Fetch segments
     let limit = query.limit.unwrap_or(100);
     let mut stmt = match conn.prepare(
-        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data, section_id FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
+        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
     ) {
         Ok(stmt) => stmt,
         Err(e) => {
@@ -644,6 +645,7 @@ pub async fn sync_show_segments_handler(
                 is_timestamp_from_source: row.get(2)?,
                 audio_data: row.get(3)?,
                 section_id: row.get(4)?,
+                duration_samples: row.get(5)?,
             })
         },
     ) {
