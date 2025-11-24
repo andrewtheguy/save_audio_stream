@@ -1056,16 +1056,17 @@ pub fn export_section(
     credentials: &Option<crate::credentials::Credentials>,
 ) -> Result<ExportResponse, String> {
     // Create tmp directory for lock files if it doesn't exist
-    std::fs::create_dir_all("tmp")
+    let tmp_dir = PathBuf::from("tmp");
+    std::fs::create_dir_all(&tmp_dir)
         .map_err(|e| format!("Failed to create tmp directory: {}", e))?;
 
     // Acquire exclusive lock to prevent concurrent exports of the same show
-    let lock_path = format!("tmp/export_{}.lock", show_name);
+    let lock_path = tmp_dir.join(format!("export_{}.lock", show_name));
     let _lock_file = File::create(&lock_path)
-        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path, e))?;
+        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path.display(), e))?;
 
     _lock_file.try_lock_exclusive()
-        .map_err(|e| format!("Export already in progress for show '{}'. Lock file: {}. Error: {}", show_name, lock_path, e))?;
+        .map_err(|e| format!("Export already in progress for show '{}'. Lock file: {}. Error: {}", show_name, lock_path.display(), e))?;
     // Lock will be held until _lock_file is dropped (when function exits)
 
     // Construct database path
@@ -1263,14 +1264,15 @@ pub fn export_section(
     } else {
         // No SFTP configured, save to local file
         // Create tmp directory if it doesn't exist
-        std::fs::create_dir_all("tmp")
+        let tmp_dir = PathBuf::from("tmp");
+        std::fs::create_dir_all(&tmp_dir)
             .map_err(|e| format!("Failed to create tmp directory: {}", e))?;
 
-        let file_path = format!("tmp/{}", filename);
+        let file_path = tmp_dir.join(&filename);
         std::fs::write(&file_path, &audio_data)
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
-        (Some(file_path), None)
+        (Some(file_path.to_string_lossy().to_string()), None)
     };
 
     Ok(ExportResponse {
