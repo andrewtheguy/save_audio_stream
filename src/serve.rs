@@ -2190,7 +2190,7 @@ pub fn export_section(
     };
 
     // Generate filename
-    let filename = format!("{}_{}._{}.{}", show_name, formatted_time, hex_section_id, extension);
+    let filename = format!("{}_{}_{}.{}", show_name, formatted_time, hex_section_id, extension);
 
     // Calculate duration in seconds
     let total_samples = if audio_format == "opus" {
