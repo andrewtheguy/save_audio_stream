@@ -77,8 +77,8 @@ impl AppState {
 
 // serve_for_sync moved to serve_record.rs
 
-/// Serve a single database file (for serve command)
-pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(), Box<dyn std::error::Error>> {
+/// Inspect a single database file via HTTP server
+pub fn inspect_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Verify database exists and is Opus format
     if !sqlite_file.exists() {
         return Err(format!("Database file not found: {}", sqlite_file.display()).into());

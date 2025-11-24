@@ -217,9 +217,9 @@ save_audio_stream record -c config/sessions.toml -p 3000
 
 ### Other Commands
 
-**Serve recorded audio:**
+**Inspect recorded audio:**
 ```bash
-save_audio_stream serve <database.sqlite> [-p PORT]
+save_audio_stream inspect <database.sqlite> [-p PORT]
 ```
 
 **Sync from remote server:**
@@ -437,8 +437,8 @@ The tool includes an HTTP server to stream recorded audio from SQLite databases.
 # Record audio to SQLite database
 save_audio_stream record -c config.toml
 
-# Serve audio via HTTP
-save_audio_stream serve <database.sqlite> [-p PORT]
+# Inspect audio via HTTP
+save_audio_stream inspect <database.sqlite> [-p PORT]
 ```
 
 ### Server Features
@@ -662,7 +662,7 @@ Build and run the production server with embedded assets:
 cargo build --release
 
 # Run the server
-./target/release/save_audio_stream serve database.sqlite -p 3000
+./target/release/save_audio_stream inspect database.sqlite -p 3000
 ```
 
 In release mode:
@@ -688,12 +688,12 @@ If npm is not available or the `web-frontend` feature is disabled, the frontend 
 
 **Start server on default port (3000):**
 ```bash
-save_audio_stream serve ./tmp/myradio.sqlite
+save_audio_stream inspect ./tmp/myradio.sqlite
 ```
 
 **Start server on custom port:**
 ```bash
-save_audio_stream serve ./tmp/myradio.sqlite -p 8080
+save_audio_stream inspect ./tmp/myradio.sqlite -p 8080
 ```
 
 **Access the web UI:**

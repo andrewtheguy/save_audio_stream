@@ -26,8 +26,8 @@ enum Command {
         #[arg(short, long)]
         port: Option<u16>,
     },
-    /// Serve audio from SQLite database via HTTP
-    Serve {
+    /// Inspect audio from SQLite database via HTTP
+    Inspect {
         /// Path to SQLite database file
         sqlite_file: PathBuf,
 
@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.command {
         Command::Record { config, port } => record_multi_session(config, port),
-        Command::Serve { sqlite_file, port, immutable } => serve::serve_audio(sqlite_file, port, immutable),
+        Command::Inspect { sqlite_file, port, immutable } => serve::inspect_audio(sqlite_file, port, immutable),
         Command::Sync { config } => sync_from_config(config),
     }
 }
