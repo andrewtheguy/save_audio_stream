@@ -1116,7 +1116,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
                 let current_mins = time_to_minutes(now.hour(), now.minute());
                 let wait_secs = seconds_until_start(current_mins, start_mins);
 
-                if wait_secs == 0 {
+                if wait_secs <= 0 {
                     // We've reached the start time
                     break;
                 }
@@ -1176,7 +1176,7 @@ pub fn record(config: SessionConfig) -> Result<(), Box<dyn std::error::Error>> {
             let current_mins = time_to_minutes(now.hour(), now.minute());
             let wait_secs = seconds_until_start(current_mins, start_mins);
 
-            if wait_secs == 0 {
+            if wait_secs <= 0 {
                 // We've reached the start time
                 break;
             }
