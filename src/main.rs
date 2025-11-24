@@ -1,6 +1,7 @@
 mod audio;
 mod config;
 mod constants;
+mod credentials;
 mod db;
 mod fmp4;
 mod record;
@@ -119,6 +120,19 @@ fn record_multi_session(
         return Err(format!("SFTP configuration error: {}", e).into());
     }
 
+    // Load credentials file if SFTP export is enabled
+    let credentials = if multi_config.export_to_sftp.unwrap_or(false) {
+        println!("Loading credentials from {}...", credentials::get_credentials_path().display());
+        match credentials::load_credentials() {
+            Ok(creds) => creds,
+            Err(e) => {
+                return Err(format!("Failed to load credentials: {}", e).into());
+            }
+        }
+    } else {
+        None
+    };
+
     // Determine output directory and API port
     let output_dir = multi_config
         .output_dir
@@ -139,7 +153,8 @@ fn record_multi_session(
 
         println!("Testing SFTP connection to {}:{}...", config.host, config.port);
 
-        let sftp_test_config = SftpConfig::from_export_config(config);
+        let sftp_test_config = SftpConfig::from_export_config(config, &credentials)
+            .map_err(|e| format!("Failed to create SFTP config: {}", e))?;
 
         let client = SftpClient::connect(&sftp_test_config)
             .map_err(|e| format!("Failed to connect to SFTP server: {}", e))?;
@@ -194,6 +209,7 @@ fn record_multi_session(
             sftp_config,
             export_to_remote_periodically,
             session_names,
+            credentials,
         ) {
             eprintln!("API server failed: {}", e);
             std::process::exit(1);

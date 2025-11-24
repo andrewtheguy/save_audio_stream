@@ -62,6 +62,7 @@ struct AppState {
     immutable: bool,
     sftp_config: Option<crate::config::SftpExportConfig>,
     maintenance_lock: StdArc<std::sync::Mutex<()>>,
+    credentials: Option<crate::credentials::Credentials>,
 }
 
 impl AppState {
@@ -82,6 +83,7 @@ pub fn serve_for_sync(
     sftp_config: Option<crate::config::SftpExportConfig>,
     export_to_remote_periodically: bool,
     session_names: Vec<String>,
+    credentials: Option<crate::credentials::Credentials>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output_dir_str = output_dir.to_string_lossy().to_string();
 
@@ -118,6 +120,7 @@ pub fn serve_for_sync(
             immutable: false, // Active recording databases - must not use immutable mode
             sftp_config,
             maintenance_lock: maintenance_lock.clone(),
+            credentials: credentials.clone(),
         });
 
         // Spawn cleanup task for expired sessions
@@ -167,6 +170,7 @@ pub fn serve_for_sync(
                     sftp_cfg,
                     maintenance_lock.clone(),
                     session_names,
+                    credentials.clone(),
                 );
             } else {
                 println!("Warning: export_to_remote_periodically is enabled but SFTP config is missing");
@@ -308,6 +312,7 @@ pub fn serve_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(
             immutable,
             sftp_config: None, // SFTP not supported in serve command
             maintenance_lock: StdArc::new(std::sync::Mutex::new(())), // Not used in serve mode
+            credentials: None, // Credentials not needed in serve mode
         });
 
         // Spawn cleanup task for expired sessions
@@ -2223,11 +2228,13 @@ fn upload_to_sftp(
     data: &[u8],
     filename: &str,
     config: &crate::config::SftpExportConfig,
+    credentials: &Option<crate::credentials::Credentials>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use std::io::Cursor;
 
     // Upload to SFTP
-    let sftp_config = SftpConfig::from_export_config(config);
+    let sftp_config = SftpConfig::from_export_config(config, credentials)
+        .map_err(|e| format!("Failed to resolve SFTP credentials: {}", e))?;
 
     let client = SftpClient::connect(&sftp_config)?;
     let remote_path = std::path::Path::new(&config.remote_dir).join(filename);
@@ -2260,6 +2267,7 @@ fn spawn_periodic_export_task(
     sftp_config: crate::config::SftpExportConfig,
     maintenance_lock: StdArc<std::sync::Mutex<()>>,
     session_names: Vec<String>,
+    credentials: Option<crate::credentials::Credentials>,
 ) {
     tokio::task::spawn_blocking(move || {
         loop {
@@ -2352,6 +2360,7 @@ fn spawn_periodic_export_task(
                             show_name,
                             section_id,
                             Some(&sftp_config),
+                            &credentials,
                         ) {
                             Ok(response) => {
                                 println!(
@@ -2392,6 +2401,7 @@ pub fn export_section(
     show_name: &str,
     section_id: i64,
     sftp_config: Option<&crate::config::SftpExportConfig>,
+    credentials: &Option<crate::credentials::Credentials>,
 ) -> Result<ExportResponse, String> {
     // Create tmp directory for lock files if it doesn't exist
     std::fs::create_dir_all("tmp")
@@ -2620,7 +2630,7 @@ pub fn export_section(
     // Upload to SFTP if configured, otherwise save to file
     let (response_file_path, response_sftp_path) = if let Some(sftp_cfg) = sftp_config {
         // Upload directly from memory to SFTP (atomic, no disk write)
-        let remote_path = upload_to_sftp(&audio_data, &filename, sftp_cfg)
+        let remote_path = upload_to_sftp(&audio_data, &filename, sftp_cfg, credentials)
             .map_err(|e| format!("SFTP upload failed: {}", e))?;
 
         // SFTP upload succeeded, update is_exported_to_remote column
@@ -2678,6 +2688,7 @@ async fn export_section_handler(
         &show_name,
         section_id,
         state.sftp_config.as_ref(),
+        &state.credentials,
     ) {
         Ok(response) => axum::Json(response).into_response(),
         Err(error_msg) => {

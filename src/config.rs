@@ -74,8 +74,8 @@ pub struct SftpExportConfig {
     pub port: u16,
     /// SFTP username for authentication
     pub username: String,
-    /// SFTP password for authentication
-    pub password: String,
+    /// Credential profile name to look up password from ~/.config/save_audio_stream/credentials
+    pub credential_profile: String,
     /// Remote directory path where files will be uploaded (e.g., /uploads/audio)
     pub remote_dir: String,
 }
