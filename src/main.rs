@@ -48,6 +48,10 @@ enum Command {
         /// Path to receiver config file (TOML format, same as sync config)
         #[arg(short, long)]
         config: PathBuf,
+
+        /// Sync once and exit without starting the server
+        #[arg(long)]
+        sync_only: bool,
     },
 }
 
@@ -59,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
         Command::Record { config, port } => record_multi_session(config, port),
         Command::Inspect { sqlite_file, port, immutable } => serve::inspect_audio(sqlite_file, port, immutable),
-        Command::Receiver { config } => receiver_from_config(config),
+        Command::Receiver { config, sync_only } => receiver_from_config(config, sync_only),
     }
 }
 
@@ -101,7 +105,7 @@ fn record_multi_session(
     record::run_multi_session(multi_config, port_override)
 }
 
-fn receiver_from_config(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Load receiver/sync config file
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
@@ -128,6 +132,16 @@ fn receiver_from_config(config_path: PathBuf) -> Result<(), Box<dyn std::error::
         .into());
     }
 
-    // Call receiver function which starts the server and background sync
-    serve::receiver_audio(sync_config)
+    if sync_only {
+        // Sync once and exit
+        save_audio_stream::sync::sync_shows(
+            sync_config.remote_url,
+            sync_config.local_dir,
+            sync_config.shows,
+            sync_config.chunk_size.unwrap_or(100),
+        )
+    } else {
+        // Call receiver function which starts the server and background sync
+        serve::receiver_audio(sync_config)
+    }
 }

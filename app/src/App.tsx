@@ -122,6 +122,12 @@ function ShowsList({
   );
 }
 
+// Helper to get max end_id from sessions
+function getMaxEndId(sessions: SessionInfo[]): number {
+  if (sessions.length === 0) return 0;
+  return Math.max(...sessions.map((s) => s.end_id));
+}
+
 // Show detail component for receiver mode
 function ShowDetail({
   syncStatus,
@@ -144,6 +150,9 @@ function ShowDetail({
   const [initialTime, setInitialTime] = useState<number | undefined>(undefined);
   const [savedSectionId, setSavedSectionId] = useState<number | null>(null);
   const [isReloading, setIsReloading] = useState(false);
+  const [newDataAvailable, setNewDataAvailable] = useState(false);
+  const [lastKnownEndId, setLastKnownEndId] = useState<number>(0);
+  const [prevSyncStatus, setPrevSyncStatus] = useState<boolean>(false);
 
   useEffect(() => {
     if (!decodedShowName) return;
@@ -162,6 +171,8 @@ function ShowDetail({
 
         setAudioFormat(formatData.format || "opus");
         setData(sessionsData);
+        setLastKnownEndId(getMaxEndId(sessionsData.sessions));
+        setNewDataAvailable(false);
 
         // Fetch metadata for unique_id
         const metadata = await fetch(`/api/show/${decodedShowName}/metadata`).then((r) => r.json());
@@ -197,6 +208,27 @@ function ShowDetail({
     loadShowData();
   }, [decodedShowName]);
 
+  // Check for new data when sync completes
+  useEffect(() => {
+    // Detect transition from syncing to not syncing
+    if (prevSyncStatus && !syncStatus && decodedShowName && !loading) {
+      // Sync just completed, check for new data
+      const checkForNewData = async () => {
+        try {
+          const sessionsData = await fetch(`/api/show/${decodedShowName}/sessions`).then((r) => r.json());
+          const newMaxEndId = getMaxEndId(sessionsData.sessions);
+          if (newMaxEndId > lastKnownEndId) {
+            setNewDataAvailable(true);
+          }
+        } catch (err) {
+          console.error("Failed to check for new data:", err);
+        }
+      };
+      checkForNewData();
+    }
+    setPrevSyncStatus(syncStatus);
+  }, [syncStatus, prevSyncStatus, decodedShowName, lastKnownEndId, loading]);
+
   const handleReloadSessions = async () => {
     if (isReloading) return;
 
@@ -204,6 +236,8 @@ function ShowDetail({
     try {
       const sessionsData = await fetch(`/api/show/${decodedShowName}/sessions`).then((r) => r.json());
       setData(sessionsData);
+      setLastKnownEndId(getMaxEndId(sessionsData.sessions));
+      setNewDataAvailable(false);
       setIsReloading(false);
     } catch (err) {
       console.error("Failed to reload sessions:", err);
@@ -274,6 +308,12 @@ function ShowDetail({
       {syncStatus && (
         <div className="sync-status">
           Sync in progress...
+        </div>
+      )}
+
+      {newDataAvailable && (
+        <div className="new-data-banner" onClick={handleReloadSessions}>
+          New data available. Click to reload.
         </div>
       )}
 
