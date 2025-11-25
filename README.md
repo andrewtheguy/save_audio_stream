@@ -298,26 +298,15 @@ CREATE INDEX idx_sections_start_timestamp ON sections(start_timestamp_ms);
 
 | Format | Sample Rate | Channels | Default Bitrate | Notes |
 |--------|-------------|----------|-----------------|-------|
-| AAC-LC | 16 kHz | Mono | 32 kbps | **⚠️ Experimental** - See warning below |
+| AAC-LC | 16 kHz | Mono | 32 kbps | Good compatibility |
 | Opus | 48 kHz | Mono | 16 kbps | Best quality/size ratio |
 | WAV | Source rate | Mono | N/A | Lossless, large files |
 
-**⚠️ AAC Encoding Warning:**
-
-AAC encoding support is **experimental** and has known limitations:
-- **Not gapless**: AAC files may not provide seamless playback when concatenated
-- **Stability issues**: The underlying `fdk-aac` library binding may have stability issues because it is not widely used in Rust
-- **Encoder priming delay**: AAC has inherent encoder padding that affects split files
-
-**Recommendation**: Use **Opus** for production workloads. It provides better quality at lower bitrates and guaranteed gapless playback.
-
 ### AAC Implementation Notes
 
-**For future AAC decoding needs:**
-- **Use Symphonia AAC decoder** - More stable and reliable than fdk-aac decoder
-- The `fdk-aac` crate is only used for **encoding** because it's the only practical choice for AAC encoding in Rust without FFmpeg
-- Decoding with Symphonia provides better error handling and stability
-- The AAC encoder (fdk-aac) is necessary for encoding but has known stability issues (see warning above)
+- The `fdk-aac` crate is used for **encoding** - it's the only practical choice for AAC encoding in Rust without FFmpeg
+- **Symphonia AAC decoder** is recommended for decoding - more stable and reliable than fdk-aac decoder
+- Priming sample metadata is written to enable gapless playback during decoding
 
 ## Gapless Playback
 
@@ -325,7 +314,7 @@ Split files are designed for **gapless playback** when concatenated:
 
 - **WAV**: Sample-perfect splitting - concatenated files are bit-identical to unsplit recording
 - **Opus**: Continuous granule positions across files for seamless playback
-- **AAC**: ⚠️ Not guaranteed gapless - AAC has inherent encoder priming delay and the encoding library has stability issues (see warning above)
+- **AAC**: Gapless when priming samples from metadata are accounted for during decoding
 
 ### Verifying Gapless Splits
 
