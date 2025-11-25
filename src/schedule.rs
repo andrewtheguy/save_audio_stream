@@ -1,5 +1,10 @@
+use chrono::Timelike;
+
+/// Time represented as (hour, minute) tuple
+pub type HourMinute = (u32, u32);
+
 /// Parse a time string in "HH:MM" format and return (hour, minute)
-pub fn parse_time(time_str: &str) -> Result<(u32, u32), String> {
+pub fn parse_time(time_str: &str) -> Result<HourMinute, String> {
     let parts: Vec<&str> = time_str.split(':').collect();
     if parts.len() != 2 {
         return Err(format!(
@@ -19,26 +24,46 @@ pub fn parse_time(time_str: &str) -> Result<(u32, u32), String> {
     Ok((hour, minute))
 }
 
-/// Convert time to minutes since midnight
-pub fn time_to_minutes(hour: u32, minute: u32) -> u32 {
-    hour * 60 + minute
+/// Compare two (hour, minute) times: returns true if a < b
+fn time_lt(a: HourMinute, b: HourMinute) -> bool {
+    a.0 < b.0 || (a.0 == b.0 && a.1 < b.1)
 }
 
-/// Check if current time (in minutes since midnight) is in the active recording window
+/// Compare two (hour, minute) times: returns true if a <= b
+fn time_le(a: HourMinute, b: HourMinute) -> bool {
+    a.0 < b.0 || (a.0 == b.0 && a.1 <= b.1)
+}
+
+/// Check if current time is in the active recording window
 /// Handles overnight windows (e.g., 14:00 to 07:00)
-pub fn is_in_active_window(current_mins: u32, start_mins: u32, end_mins: u32) -> bool {
-    if start_mins <= end_mins {
+fn is_in_active_window(current: HourMinute, start: HourMinute, end: HourMinute) -> bool {
+    if time_le(start, end) {
         // Same day window (e.g., 09:00 to 17:00)
-        current_mins >= start_mins && current_mins < end_mins
+        // Active when: start <= current < end
+        time_le(start, current) && time_lt(current, end)
     } else {
         // Overnight window (e.g., 14:00 to 07:00)
-        current_mins >= start_mins || current_mins < end_mins
+        // Active when: current >= start OR current < end
+        time_le(start, current) || time_lt(current, end)
     }
+}
+
+/// Get current UTC time as (hour, minute)
+fn now_hm() -> HourMinute {
+    let now = chrono::Utc::now();
+    (now.hour(), now.minute())
+}
+
+/// Check if we're currently in the active recording window
+pub fn is_in_active_window_now(start: HourMinute, end: HourMinute) -> bool {
+    is_in_active_window(now_hm(), start, end)
 }
 
 /// Calculate seconds until the end time from current time
 /// Handles overnight windows
-pub fn seconds_until_end(current_mins: u32, end_mins: u32) -> u64 {
+fn seconds_until_end(current: HourMinute, end: HourMinute) -> u64 {
+    let current_mins = current.0 * 60 + current.1;
+    let end_mins = end.0 * 60 + end.1;
     let minutes_until = if current_mins < end_mins {
         end_mins - current_mins
     } else {
@@ -48,13 +73,27 @@ pub fn seconds_until_end(current_mins: u32, end_mins: u32) -> u64 {
     minutes_until as u64 * 60
 }
 
-/// Calculate seconds until the start time from current time
-pub fn seconds_until_start(current_mins: u32, start_mins: u32) -> u64 {
-    let minutes_until = if current_mins < start_mins {
-        start_mins - current_mins
-    } else {
-        // Start is tomorrow
-        (24 * 60 - current_mins) + start_mins
-    };
-    minutes_until as u64 * 60
+/// Block until we enter the active recording window
+/// Returns immediately if already in the window
+/// Checks every second for accurate timing
+pub fn wait_for_active_window(start: HourMinute, end: HourMinute, name: &str) {
+    loop {
+        if is_in_active_window_now(start, end) {
+            return;
+        }
+        // Log wait status every minute (when seconds == 0)
+        let now = chrono::Utc::now();
+        if now.second() == 0 {
+            println!(
+                "[{}] Waiting for recording window ({:02}:{:02} - {:02}:{:02} UTC)...",
+                name, start.0, start.1, end.0, end.1
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+/// Get the duration in seconds until the end of the recording window
+pub fn get_window_duration_secs(end: HourMinute) -> u64 {
+    seconds_until_end(now_hm(), end)
 }

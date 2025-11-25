@@ -3,14 +3,15 @@ use crate::config::{AudioFormat, SessionConfig};
 use crate::constants::EXPECTED_DB_VERSION;
 use crate::db;
 use crate::schedule::{
-    is_in_active_window, parse_time, seconds_until_end, seconds_until_start, time_to_minutes,
+    get_window_duration_secs, is_in_active_window_now, parse_time, wait_for_active_window,
+    HourMinute,
 };
 use crate::streaming::StreamingSource;
 
 // Import ShowLocks and get_show_lock from the crate root
 use crate::db::SyncDb;
 use crate::{get_show_lock, ShowLocks};
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Utc};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use fdk_aac::enc::{
     AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
@@ -1215,54 +1216,23 @@ pub fn record(
     })?;
     // Lock will be held until lock_file is dropped (end of function)
 
+    // Parse schedule times once
+    let start: HourMinute = parse_time(&config.schedule.record_start)?;
+    let end: HourMinute = parse_time(&config.schedule.record_end)?;
+
     // Daily loop for scheduled recording - runs indefinitely
     loop {
-        // Parse schedule times
-        let (start_hour, start_min) = parse_time(&config.schedule.record_start)?;
-        let (end_hour, end_min) = parse_time(&config.schedule.record_end)?;
-        let start_mins = time_to_minutes(start_hour, start_min);
-        let end_mins = time_to_minutes(end_hour, end_min);
-
-        // Get current UTC time
-        let now = chrono::Utc::now();
-        let current_hour = now.hour();
-        let current_min = now.minute();
-        let current_mins = time_to_minutes(current_hour, current_min);
-
-        // Check if we're in the active window
-        let duration = if !is_in_active_window(current_mins, start_mins, end_mins) {
-            // Wait until start time
+        // Wait until we're in the active recording window
+        if !is_in_active_window_now(start, end) {
             println!(
                 "[{}] Current time is outside recording window ({} to {} UTC)",
-                config.name, config.schedule.record_start, config.schedule.record_end
+                name, config.schedule.record_start, config.schedule.record_end
             );
-            println!(
-                "[{}] Waiting until {} UTC...",
-                config.name, config.schedule.record_start
-            );
+            wait_for_active_window(start, end, &name);
+        }
 
-            // Loop and sleep 1 second at a time for more accurate timing
-            loop {
-                let now = chrono::Utc::now();
-                let current_mins = time_to_minutes(now.hour(), now.minute());
-
-                // Check if we've entered the active window
-                if is_in_active_window(current_mins, start_mins, end_mins) {
-                    break;
-                }
-
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
-
-            // Recalculate current time after waiting
-            let now = chrono::Utc::now();
-            let current_hour = now.hour();
-            let current_min = now.minute();
-            let current_mins = time_to_minutes(current_hour, current_min);
-            seconds_until_end(current_mins, end_mins)
-        } else {
-            seconds_until_end(current_mins, end_mins)
-        };
+        // We're now in the active window - calculate duration until end
+        let duration = get_window_duration_secs(end);
 
         println!("[{}] Connecting to: {}", name, url);
         println!(
@@ -1280,10 +1250,6 @@ pub fn record(
             split_interval,
             duration,
         )?;
-
-        // Loop for next day's recording window
-        let (start_hour, start_min) = parse_time(&config.schedule.record_start)?;
-        let start_mins = time_to_minutes(start_hour, start_min);
 
         println!(
             "[{}] Recording window complete. Next window starts at {} UTC.",
@@ -1307,20 +1273,7 @@ pub fn record(
         drop(_cleanup_guard);
         println!("[{}] Cleanup lock released", name);
 
-        // Loop and sleep 1 second at a time for more accurate timing
-        loop {
-            let now = chrono::Utc::now();
-            let current_mins = time_to_minutes(now.hour(), now.minute());
-            let wait_secs = seconds_until_start(current_mins, start_mins);
-
-            if wait_secs <= 0 {
-                // We've reached the start time
-                break;
-            }
-
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-        // Continue to next day's recording
+        // Wait for the next active window (loop will check at the top)
     } // End of daily loop - runs indefinitely
 }
 
@@ -1601,23 +1554,18 @@ pub fn run_multi_session(
                     }
                 }
 
-                // Calculate wait time until next scheduled start
-                if let Ok((start_hour, start_min)) =
-                    crate::schedule::parse_time(&session_config.schedule.record_start)
-                {
-                    let start_mins = crate::schedule::time_to_minutes(start_hour, start_min);
-                    let now = chrono::Utc::now();
-                    let current_mins = crate::schedule::time_to_minutes(now.hour(), now.minute());
-                    let wait_secs = crate::schedule::seconds_until_start(current_mins, start_mins);
-
+                // Wait for next scheduled window before retrying
+                if let (Ok(start), Ok(end)) = (
+                    crate::schedule::parse_time(&session_config.schedule.record_start),
+                    crate::schedule::parse_time(&session_config.schedule.record_end),
+                ) {
                     println!(
-                        "[{}] Restarting at next scheduled time ({} UTC) in {} seconds ({:.1} hours)",
+                        "[{}] Waiting for next recording window ({} - {} UTC)...",
                         session_name_for_handle,
                         session_config.schedule.record_start,
-                        wait_secs,
-                        wait_secs as f64 / 3600.0
+                        session_config.schedule.record_end
                     );
-                    thread::sleep(Duration::from_secs(wait_secs));
+                    crate::schedule::wait_for_active_window(start, end, &session_name_for_handle);
                 } else {
                     eprintln!(
                         "[{}] Invalid schedule time, waiting 60 seconds before retry",
