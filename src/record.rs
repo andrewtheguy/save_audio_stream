@@ -1229,6 +1229,7 @@ pub fn record(
                 name, config.schedule.record_start, config.schedule.record_end
             );
             wait_for_active_window(start, end, &name);
+            println!("[{}] Recording window started", name);
         }
 
         // We're now in the active window - calculate duration until end
