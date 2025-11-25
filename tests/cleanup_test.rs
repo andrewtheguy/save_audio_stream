@@ -3,21 +3,26 @@ use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use tokio::runtime::Runtime;
 
-// Import the cleanup functions from the library
+// Import the cleanup functions and SyncDb from the library
+use save_audio_stream::db::SyncDb;
 use save_audio_stream::record::{
     cleanup_old_sections_with_params, cleanup_old_sections_with_retention,
 };
 use save_audio_stream::queries::{metadata, sections, segments};
 
 /// Helper function to create a test database with segments
-/// Returns (pool, _guard) - keep _guard alive to prevent temp file deletion
-fn create_test_database() -> (SqlitePool, tempfile::TempDir) {
+/// Returns (pool, db, _guard) - keep _guard alive to prevent temp file deletion
+fn create_test_database() -> (SqlitePool, SyncDb, tempfile::TempDir) {
     let rt = Runtime::new().unwrap();
-    rt.block_on(async {
+    let (pool, guard) = rt.block_on(async {
         let (pool, guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
         save_audio_stream::db::init_database_schema(&pool).await.unwrap();
         (pool, guard)
-    })
+    });
+    // Create a SyncDb from the same path (need the temp_dir path)
+    let db_path = guard.path().join("test.sqlite");
+    let db = SyncDb::connect(&db_path).unwrap();
+    (pool, db, guard)
 }
 
 /// Helper to insert a segment with explicit timestamp (milliseconds)
@@ -195,7 +200,7 @@ fn insert_section(pool: &SqlitePool, section_id: i64, timestamp_ms: i64) {
 
 #[test]
 fn test_cleanup_deletes_old_segments_before_boundary() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Use a fixed reference time for deterministic testing
@@ -221,7 +226,7 @@ fn test_cleanup_deletes_old_segments_before_boundary() {
     assert_eq!(count_segments(&pool), 9);
 
     // Run cleanup with 168 hour retention (~7 days) using the same reference time
-    cleanup_old_sections_with_params(&pool, 168, Some(now)).unwrap();
+    cleanup_old_sections_with_params(&db, 168, Some(now)).unwrap();
 
     // Should have deleted segments before the keeper boundary (300h boundary + 2 segments)
     // Should keep: keeper boundary (175h) + 2 segments + recent boundary (50h) + 2 segments = 6 segments
@@ -237,7 +242,7 @@ fn test_cleanup_deletes_old_segments_before_boundary() {
 
 #[test]
 fn test_cleanup_preserves_all_recent_data() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // All segments within retention period (< 168 hours ago)
@@ -251,7 +256,7 @@ fn test_cleanup_preserves_all_recent_data() {
     assert_eq!(count_segments(&pool), 6);
 
     // Run cleanup with 168 hour retention
-    cleanup_old_sections_with_retention(&pool, 168).unwrap();
+    cleanup_old_sections_with_retention(&db, 168).unwrap();
 
     // All segments should be preserved
     assert_eq!(count_segments(&pool), 6);
@@ -259,7 +264,7 @@ fn test_cleanup_preserves_all_recent_data() {
 
 #[test]
 fn test_cleanup_with_no_old_data() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // All segments very recent
@@ -270,7 +275,7 @@ fn test_cleanup_with_no_old_data() {
     assert_eq!(count_segments(&pool), 3);
 
     // Run cleanup with 168 hour retention
-    cleanup_old_sections_with_retention(&pool, 168).unwrap();
+    cleanup_old_sections_with_retention(&db, 168).unwrap();
 
     // Nothing should be deleted
     assert_eq!(count_segments(&pool), 3);
@@ -278,7 +283,7 @@ fn test_cleanup_with_no_old_data() {
 
 #[test]
 fn test_cleanup_with_no_boundaries() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Old segments but NO boundaries
@@ -290,7 +295,7 @@ fn test_cleanup_with_no_boundaries() {
     assert_eq!(count_segments(&pool), 4);
 
     // Run cleanup with 168 hour retention
-    cleanup_old_sections_with_retention(&pool, 168).unwrap();
+    cleanup_old_sections_with_retention(&db, 168).unwrap();
 
     // Nothing should be deleted (no boundaries to anchor deletion)
     assert_eq!(count_segments(&pool), 4);
@@ -298,7 +303,7 @@ fn test_cleanup_with_no_boundaries() {
 
 #[test]
 fn test_cleanup_keeps_at_least_one_week_of_data() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Create data spanning multiple weeks
@@ -321,7 +326,7 @@ fn test_cleanup_keeps_at_least_one_week_of_data() {
     assert_eq!(count_segments(&pool), 8);
 
     // Run cleanup with 168 hour (7 day) retention
-    cleanup_old_sections_with_retention(&pool, 168).unwrap();
+    cleanup_old_sections_with_retention(&db, 168).unwrap();
 
     // Should delete segments before the 14-day-old boundary
     // Should keep: boundary at 14d + segment at 13d + boundary at 5d + segment at 4d + 2 recent = 6 segments
@@ -334,7 +339,7 @@ fn test_cleanup_keeps_at_least_one_week_of_data() {
 
 #[test]
 fn test_cleanup_with_multiple_old_boundaries() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Use a fixed reference time for deterministic testing
@@ -361,7 +366,7 @@ fn test_cleanup_with_multiple_old_boundaries() {
     assert_eq!(count_segments(&pool), 10);
 
     // Run cleanup with 168 hour retention using the same reference time
-    cleanup_old_sections_with_params(&pool, 168, Some(now)).unwrap();
+    cleanup_old_sections_with_params(&db, 168, Some(now)).unwrap();
 
     // Should delete all segments before the keeper boundary at 175h
     // Should keep: keeper (175h) + 1 segment + recent boundary + 1 segment = 4 segments
@@ -378,7 +383,7 @@ fn test_cleanup_with_multiple_old_boundaries() {
 
 #[test]
 fn test_cleanup_boundary_exactly_at_cutoff() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Boundary exactly at the cutoff point
@@ -392,7 +397,7 @@ fn test_cleanup_boundary_exactly_at_cutoff() {
     assert_eq!(count_segments(&pool), 4);
 
     // Run cleanup with 168 hour retention
-    cleanup_old_sections_with_retention(&pool, 168).unwrap();
+    cleanup_old_sections_with_retention(&db, 168).unwrap();
 
     // Boundary exactly at cutoff should be preserved as it's not strictly less than cutoff
     // All 4 segments should remain
@@ -402,13 +407,13 @@ fn test_cleanup_boundary_exactly_at_cutoff() {
 
 #[test]
 fn test_cleanup_empty_database() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
 
     // No segments at all
     assert_eq!(count_segments(&pool), 0);
 
     // Run cleanup - should not error
-    cleanup_old_sections_with_retention(&pool, 168).unwrap();
+    cleanup_old_sections_with_retention(&db, 168).unwrap();
 
     // Still empty
     assert_eq!(count_segments(&pool), 0);
@@ -416,7 +421,7 @@ fn test_cleanup_empty_database() {
 
 #[test]
 fn test_cleanup_verifies_sequential_deletion() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Create segments with IDs 1-10
@@ -433,7 +438,7 @@ fn test_cleanup_verifies_sequential_deletion() {
     assert_eq!(max_before, Some(7));
 
     // Run cleanup
-    cleanup_old_sections_with_retention(&pool, 168).unwrap();
+    cleanup_old_sections_with_retention(&db, 168).unwrap();
 
     // After cleanup, min_id should be the keeper boundary
     let (min_after, max_after) = get_segment_range(&pool);
@@ -452,7 +457,7 @@ fn test_cleanup_verifies_sequential_deletion() {
 
 #[test]
 fn test_cleanup_uses_pending_section_id_as_keeper() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Use a fixed reference time for deterministic testing
@@ -484,7 +489,7 @@ fn test_cleanup_uses_pending_section_id_as_keeper() {
     assert_eq!(count_segments(&pool), 9);
 
     // Run cleanup with 168 hour retention
-    cleanup_old_sections_with_params(&pool, 168, Some(now)).unwrap();
+    cleanup_old_sections_with_params(&db, 168, Some(now)).unwrap();
 
     // Should keep: keeper (pending 250h) + sections with start_timestamp_ms >= cutoff (50h)
     // Should delete: sections with start_timestamp_ms < cutoff except keeper
@@ -507,7 +512,7 @@ fn test_cleanup_uses_pending_section_id_as_keeper() {
 
 #[test]
 fn test_cleanup_falls_back_when_no_pending_section_id() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     let now = Utc::now();
@@ -527,7 +532,7 @@ fn test_cleanup_falls_back_when_no_pending_section_id() {
     assert_eq!(count_segments(&pool), 6);
 
     // NO pending_section_id in metadata - should use fallback logic
-    cleanup_old_sections_with_params(&pool, 168, Some(now)).unwrap();
+    cleanup_old_sections_with_params(&db, 168, Some(now)).unwrap();
 
     // Should use fallback: keep keeper boundary (175h) and everything newer
     assert_eq!(count_segments(&pool), 4);
@@ -541,7 +546,7 @@ fn test_cleanup_falls_back_when_no_pending_section_id() {
 
 #[test]
 fn test_cleanup_falls_back_when_pending_section_has_no_segments() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     let now = Utc::now();
@@ -566,7 +571,7 @@ fn test_cleanup_falls_back_when_pending_section_has_no_segments() {
     assert_eq!(count_segments(&pool), 6);
 
     // Cleanup should fall back to keeper logic since pending section has no segments
-    cleanup_old_sections_with_params(&pool, 168, Some(now)).unwrap();
+    cleanup_old_sections_with_params(&db, 168, Some(now)).unwrap();
 
     // Should use fallback logic
     assert_eq!(count_segments(&pool), 4);
@@ -577,7 +582,7 @@ fn test_cleanup_falls_back_when_pending_section_has_no_segments() {
 
 #[test]
 fn test_cleanup_preserves_pending_section_even_when_very_old() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     let now = Utc::now();
@@ -608,7 +613,7 @@ fn test_cleanup_preserves_pending_section_even_when_very_old() {
     assert_eq!(count_segments(&pool), 10);
 
     // Cleanup with 168 hour retention
-    cleanup_old_sections_with_params(&pool, 168, Some(now)).unwrap();
+    cleanup_old_sections_with_params(&db, 168, Some(now)).unwrap();
 
     // Should keep: keeper (pending 350h) + sections with start_timestamp_ms >= cutoff (50h)
     // Should delete: all other sections with start_timestamp_ms < cutoff
@@ -623,7 +628,7 @@ fn test_cleanup_preserves_pending_section_even_when_very_old() {
 
 #[test]
 fn test_cleanup_with_pending_section_id_and_multiple_sections_before_cutoff() {
-    let (pool, _guard) = create_test_database();
+    let (pool, db, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     let now = Utc::now();
@@ -657,7 +662,7 @@ fn test_cleanup_with_pending_section_id_and_multiple_sections_before_cutoff() {
     assert_eq!(count_segments(&pool), 12);
 
     // Cleanup
-    cleanup_old_sections_with_params(&pool, 168, Some(now)).unwrap();
+    cleanup_old_sections_with_params(&db, 168, Some(now)).unwrap();
 
     // Should keep: keeper (pending 200h) + sections with start_timestamp_ms >= cutoff (50h)
     // Should delete: sections with start_timestamp_ms < cutoff except keeper

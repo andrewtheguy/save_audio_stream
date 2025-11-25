@@ -1,11 +1,10 @@
 use fs2::FileExt;
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use sqlx::sqlite::SqlitePool;
+use crate::db::SyncDb;
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
-use tokio::runtime::Runtime;
 
 use crate::constants::EXPECTED_DB_VERSION;
 use crate::queries::{metadata, segments};
@@ -201,12 +200,12 @@ fn sync_single_show(
 
     // Open or create local database
     let local_db_path = local_dir.join(format!("{}.sqlite", show_name));
-    let pool = crate::db::open_database_connection_sync(&local_db_path)?;
+    let db = crate::db::SyncDb::connect(&local_db_path)?;
     // Ensure schema exists before querying metadata (idempotent for existing DBs)
-    crate::db::init_database_schema_sync(&pool)?;
+    crate::db::init_database_schema_sync(&db)?;
 
     // Check if database exists (has metadata)
-    let existing_unique_id: Option<String> = crate::db::query_metadata_sync(&pool, "unique_id")?;
+    let existing_unique_id: Option<String> = crate::db::query_metadata_sync(&db, "unique_id")?;
 
     let start_id = if let Some(existing_unique_id) = existing_unique_id {
         // Existing database - validate and resume
@@ -214,7 +213,7 @@ fn sync_single_show(
         println!("[{}]   Existing target unique_id: {}", show_name, existing_unique_id);
 
         // Validate local version matches expected version
-        let local_version: String = crate::db::query_metadata_sync(&pool, "version")?
+        let local_version: String = crate::db::query_metadata_sync(&db, "version")?
             .ok_or_else(|| "Failed to read version from local database: key not found")?;
 
         if local_version != EXPECTED_DB_VERSION {
@@ -227,7 +226,7 @@ fn sync_single_show(
         }
 
         // Validate source_unique_id matches remote unique_id
-        let source_unique_id: String = crate::db::query_metadata_sync(&pool, "source_unique_id")?
+        let source_unique_id: String = crate::db::query_metadata_sync(&db, "source_unique_id")?
             .ok_or_else(|| "Failed to read source_unique_id from local database: key not found")?;
 
         if source_unique_id != metadata.unique_id {
@@ -240,18 +239,18 @@ fn sync_single_show(
 
         // Validate metadata matches (audio_format, split_interval, bitrate)
         // Version is already validated above
-        validate_metadata(&pool, &metadata)?;
+        validate_metadata(&db, &metadata)?;
 
         // Get last synced ID
-        let last_synced_id: i64 = crate::db::query_metadata_sync(&pool, "last_synced_id")?
+        let last_synced_id: i64 = crate::db::query_metadata_sync(&db, "last_synced_id")?
             .map(|v| v.parse().unwrap_or(0))
             .unwrap_or(0);
 
         // Ensure last_boundary_end_id exists (for older databases that don't have it)
-        let has_boundary_end = crate::db::metadata_exists_sync(&pool, "last_boundary_end_id")?;
+        let has_boundary_end = crate::db::metadata_exists_sync(&db, "last_boundary_end_id")?;
 
         if !has_boundary_end {
-            crate::db::insert_metadata_sync(&pool, "last_boundary_end_id", "0")?;
+            crate::db::insert_metadata_sync(&db, "last_boundary_end_id", "0")?;
         }
 
         println!("[{}]   Resuming from segment {}", show_name, last_synced_id + 1);
@@ -264,21 +263,21 @@ fn sync_single_show(
         println!("[{}]   Initialized with target unique_id: {}", show_name, target_unique_id);
 
         // Initialize schema using common helper
-        crate::db::init_database_schema_sync(&pool)?;
+        crate::db::init_database_schema_sync(&db)?;
 
         // Insert metadata from remote
-        crate::db::insert_metadata_sync(&pool, "version", &metadata.version)?;
-        crate::db::insert_metadata_sync(&pool, "unique_id", &target_unique_id)?;
-        crate::db::insert_metadata_sync(&pool, "name", &metadata.name)?;
-        crate::db::insert_metadata_sync(&pool, "audio_format", &metadata.audio_format)?;
-        crate::db::insert_metadata_sync(&pool, "split_interval", &metadata.split_interval)?;
-        crate::db::insert_metadata_sync(&pool, "bitrate", &metadata.bitrate)?;
-        crate::db::insert_metadata_sync(&pool, "sample_rate", &metadata.sample_rate)?;
-        crate::db::insert_metadata_sync(&pool, "is_recipient", "true")?;
+        crate::db::insert_metadata_sync(&db, "version", &metadata.version)?;
+        crate::db::insert_metadata_sync(&db, "unique_id", &target_unique_id)?;
+        crate::db::insert_metadata_sync(&db, "name", &metadata.name)?;
+        crate::db::insert_metadata_sync(&db, "audio_format", &metadata.audio_format)?;
+        crate::db::insert_metadata_sync(&db, "split_interval", &metadata.split_interval)?;
+        crate::db::insert_metadata_sync(&db, "bitrate", &metadata.bitrate)?;
+        crate::db::insert_metadata_sync(&db, "sample_rate", &metadata.sample_rate)?;
+        crate::db::insert_metadata_sync(&db, "is_recipient", "true")?;
         // Store the source database's unique_id for validation on future syncs
-        crate::db::insert_metadata_sync(&pool, "source_unique_id", &metadata.unique_id)?;
-        crate::db::insert_metadata_sync(&pool, "last_synced_id", "0")?;
-        crate::db::insert_metadata_sync(&pool, "last_boundary_end_id", "0")?;
+        crate::db::insert_metadata_sync(&db, "source_unique_id", &metadata.unique_id)?;
+        crate::db::insert_metadata_sync(&db, "last_synced_id", "0")?;
+        crate::db::insert_metadata_sync(&db, "last_boundary_end_id", "0")?;
 
         metadata.min_id
     };
@@ -298,7 +297,7 @@ fn sync_single_show(
     // (REPLACE would trigger CASCADE delete of associated segments)
     let sections_count = remote_sections.len();
     for section in remote_sections {
-        crate::db::insert_section_or_ignore_sync(&pool, section.id, section.start_timestamp_ms)?;
+        crate::db::insert_section_or_ignore_sync(&db, section.id, section.start_timestamp_ms)?;
     }
     println!("[{}]   Synced {} sections", show_name, sections_count);
 
@@ -341,7 +340,6 @@ fn sync_single_show(
         }
 
         // Insert segments into local database (all operations in one transaction)
-        let rt = Runtime::new().map_err(|e| format!("Failed to create runtime: {}", e))?;
         let mut last_boundary_end_id: Option<i64> = None;
 
         // Track section boundaries
@@ -361,11 +359,11 @@ fn sync_single_show(
 
         let last_id = segments.last().unwrap().id;
         let segments_ref = &segments;
-        let pool_ref = &pool;
         let boundary_end = last_boundary_end_id;
 
-        rt.block_on(async {
-            let mut tx = pool_ref.begin().await?;
+        db.block_on(async {
+            let mut tx = db.pool().begin().await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
             for segment in segments_ref {
                 let sql = segments::insert_with_id(
@@ -376,21 +374,25 @@ fn sync_single_show(
                     segment.section_id,
                     segment.duration_samples,
                 );
-                sqlx::query(&sql).execute(&mut *tx).await?;
+                sqlx::query(&sql).execute(&mut *tx).await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
 
             // Update last_synced_id (in same transaction)
             let sql = metadata::update("last_synced_id", &last_id.to_string());
-            sqlx::query(&sql).execute(&mut *tx).await?;
+            sqlx::query(&sql).execute(&mut *tx).await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
             // Update last_boundary_end_id if we found a new boundary in this batch
             if let Some(boundary) = boundary_end {
                 let sql = metadata::update("last_boundary_end_id", &boundary.to_string());
-                sqlx::query(&sql).execute(&mut *tx).await?;
+                sqlx::query(&sql).execute(&mut *tx).await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
 
-            tx.commit().await?;
-            Ok::<(), sqlx::Error>(())
+            tx.commit().await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            Ok(())
         }).map_err(|e| format!("Database transaction error: {}", e))?;
 
         println!(
@@ -414,11 +416,11 @@ fn sync_single_show(
 
 /// Validate that local metadata matches remote metadata
 fn validate_metadata(
-    pool: &SqlitePool,
+    db: &SyncDb,
     remote: &ShowMetadata,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Validate version
-    let local_version: String = crate::db::query_metadata_sync(pool, "version")?
+    let local_version: String = crate::db::query_metadata_sync(db, "version")?
         .ok_or_else(|| "Failed to read version from local database: key not found")?;
     if local_version != remote.version {
         return Err(format!(
@@ -429,7 +431,7 @@ fn validate_metadata(
     }
 
     // Validate audio_format
-    let local_format: String = crate::db::query_metadata_sync(pool, "audio_format")?
+    let local_format: String = crate::db::query_metadata_sync(db, "audio_format")?
         .ok_or_else(|| "Failed to read audio_format from local database: key not found")?;
     if local_format != remote.audio_format {
         return Err(format!(
@@ -440,7 +442,7 @@ fn validate_metadata(
     }
 
     // Validate split_interval
-    let local_interval: String = crate::db::query_metadata_sync(pool, "split_interval")?
+    let local_interval: String = crate::db::query_metadata_sync(db, "split_interval")?
         .ok_or_else(|| "Failed to read split_interval from local database: key not found")?;
     if local_interval != remote.split_interval {
         return Err(format!(
@@ -451,7 +453,7 @@ fn validate_metadata(
     }
 
     // Validate bitrate
-    let local_bitrate: String = crate::db::query_metadata_sync(pool, "bitrate")?
+    let local_bitrate: String = crate::db::query_metadata_sync(db, "bitrate")?
         .ok_or_else(|| "Failed to read bitrate from local database: key not found")?;
     if local_bitrate != remote.bitrate {
         return Err(format!(
