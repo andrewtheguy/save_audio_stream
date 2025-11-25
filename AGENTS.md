@@ -1,1 +1,2 @@
-since the proejct is still not finalized yet, no backward compatibility or migration path is needed for any updates to reduce unnecessary complexity.
+- since the project is still not finalized yet, no backward compatibility or migration path is needed for any updates including sqlite to reduce unnecessary complexity.
+- an exception would be the postgresql database because it is storing data in its final form for long-term use.
