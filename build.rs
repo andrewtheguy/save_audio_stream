@@ -1,3 +1,4 @@
+use std::fs;
 use std::process::Command;
 
 fn main() {
@@ -40,13 +41,20 @@ fn main() {
                 panic!("Frontend build failed: {}", e);
             }
         }
+        // Tell cargo to rerun if app files change (excluding node_modules and dist)
+        let exclude = ["node_modules", "dist"];
+        //let mut debug_output = String::new();
+        if let Ok(entries) = fs::read_dir("app") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if !exclude.contains(&name.to_string_lossy().as_ref()) {
+                    let path = entry.path();
+                    println!("cargo:rerun-if-changed={}", path.display());
+                    //debug_output.push_str(&format!("{}\n", path.display()));
+                }
+            }
+        }
+        //fs::write("build_debug.txt", debug_output).ok();
     }
 
-    // Tell cargo to rerun if app files change
-    //println!("cargo:rerun-if-changed=app/");
-    println!("cargo:rerun-if-changed=app/src/");
-    println!("cargo:rerun-if-changed=app/build.ts");
-    println!("cargo:rerun-if-changed=app/deno.json");
-    println!("cargo:rerun-if-changed=app/deno.lock");
-    println!("cargo:rerun-if-changed=app/deps.ts");
 }
