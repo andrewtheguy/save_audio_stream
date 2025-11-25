@@ -78,7 +78,75 @@ save_audio_stream sync \
   -s 500
 ```
 
-## Behavior
+## Receiver Mode (Continuous Sync Server)
+
+For long-running deployments, use the `receiver` command instead of `sync`. This starts an HTTP server with:
+- **Background periodic sync**: Runs automatically at configurable intervals (default: 60 seconds)
+- **Web UI**: Browse and play synced audio
+- **Manual sync trigger**: Optional button to trigger immediate sync
+
+### Command Syntax
+
+```bash
+save_audio_stream receiver --config <CONFIG_FILE>
+```
+
+Or for one-time sync without starting the server:
+```bash
+save_audio_stream receiver --config <CONFIG_FILE> --sync-only
+```
+
+### Configuration (TOML)
+
+```toml
+config_type = "receiver"
+remote_url = "http://remote:17000"
+local_dir = "./synced"
+shows = ["show1", "show2"]  # Optional filter
+port = 18000
+sync_interval_seconds = 60
+chunk_size = 100
+```
+
+### Sync Architecture
+
+**Periodic sync is backend-driven:**
+- A background thread runs on the server, triggering sync at `sync_interval_seconds` intervals
+- The frontend web UI only displays sync status (polls `/api/sync/status` every 3 seconds)
+- The "Sync Now" button provides manual trigger but is not required for operation
+- An atomic flag prevents concurrent sync operations
+
+```
+┌─────────────────────────────────────────────────────┐
+│              Receiver Backend                       │
+│  ┌─────────────────────────────────────────────┐   │
+│  │  Background Sync Thread (std::thread)       │   │
+│  │  - Runs every sync_interval_seconds         │   │
+│  │  - Calls sync_shows() automatically         │   │
+│  │  - Uses AtomicBool to prevent overlap       │   │
+│  └─────────────────────────────────────────────┘   │
+│                                                     │
+│  ┌─────────────────────────────────────────────┐   │
+│  │  HTTP Server (Tokio async)                  │   │
+│  │  - GET /api/sync/status → check progress    │   │
+│  │  - POST /api/sync → manual trigger          │   │
+│  │  - Serves web UI and audio streams          │   │
+│  └─────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+```
+
+### Receiver Configuration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `remote_url` | URL of remote recording server | Required |
+| `local_dir` | Local directory for synced databases | Required |
+| `shows` | Show name filter (omit for all) | All shows |
+| `port` | HTTP server port | 18000 |
+| `sync_interval_seconds` | Seconds between automatic syncs | 60 |
+| `chunk_size` | Batch size for segment fetching | 100 |
+
+## One-Shot Sync Behavior
 
 - **Sequential Processing**: Shows are synced one at a time in the order specified
 - **Resumable**: Automatically resumes from last synced segment if interrupted
