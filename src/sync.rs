@@ -1,10 +1,13 @@
 use reqwest::blocking::Client;
 use serde::Deserialize;
+use sqlx::postgres::PgPool;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::config::SyncConfig;
 use crate::constants::EXPECTED_DB_VERSION;
-use crate::db_postgres::SyncDbPg;
+use crate::db_postgres::{self, SyncDbPg};
 use crate::queries::{metadata, segments};
 
 #[derive(Debug, Deserialize)]
@@ -48,13 +51,107 @@ struct SectionData {
 }
 
 /// Get the PostgreSQL database name for a show
-/// Pattern: save_audio_{show_name}
+/// Pattern: save_audio_show_{show_name}
 pub fn get_pg_database_name(show_name: &str) -> String {
-    format!("save_audio_{}", show_name)
+    format!("save_audio_show_{}", show_name)
+}
+
+/// Lease name for global sync coordination
+pub const SYNC_LEASE_NAME: &str = "sync";
+
+/// Result of sync_shows indicating whether sync was performed
+#[derive(Debug)]
+pub enum SyncResult {
+    /// Sync completed successfully
+    Completed,
+    /// Sync was skipped because another instance holds the lease
+    Skipped,
 }
 
 /// Main entry point for syncing multiple shows (PostgreSQL version)
+/// Handles lease acquisition, renewal, and release internally.
+/// Returns SyncResult::Skipped if another instance is already syncing.
 pub fn sync_shows(
+    config: &SyncConfig,
+    password: &str,
+    global_pool: &PgPool,
+) -> Result<SyncResult, Box<dyn std::error::Error + Send + Sync>> {
+    // Generate unique holder ID for this sync operation
+    let holder_id = format!(
+        "sync-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
+
+    // Try to acquire the lease
+    let rt = tokio::runtime::Runtime::new()?;
+    let acquired = rt.block_on(async {
+        db_postgres::try_acquire_lease_pg(global_pool, SYNC_LEASE_NAME, &holder_id, lease_duration_ms).await
+    })?;
+
+    if !acquired {
+        println!("[Sync] Lease held by another instance, skipping");
+        return Ok(SyncResult::Skipped);
+    }
+
+    println!("[Sync] Acquired sync lease");
+
+    // Spawn lease renewal thread
+    let renewal_pool = global_pool.clone();
+    let renewal_holder_id = holder_id.clone();
+    let renewal_interval = std::time::Duration::from_millis((lease_duration_ms / 3) as u64);
+    let stop_renewal = Arc::new(AtomicBool::new(false));
+    let stop_renewal_clone = stop_renewal.clone();
+
+    let renewal_handle = std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create renewal runtime");
+        while !stop_renewal_clone.load(Ordering::SeqCst) {
+            std::thread::sleep(renewal_interval);
+            if stop_renewal_clone.load(Ordering::SeqCst) {
+                break;
+            }
+            let renewed = rt.block_on(async {
+                db_postgres::renew_lease_pg(
+                    &renewal_pool,
+                    SYNC_LEASE_NAME,
+                    &renewal_holder_id,
+                    lease_duration_ms,
+                )
+                .await
+            });
+            match renewed {
+                Ok(true) => println!("[Sync] Lease renewed"),
+                Ok(false) => eprintln!("[Sync] Warning: Failed to renew lease - lost ownership"),
+                Err(e) => eprintln!("[Sync] Warning: Lease renewal error: {}", e),
+            }
+        }
+    });
+
+    // Run the actual sync, capturing the result
+    let sync_result = sync_shows_internal(config, password);
+
+    // Stop renewal thread
+    stop_renewal.store(true, Ordering::SeqCst);
+    let _ = renewal_handle.join();
+
+    // Release the lease
+    let _ = rt.block_on(async {
+        db_postgres::release_lease_pg(global_pool, SYNC_LEASE_NAME, &holder_id).await
+    });
+    println!("[Sync] Released sync lease");
+
+    // Return the sync result
+    sync_result?;
+    Ok(SyncResult::Completed)
+}
+
+/// Internal sync implementation (without lease handling)
+fn sync_shows_internal(
     config: &SyncConfig,
     password: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
