@@ -5,7 +5,7 @@
 config_type = 'receiver'
 
 # Required: URL of remote recording server
-remote_url = 'http://private.hpmp.net:17000'
+remote_url = 'http://localhost:17000'
 
 # Required: PostgreSQL connection URL (without password)
 # Format: postgres://user@host:port

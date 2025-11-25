@@ -1,4 +1,4 @@
-use sea_query::{Expr, Func, Order, PostgresQueryBuilder, Query, SqliteQueryBuilder};
+use sea_query::{Expr, ExprTrait, Func, Order, PostgresQueryBuilder, Query, SqliteQueryBuilder};
 
 use crate::schema::{Sections, Segments};
 
@@ -351,7 +351,8 @@ pub fn select_sessions_with_join_pg() -> String {
             sea_query::Alias::new("end_segment_id"),
         )
         .expr_as(
-            Func::sum(Expr::col((Segments::Table, Segments::DurationSamples))),
+            Func::sum(Expr::col((Segments::Table, Segments::DurationSamples)))
+                .cast_as(sea_query::Alias::new("BIGINT")),
             sea_query::Alias::new("total_duration_samples"),
         )
         .from(Sections::Table)
@@ -386,7 +387,8 @@ pub fn select_sessions_with_join_pg_filtered(start_ts: Option<i64>, end_ts: Opti
             sea_query::Alias::new("end_segment_id"),
         )
         .expr_as(
-            Func::sum(Expr::col((Segments::Table, Segments::DurationSamples))),
+            Func::sum(Expr::col((Segments::Table, Segments::DurationSamples)))
+                .cast_as(sea_query::Alias::new("BIGINT")),
             sea_query::Alias::new("total_duration_samples"),
         )
         .from(Sections::Table)
