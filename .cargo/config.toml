@@ -2,6 +2,9 @@
 rustflags = []
 
 [env]
+# Static link libopus (bypass pkg-config to build from source)
+LIBOPUS_STATIC = "1"
+LIBOPUS_NO_PKG = "1"
 # Required for building audiopus_sys on Windows with newer CMake
 CMAKE_POLICY_DEFAULT_CMP0091 = { value = "NEW", force = true }
 CMAKE_POLICY_VERSION_MINIMUM = { value = "3.5", force = true }

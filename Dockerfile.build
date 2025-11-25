@@ -11,7 +11,7 @@ COPY --from=deno /usr/bin/deno /usr/local/bin/deno
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libopus-dev \
+    cmake \
     libssl-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
@@ -22,10 +22,9 @@ WORKDIR /build
 # Copy source code
 COPY . .
 
-# Build the release binary with architecture-specific cache mounts (static linking)
-ENV LIBOPUS_STATIC=1
-RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-${TARGETARCH} \
-    --mount=type=cache,target=/build/target,id=cargo-target-${TARGETARCH} \
+# Build the release binary with architecture-specific cache mounts
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-v2-${TARGETARCH} \
+    --mount=type=cache,target=/build/target,id=cargo-target-v2-${TARGETARCH} \
     cargo build --release && \
     cp target/release/save_audio_stream /save_audio_stream
 

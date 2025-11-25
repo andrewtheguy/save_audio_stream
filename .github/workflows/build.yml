@@ -25,11 +25,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get install -y libopus-dev pkg-config
+          sudo apt-get install -y cmake pkg-config
 
-      - name: Build (static)
-        env:
-          LIBOPUS_STATIC: "1"
+      - name: Build
         run: cargo build --release
 
       - name: Rename binary
