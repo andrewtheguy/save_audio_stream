@@ -2,32 +2,14 @@
 
 **Status**: ✅ Implemented
 
-This document describes the synchronization system that enables the relay architecture.
+This document describes the synchronization system that enables the relay architecture. See [README.md](../README.md) for architecture diagram.
 
 ## Overview
 
-The sync system enables a **distributed recording architecture**:
-
-```
-                                    ┌─────────────────────┐
-                         pull sync  │   Receiver Server   │
-                        ◄────────── │ (Less Stable/Local) │
-┌─────────────────────┐   (HTTP)    ├─────────────────────┤
-│   Recording Server  │             │  Web Playback UI    │
-│   (Stable Network)  │             │  Syncs when online  │
-├─────────────────────┤             └─────────────────────┘
-│  Radio Stream ────► │
-│  SQLite Database    │             ┌─────────────────────┐
-│                     │   push      │   SFTP Storage      │
-│  Scheduled daily    │ ──────────► │   (Optional)        │
-│  Serves sync API    │   archive   │  Long-term backup   │
-└─────────────────────┘             └─────────────────────┘
-```
-
 **Key Design Goals:**
 - **Recording server** runs on stable infrastructure with scheduled daily recording windows (required break prevents drift)
-- **Receiver pulls** from recording server - can have intermittent connectivity, catches up automatically
-- **SFTP push** (optional) - recording server archives completed sessions to remote storage
+- **Receiver pulls SQLite data** from recording server - for live playback, can have intermittent connectivity
+- **SFTP push** (optional) - recording server exports and pushes audio files for long-term archive
 - **Resumable transfers** - interrupted syncs resume from last successful segment
 
 ## Use Case

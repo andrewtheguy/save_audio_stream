@@ -2,6 +2,8 @@
 
 A live audio stream relay service that records Shoutcast/Icecast streams and syncs them to remote servers for playback.
 
+> **Disclaimer**: This tool is intended for **private personal use only**, such as time-shifting live broadcasts for personal listening or capturing streams for AI/ML workflows (e.g., speech-to-text, audio analysis). Do not use this software for illegal purposes including but not limited to: setting up public relay servers, redistributing copyrighted content, or circumventing access controls. Users are responsible for complying with applicable laws and the terms of service of any streams they access.
+
 ## Architecture Overview
 
 This tool is designed for scenarios where you need to:
@@ -11,26 +13,26 @@ This tool is designed for scenarios where you need to:
 
 ```
                                     ┌─────────────────────┐
-                         pull sync  │   Receiver Server   │
+                       pull SQLite  │   Receiver Server   │
                         ◄────────── │ (Less Stable/Local) │
-┌─────────────────────┐             ├─────────────────────┤
+┌─────────────────────┐    data     ├─────────────────────┤
 │   Recording Server  │             │  Web Playback UI    │
 │   (Stable Network)  │             │  - Can be offline   │
 ├─────────────────────┤             │  - Pulls on demand  │
 │                     │             └─────────────────────┘
 │  Internet Radio ──► │
 │  Stream Recording   │             ┌─────────────────────┐
-│                     │  push       │   SFTP Storage      │
+│                     │    push     │   SFTP Storage      │
 │  - Scheduled daily  │ ──────────► │   (Optional)        │
-│  - Serves sync API  │  archive    │  - Long-term backup │
+│  - Serves sync API  │ audio files │  - Long-term backup │
 └─────────────────────┘             └─────────────────────┘
 ```
 
 **Note:** Recording runs on a daily schedule (e.g., 9am-5pm) with a required break each day to prevent timestamp drift.
 
 **Data Flow:**
-- **Receiver pulls** from recording server via HTTP (sync API)
-- **Recording server pushes** to SFTP for archival (optional)
+- **Receiver pulls SQLite data** from recording server via HTTP (sync API) - for live playback
+- **SFTP receives exported audio files** pushed from recording server (optional) - for long-term archive
 
 **Use Case**: Record radio streams on a cloud server with reliable connectivity. Receivers (home server, NAS) pull recordings whenever they're online. Optionally archive completed sessions to SFTP storage for long-term backup.
 
