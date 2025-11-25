@@ -476,8 +476,8 @@ pub fn get_latest_section_before_cutoff_pg_sync(db: &SyncDbPg, cutoff_ms: i64) -
 /// Global database name for storing lease information
 pub const GLOBAL_DATABASE_NAME: &str = "save_audio_global";
 
-/// Default lease duration in milliseconds (30 seconds)
-pub const DEFAULT_LEASE_DURATION_MS: i64 = 30_000;
+/// Default lease duration in milliseconds (2 minutes)
+pub const DEFAULT_LEASE_DURATION_MS: i64 = 120_000;
 
 /// Create the sync_leases table for lease-based locking
 /// Uses TIMESTAMP (without time zone) storing UTC values (Rails convention)
