@@ -12,12 +12,54 @@ pub use sqlx::sqlite::SqlitePool as Pool;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-fn block_on_db<F, T>(fut: F) -> Result<T, DynError>
-where
-    F: Future<Output = Result<T, DynError>>,
-{
-    let rt = Runtime::new()?;
-    rt.block_on(fut)
+/// Synchronous database wrapper that owns a runtime for blocking operations.
+/// Follows the rust-postgres pattern of embedding runtime in the connection.
+/// This avoids creating a new Runtime for every sync operation.
+pub struct SyncDb {
+    pool: SqlitePool,
+    runtime: Runtime,
+}
+
+impl SyncDb {
+    /// Open a read-write database connection with embedded runtime
+    pub fn connect(db_path: &Path) -> Result<Self, DynError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let pool = runtime.block_on(open_database_connection(db_path))?;
+        Ok(Self { pool, runtime })
+    }
+
+    /// Open a read-only database connection with embedded runtime
+    pub fn connect_readonly(db_path: impl AsRef<Path>) -> Result<Self, DynError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let pool = runtime.block_on(open_readonly_connection(db_path))?;
+        Ok(Self { pool, runtime })
+    }
+
+    /// Open a read-only immutable database connection with embedded runtime
+    pub fn connect_readonly_immutable(db_path: impl AsRef<Path>) -> Result<Self, DynError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let pool = runtime.block_on(open_readonly_connection_immutable(db_path))?;
+        Ok(Self { pool, runtime })
+    }
+
+    /// Block on an async future using the embedded runtime
+    pub fn block_on<F, T>(&self, fut: F) -> Result<T, DynError>
+    where
+        F: Future<Output = Result<T, DynError>>,
+    {
+        self.runtime.block_on(fut)
+    }
+
+    /// Get a reference to the underlying pool
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
 }
 
 /// Get the database path for a given output directory and name
@@ -322,99 +364,80 @@ where
 
 // ============================================================================
 // Sync wrapper functions for use in blocking code (record.rs, sync.rs)
-// These create a tokio runtime and block on async operations
+// These use SyncDb's embedded runtime to block on async operations
 // ============================================================================
 
-/// Sync wrapper: Open a database connection pool
-pub fn open_database_connection_sync(db_path: &Path) -> Result<SqlitePool, DynError> {
-    block_on_db(open_database_connection(db_path))
-}
-
-/// Sync wrapper: Open a read-only database connection pool
-pub fn open_readonly_connection_sync(
-    db_path: impl AsRef<Path>,
-) -> Result<SqlitePool, DynError> {
-    block_on_db(open_readonly_connection(db_path))
-}
-
-/// Sync wrapper: Open a read-only immutable database connection pool
-pub fn open_readonly_connection_immutable_sync(
-    db_path: impl AsRef<Path>,
-) -> Result<SqlitePool, DynError> {
-    block_on_db(open_readonly_connection_immutable(db_path))
-}
-
 /// Sync wrapper: Initialize database schema
-pub fn init_database_schema_sync(pool: &SqlitePool) -> Result<(), DynError> {
-    block_on_db(init_database_schema(pool))
+pub fn init_database_schema_sync(db: &SyncDb) -> Result<(), DynError> {
+    db.block_on(init_database_schema(db.pool()))
 }
 
 /// Sync wrapper: Query metadata
-pub fn query_metadata_sync(pool: &SqlitePool, key: &str) -> Result<Option<String>, DynError> {
-    block_on_db(query_metadata(pool, key))
+pub fn query_metadata_sync(db: &SyncDb, key: &str) -> Result<Option<String>, DynError> {
+    db.block_on(query_metadata(db.pool(), key))
 }
 
 /// Sync wrapper: Insert metadata
-pub fn insert_metadata_sync(pool: &SqlitePool, key: &str, value: &str) -> Result<(), DynError> {
-    block_on_db(insert_metadata(pool, key, value))
+pub fn insert_metadata_sync(db: &SyncDb, key: &str, value: &str) -> Result<(), DynError> {
+    db.block_on(insert_metadata(db.pool(), key, value))
 }
 
 /// Sync wrapper: Upsert metadata
-pub fn upsert_metadata_sync(pool: &SqlitePool, key: &str, value: &str) -> Result<(), DynError> {
-    block_on_db(upsert_metadata(pool, key, value))
+pub fn upsert_metadata_sync(db: &SyncDb, key: &str, value: &str) -> Result<(), DynError> {
+    db.block_on(upsert_metadata(db.pool(), key, value))
 }
 
 /// Sync wrapper: Execute a raw SQL query
-pub fn execute_sync(pool: &SqlitePool, sql: &str) -> Result<u64, DynError> {
-    block_on_db(execute(pool, sql))
+pub fn execute_sync(db: &SyncDb, sql: &str) -> Result<u64, DynError> {
+    db.block_on(execute(db.pool(), sql))
 }
 
 /// Sync wrapper: Query a single optional row value
-pub fn query_one_optional_sync<T>(pool: &SqlitePool, sql: &str) -> Result<Option<T>, DynError>
+pub fn query_one_optional_sync<T>(db: &SyncDb, sql: &str) -> Result<Option<T>, DynError>
 where
     T: for<'r> sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
 {
-    block_on_db(query_one_optional(pool, sql))
+    db.block_on(query_one_optional(db.pool(), sql))
 }
 
 /// Sync wrapper: Query a single row (returns error if not found)
-pub fn query_one_sync<T>(pool: &SqlitePool, sql: &str) -> Result<T, DynError>
+pub fn query_one_sync<T>(db: &SyncDb, sql: &str) -> Result<T, DynError>
 where
     T: for<'r> sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
 {
-    block_on_db(query_one(pool, sql))
+    db.block_on(query_one(db.pool(), sql))
 }
 
 /// Sync wrapper: Insert a section
-pub fn insert_section_sync(pool: &SqlitePool, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
-    block_on_db(insert_section(pool, id, start_timestamp_ms))
+pub fn insert_section_sync(db: &SyncDb, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
+    db.block_on(insert_section(db.pool(), id, start_timestamp_ms))
 }
 
 /// Sync wrapper: Insert or ignore a section (for sync)
-pub fn insert_section_or_ignore_sync(pool: &SqlitePool, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
-    block_on_db(insert_section_or_ignore(pool, id, start_timestamp_ms))
+pub fn insert_section_or_ignore_sync(db: &SyncDb, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
+    db.block_on(insert_section_or_ignore(db.pool(), id, start_timestamp_ms))
 }
 
 /// Sync wrapper: Delete old sections
-pub fn delete_old_sections_sync(pool: &SqlitePool, cutoff_ms: i64, keeper_section_id: i64) -> Result<u64, DynError> {
-    block_on_db(delete_old_sections(pool, cutoff_ms, keeper_section_id))
+pub fn delete_old_sections_sync(db: &SyncDb, cutoff_ms: i64, keeper_section_id: i64) -> Result<u64, DynError> {
+    db.block_on(delete_old_sections(db.pool(), cutoff_ms, keeper_section_id))
 }
 
 /// Sync wrapper: Insert a segment
 pub fn insert_segment_sync(
-    pool: &SqlitePool,
+    db: &SyncDb,
     timestamp_ms: i64,
     is_timestamp_from_source: bool,
     section_id: i64,
     audio_data: &[u8],
     duration_samples: i64,
 ) -> Result<(), DynError> {
-    block_on_db(insert_segment(pool, timestamp_ms, is_timestamp_from_source, section_id, audio_data, duration_samples))
+    db.block_on(insert_segment(db.pool(), timestamp_ms, is_timestamp_from_source, section_id, audio_data, duration_samples))
 }
 
 /// Sync wrapper: Insert a segment with explicit ID (for sync)
 pub fn insert_segment_with_id_sync(
-    pool: &SqlitePool,
+    db: &SyncDb,
     id: i64,
     timestamp_ms: i64,
     is_timestamp_from_source: i32,
@@ -422,36 +445,36 @@ pub fn insert_segment_with_id_sync(
     section_id: i64,
     duration_samples: i64,
 ) -> Result<(), DynError> {
-    block_on_db(insert_segment_with_id(pool, id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples))
+    db.block_on(insert_segment_with_id(db.pool(), id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples))
 }
 
 /// Sync wrapper: Check if segments exist for a section
-pub fn segments_exist_for_section_sync(pool: &SqlitePool, section_id: i64) -> Result<bool, DynError> {
-    block_on_db(segments_exist_for_section(pool, section_id))
+pub fn segments_exist_for_section_sync(db: &SyncDb, section_id: i64) -> Result<bool, DynError> {
+    db.block_on(segments_exist_for_section(db.pool(), section_id))
 }
 
 /// Sync wrapper: Update metadata
-pub fn update_metadata_sync(pool: &SqlitePool, key: &str, value: &str) -> Result<(), DynError> {
-    block_on_db(update_metadata(pool, key, value))
+pub fn update_metadata_sync(db: &SyncDb, key: &str, value: &str) -> Result<(), DynError> {
+    db.block_on(update_metadata(db.pool(), key, value))
 }
 
 /// Sync wrapper: Check if metadata key exists
-pub fn metadata_exists_sync(pool: &SqlitePool, key: &str) -> Result<bool, DynError> {
-    block_on_db(metadata_exists(pool, key))
+pub fn metadata_exists_sync(db: &SyncDb, key: &str) -> Result<bool, DynError> {
+    db.block_on(metadata_exists(db.pool(), key))
 }
 
 /// Sync wrapper: Get latest section before cutoff
-pub fn get_latest_section_before_cutoff_sync(pool: &SqlitePool, cutoff_ms: i64) -> Result<Option<i64>, DynError> {
-    block_on_db(get_latest_section_before_cutoff(pool, cutoff_ms))
+pub fn get_latest_section_before_cutoff_sync(db: &SyncDb, cutoff_ms: i64) -> Result<Option<i64>, DynError> {
+    db.block_on(get_latest_section_before_cutoff(db.pool(), cutoff_ms))
 }
 
 /// Sync wrapper for running multiple operations in a transaction
-pub fn with_transaction_sync<F, T>(pool: &SqlitePool, f: F) -> Result<T, DynError>
+pub fn with_transaction_sync<F, T>(db: &SyncDb, f: F) -> Result<T, DynError>
 where
     F: FnOnce(&mut Transaction<'_, sqlx::Sqlite>) -> Result<T, DynError>,
 {
-    block_on_db(async {
-        let mut tx = pool.begin().await?;
+    db.block_on(async {
+        let mut tx = db.pool().begin().await?;
         let result = f(&mut tx);
 
         match result {

@@ -20,7 +20,7 @@ use fs2::FileExt;
 use log::debug;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
 use reqwest::blocking::Client;
-use sqlx::sqlite::SqlitePool;
+use crate::db::SyncDb;
 use std::fs::File;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -215,10 +215,10 @@ fn test_url_decode(url: &str, name: &str) -> Result<(), Box<dyn std::error::Erro
 /// - No row -> Ok(None) (acceptable - key doesn't exist)
 /// - Other errors -> Err (corruption, locking, table missing, etc.)
 fn query_optional_metadata(
-    pool: &SqlitePool,
+    db: &SyncDb,
     key: &str,
 ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
-    db::query_metadata_sync(pool, key)
+    db::query_metadata_sync(db, key)
         .map_err(|e| format!("Failed to query metadata key '{}': {}", key, e).into())
 }
 
@@ -226,15 +226,15 @@ fn query_optional_metadata(
 ///
 /// For testing, pass a specific retention_hours value and optionally a fixed reference_time.
 pub fn cleanup_old_sections_with_retention(
-    pool: &SqlitePool,
+    db: &SyncDb,
     retention_hours: i64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    cleanup_old_sections_with_params(pool, retention_hours, None)
+    cleanup_old_sections_with_params(db, retention_hours, None)
 }
 
 /// Clean up old sections with explicit reference time need for testing
 pub fn cleanup_old_sections_with_params(
-    pool: &SqlitePool,
+    db: &SyncDb,
     retention_hours: i64,
     reference_time: Option<DateTime<Utc>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -251,12 +251,12 @@ pub fn cleanup_old_sections_with_params(
 
     // Try to use pending_section_id from metadata as keeper
     // This preserves the currently active recording session
-    let pending_keeper: Option<i64> = match db::query_metadata_sync(pool, "pending_section_id") {
+    let pending_keeper: Option<i64> = match db::query_metadata_sync(db, "pending_section_id") {
         Ok(Some(value)) => {
             match value.parse::<i64>() {
                 Ok(pending_id) => {
                     // Verify that this section has segments (not empty)
-                    match db::segments_exist_for_section_sync(pool, pending_id) {
+                    match db::segments_exist_for_section_sync(db, pending_id) {
                         Ok(has_segments) => {
                             if has_segments {
                                 Some(pending_id)
@@ -284,7 +284,7 @@ pub fn cleanup_old_sections_with_params(
     } else {
         // Fallback: Find the section with the latest start_timestamp_ms BEFORE the cutoff
         // This ensures we keep complete sessions and don't break playback continuity
-        db::get_latest_section_before_cutoff_sync(pool, cutoff_ms).ok().flatten()
+        db::get_latest_section_before_cutoff_sync(db, cutoff_ms).ok().flatten()
     };
 
     // If we found a section to keep, delete all older sections
@@ -293,7 +293,7 @@ pub fn cleanup_old_sections_with_params(
         // Delete sections timestamped before cutoff, except the keeper
         // This preserves the keeper section (whether from pending_section_id or fallback)
         // and all sections with start_timestamp_ms >= cutoff
-        let deleted_sections = db::delete_old_sections_sync(pool, cutoff_ms, keeper_section_id)?;
+        let deleted_sections = db::delete_old_sections_sync(db, cutoff_ms, keeper_section_id)?;
 
         if deleted_sections > 0 {
             println!(
@@ -321,10 +321,10 @@ fn run_connection_loop(
     duration: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Initialize database once before the connection loop with WAL mode enabled
-    let pool = db::open_database_connection_sync(db_path)?;
+    let db = db::SyncDb::connect(db_path)?;
 
     // Initialize schema using common helper
-    db::init_database_schema_sync(&pool)?;
+    db::init_database_schema_sync(&db)?;
 
     // Check if database already has metadata and validate it matches config
     let audio_format_str = match audio_format {
@@ -333,13 +333,13 @@ fn run_connection_loop(
         AudioFormat::Wav => "wav",
     };
 
-    let existing_unique_id: Option<String> = query_optional_metadata(&pool, "unique_id")?;
-    let existing_name: Option<String> = query_optional_metadata(&pool, "name")?;
-    let existing_format: Option<String> = query_optional_metadata(&pool, "audio_format")?;
-    let existing_interval: Option<String> = query_optional_metadata(&pool, "split_interval")?;
-    let existing_bitrate: Option<String> = query_optional_metadata(&pool, "bitrate")?;
-    let existing_version: Option<String> = query_optional_metadata(&pool, "version")?;
-    let existing_is_recipient: Option<String> = query_optional_metadata(&pool, "is_recipient")?;
+    let existing_unique_id: Option<String> = query_optional_metadata(&db, "unique_id")?;
+    let existing_name: Option<String> = query_optional_metadata(&db, "name")?;
+    let existing_format: Option<String> = query_optional_metadata(&db, "audio_format")?;
+    let existing_interval: Option<String> = query_optional_metadata(&db, "split_interval")?;
+    let existing_bitrate: Option<String> = query_optional_metadata(&db, "bitrate")?;
+    let existing_version: Option<String> = query_optional_metadata(&db, "version")?;
+    let existing_is_recipient: Option<String> = query_optional_metadata(&db, "is_recipient")?;
 
     // Check if this is an existing database
     let is_existing_db =
@@ -418,8 +418,8 @@ fn run_connection_loop(
 
         // Validate AAC gapless metadata matches encoder
         if matches!(audio_format, AudioFormat::Aac) {
-            let db_encoder_delay: Option<String> = db::query_metadata_sync(&pool, "aac_encoder_delay").ok().flatten();
-            let db_frame_size: Option<String> = db::query_metadata_sync(&pool, "aac_frame_size").ok().flatten();
+            let db_encoder_delay: Option<String> = db::query_metadata_sync(&db, "aac_encoder_delay").ok().flatten();
+            let db_frame_size: Option<String> = db::query_metadata_sync(&db, "aac_frame_size").ok().flatten();
 
             let aac_bitrate = if db_bitrate_val == 0 {
                 32000
@@ -473,14 +473,14 @@ fn run_connection_loop(
 
         // New database - insert metadata with new unique_id
         let session_unique_id: String = crate::constants::generate_db_unique_id();
-        db::insert_metadata_sync(&pool, "version", EXPECTED_DB_VERSION)?;
-        db::insert_metadata_sync(&pool, "unique_id", &session_unique_id)?;
-        db::insert_metadata_sync(&pool, "name", name)?;
-        db::insert_metadata_sync(&pool, "audio_format", audio_format_str)?;
-        db::insert_metadata_sync(&pool, "split_interval", &split_interval.to_string())?;
-        db::insert_metadata_sync(&pool, "bitrate", &bitrate_to_store.to_string())?;
-        db::insert_metadata_sync(&pool, "sample_rate", &output_sample_rate.to_string())?;
-        db::insert_metadata_sync(&pool, "is_recipient", "false")?;
+        db::insert_metadata_sync(&db, "version", EXPECTED_DB_VERSION)?;
+        db::insert_metadata_sync(&db, "unique_id", &session_unique_id)?;
+        db::insert_metadata_sync(&db, "name", name)?;
+        db::insert_metadata_sync(&db, "audio_format", audio_format_str)?;
+        db::insert_metadata_sync(&db, "split_interval", &split_interval.to_string())?;
+        db::insert_metadata_sync(&db, "bitrate", &bitrate_to_store.to_string())?;
+        db::insert_metadata_sync(&db, "sample_rate", &output_sample_rate.to_string())?;
+        db::insert_metadata_sync(&db, "is_recipient", "false")?;
 
         // Add AAC gapless metadata from encoder info
         if matches!(audio_format, AudioFormat::Aac) {
@@ -498,8 +498,8 @@ fn run_connection_loop(
             };
             if let Ok(encoder) = fdk_aac::enc::Encoder::new(params) {
                 if let Ok(info) = encoder.info() {
-                    db::insert_metadata_sync(&pool, "aac_encoder_delay", &info.nDelay.to_string())?;
-                    db::insert_metadata_sync(&pool, "aac_frame_size", &info.frameLength.to_string())?;
+                    db::insert_metadata_sync(&db, "aac_encoder_delay", &info.nDelay.to_string())?;
+                    db::insert_metadata_sync(&db, "aac_frame_size", &info.frameLength.to_string())?;
                 }
             }
         }
@@ -795,22 +795,22 @@ fn run_connection_loop(
             .as_micros() as i64;
 
         // Insert new section and update pending_section_id metadata
-        db::insert_section_sync(&pool, connection_section_id, base_timestamp_ms)?;
+        db::insert_section_sync(&db, connection_section_id, base_timestamp_ms)?;
         db::upsert_metadata_sync(
-            &pool,
+            &db,
             "pending_section_id",
             &connection_section_id.to_string(),
         )?;
 
         // Helper to insert segment into SQLite
-        let insert_segment = |pool: &SqlitePool,
+        let insert_segment = |db: &SyncDb,
                               timestamp_ms: i64,
                               is_from_source: bool,
                               section_id: i64,
                               data: &[u8],
                               duration_samples: u64|
          -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            db::insert_segment_sync(pool, timestamp_ms, is_from_source, section_id, data, duration_samples as i64)?;
+            db::insert_segment_sync(db, timestamp_ms, is_from_source, section_id, data, duration_samples as i64)?;
             Ok(())
         };
 
@@ -892,7 +892,7 @@ fn run_connection_loop(
                                                             + (segment_start_samples as i64 * 1000
                                                                 / output_sample_rate as i64);
                                                         insert_segment(
-                                                            &pool,
+                                                            &db,
                                                             timestamp_ms,
                                                             segment_number == 0,
                                                             connection_section_id,
@@ -937,7 +937,7 @@ fn run_connection_loop(
                                                             + (segment_start_samples as i64 * 1000
                                                                 / output_sample_rate as i64);
                                                         insert_segment(
-                                                            &pool,
+                                                            &db,
                                                             timestamp_ms,
                                                             segment_number == 0,
                                                             connection_section_id,
@@ -975,7 +975,7 @@ fn run_connection_loop(
                                                 + (segment_start_samples as i64 * 1000
                                                     / output_sample_rate as i64);
                                             insert_segment(
-                                                &pool,
+                                                &db,
                                                 timestamp_ms,
                                                 segment_number == 0,
                                                 connection_section_id,
@@ -1064,7 +1064,7 @@ fn run_connection_loop(
             let timestamp_ms = base_timestamp_ms
                 + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
             insert_segment(
-                &pool,
+                &db,
                 timestamp_ms,
                 segment_number == 0,
                 connection_section_id,
@@ -1243,10 +1243,10 @@ pub fn record(
         println!("[{}] Cleanup lock acquired", name);
 
         // Run cleanup of old sections - recreate connection for cleanup
-        if let Ok(cleanup_pool) =
-            crate::db::open_database_connection_sync(&db_path)
+        if let Ok(cleanup_db) =
+            crate::db::SyncDb::connect(&db_path)
         {
-            if let Err(e) = cleanup_old_sections_with_retention(&cleanup_pool, retention_hours) {
+            if let Err(e) = cleanup_old_sections_with_retention(&cleanup_db, retention_hours) {
                 eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e);
             }
         }
@@ -1390,10 +1390,10 @@ pub fn run_multi_session(
         let db_path = crate::db::get_db_path(&output_dir_path, &session_config.name);
         println!("Initializing database for session '{}' at {}", session_config.name, db_path.display());
 
-        let pool = crate::db::open_database_connection_sync(&db_path)
+        let db = crate::db::SyncDb::connect(&db_path)
             .map_err(|e| format!("Failed to open database for session '{}': {}", session_config.name, e))?;
 
-        crate::db::init_database_schema_sync(&pool)
+        crate::db::init_database_schema_sync(&db)
             .map_err(|e| format!("Failed to initialize schema for session '{}': {}", session_config.name, e))?;
 
         db_paths.insert(session_config.name.clone(), db_path.clone());

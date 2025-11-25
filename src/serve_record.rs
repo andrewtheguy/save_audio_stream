@@ -10,7 +10,7 @@ use fs2::FileExt;
 use log::{error, warn};
 use ogg::writing::PacketWriter;
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::SqlitePool;
+use crate::db::SyncDb;
 use sqlx::Row;
 use std::fs::File;
 use std::io::Write;
@@ -712,8 +712,8 @@ fn spawn_periodic_export_task(
                 let db_path = output_dir.join(format!("{}.sqlite", show_name));
 
                 // Open database to query for unexported sections
-                let pool = match crate::db::open_database_connection_sync(&db_path) {
-                    Ok(p) => p,
+                let db = match crate::db::SyncDb::connect(&db_path) {
+                    Ok(d) => d,
                     Err(e) => {
                         error!("Failed to open database {}: {}", db_path.display(), e);
                         continue;
@@ -721,7 +721,7 @@ fn spawn_periodic_export_task(
                 };
 
                 // Get pending section ID (to exclude from export)
-                let pending_section_id: Option<i64> = crate::db::query_metadata_sync(&pool, "pending_section_id")
+                let pending_section_id: Option<i64> = crate::db::query_metadata_sync(&db, "pending_section_id")
                     .ok()
                     .flatten()
                     .and_then(|s| s.parse().ok());
@@ -734,11 +734,11 @@ fn spawn_periodic_export_task(
                         sections::select_unexported_ids()
                     };
 
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    let rows_result = rt.block_on(async {
+                    let rows_result = db.block_on(async {
                         sqlx::query(&sql)
-                            .fetch_all(&pool)
+                            .fetch_all(db.pool())
                             .await
+                            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
                     });
 
                     match rows_result {
@@ -854,7 +854,7 @@ fn map_to_io_error<E: std::fmt::Display + Send + Sync + 'static>(err: E) -> std:
 }
 
 fn write_ogg_stream<W: Write>(
-    pool: &SqlitePool,
+    db: &SyncDb,
     start_id: i64,
     end_id: i64,
     sample_rate: u32,
@@ -862,13 +862,13 @@ fn write_ogg_stream<W: Write>(
     samples_per_packet: u64,
     writer: W,
 ) -> Result<W, std::io::Error> {
-    // Fetch segments synchronously
-    let rt = tokio::runtime::Runtime::new().map_err(map_to_io_error)?;
+    // Fetch segments synchronously using embedded runtime
     let sql = segments::select_by_id_range(start_id, end_id);
-    let rows = rt.block_on(async {
+    let rows = db.block_on(async {
         sqlx::query(&sql)
-            .fetch_all(pool)
+            .fetch_all(db.pool())
             .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }).map_err(map_to_io_error)?;
 
     let mut writer = PacketWriter::new(writer);
@@ -935,19 +935,19 @@ fn write_ogg_stream<W: Write>(
 
 /// Export Opus audio for a section to an Ogg file
 fn export_opus_section(
-    pool: &SqlitePool,
+    db: &SyncDb,
     section_id: i64,
     sample_rate: u32,
     duration_secs: f64,
 ) -> Result<Vec<u8>, std::io::Error> {
-    // Get segment ID range for this section
-    let rt = tokio::runtime::Runtime::new().map_err(map_to_io_error)?;
+    // Get segment ID range for this section using embedded runtime
     let sql = segments::select_min_max_id_for_section(section_id);
-    let (start_id, end_id): (i64, i64) = rt.block_on(async {
+    let (start_id, end_id): (i64, i64) = db.block_on(async {
         sqlx::query(&sql)
-            .fetch_one(pool)
+            .fetch_one(db.pool())
             .await
             .map(|row| (row.get(0), row.get(1)))
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }).map_err(map_to_io_error)?;
 
     // Write Ogg stream to memory buffer
@@ -955,7 +955,7 @@ fn export_opus_section(
     let samples_per_packet = 960; // 48kHz Opus, 20ms packets
 
     write_ogg_stream(
-        pool,
+        db,
         start_id,
         end_id,
         sample_rate,
@@ -1022,22 +1022,19 @@ pub fn export_section(
     }
 
     // Open read/write database connection (needed for updating is_exported_to_remote)
-    let pool = crate::db::open_database_connection_sync(&db_path)
+    let db = crate::db::SyncDb::connect(&db_path)
         .map_err(|e| {
             error!("Failed to open database connection at '{}': {}", db_path.display(), e);
             format!("Failed to open database: {}", e)
         })?;
 
-    // Create runtime for async operations
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("Failed to create runtime: {}", e))?;
-
     // Get section info including is_exported_to_remote
     let sql = sections::select_by_id(section_id);
-    let section_row = rt.block_on(async {
+    let section_row = db.block_on(async {
         sqlx::query(&sql)
-            .fetch_optional(&pool)
+            .fetch_optional(db.pool())
             .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }).map_err(|e| format!("Failed to fetch section: {}", e))?;
 
     let (section_id, start_timestamp_ms, is_exported_to_remote) = match section_row {
@@ -1051,25 +1048,24 @@ pub fn export_section(
     };
 
     // Get metadata
-    let audio_format: String = crate::db::query_metadata_sync(&pool, "audio_format")
+    let audio_format: String = crate::db::query_metadata_sync(&db, "audio_format")
         .map_err(|e| format!("Failed to read audio_format: {}", e))?
         .ok_or_else(|| "audio_format not found".to_string())?;
 
-    let sample_rate: u32 = crate::db::query_metadata_sync(&pool, "sample_rate")
+    let sample_rate: u32 = crate::db::query_metadata_sync(&db, "sample_rate")
         .ok()
         .flatten()
         .and_then(|rate| rate.parse().ok())
         .unwrap_or(48000);
 
     // Helper function to fetch segments for a section
-    let fetch_segments = |pool: &SqlitePool, section_id: i64| -> Result<Vec<(i64, Vec<u8>)>, String> {
+    let fetch_segments = |db: &SyncDb, section_id: i64| -> Result<Vec<(i64, Vec<u8>)>, String> {
         let sql = segments::select_by_section_id(section_id);
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("Failed to create runtime: {}", e))?;
-        let rows = rt.block_on(async {
+        let rows = db.block_on(async {
             sqlx::query(&sql)
-                .fetch_all(pool)
+                .fetch_all(db.pool())
                 .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
         }).map_err(|e| format!("Failed to fetch segments: {}", e))?;
         Ok(rows.iter().map(|r| (r.get::<i64, _>(0), r.get::<Vec<u8>, _>(1))).collect())
     };
@@ -1084,7 +1080,7 @@ pub fn export_section(
         let remote_path_str = format!("{}/{}", sftp_cfg.remote_dir.trim_end_matches('/'), filename);
 
         // Query segments to calculate duration
-        let segment_list = fetch_segments(&pool, section_id)?;
+        let segment_list = fetch_segments(&db, section_id)?;
 
         if segment_list.is_empty() {
             return Err(format!("No segments found for section {}", section_id));
@@ -1131,7 +1127,7 @@ pub fn export_section(
     }
 
     // Get all segments for this section
-    let segment_list = fetch_segments(&pool, section_id)?;
+    let segment_list = fetch_segments(&db, section_id)?;
 
     if segment_list.is_empty() {
         return Err(format!("No segments found for section {}", section_id));
@@ -1172,7 +1168,7 @@ pub fn export_section(
 
     // Export audio to memory buffer
     let audio_data = match audio_format.as_str() {
-        "opus" => export_opus_section(&pool, section_id, sample_rate, duration_secs),
+        "opus" => export_opus_section(&db, section_id, sample_rate, duration_secs),
         "aac" => export_aac_section(&segment_list),
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1189,7 +1185,7 @@ pub fn export_section(
 
         // SFTP upload succeeded, update is_exported_to_remote column
         let update_sql = sections::mark_exported(section_id);
-        if let Err(e) = crate::db::execute_sync(&pool, &update_sql) {
+        if let Err(e) = crate::db::execute_sync(&db, &update_sql) {
             error!("Failed to update is_exported_to_remote for section {}: {}", section_id, e);
             // Don't fail the request, just log the error
         }
