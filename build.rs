@@ -43,10 +43,10 @@ fn main() {
     }
 
     // Tell cargo to rerun if app files change
-    println!("cargo:rerun-if-changed=app/");
+    //println!("cargo:rerun-if-changed=app/");
     println!("cargo:rerun-if-changed=app/src/");
-    println!("cargo:rerun-if-changed=app/index.html");
-    println!("cargo:rerun-if-changed=app/deno.json");
     println!("cargo:rerun-if-changed=app/build.ts");
+    println!("cargo:rerun-if-changed=app/deno.json");
+    println!("cargo:rerun-if-changed=app/deno.lock");
     println!("cargo:rerun-if-changed=app/deps.ts");
 }
