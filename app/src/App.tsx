@@ -154,6 +154,29 @@ function ShowDetail({
   const [lastKnownEndId, setLastKnownEndId] = useState<number>(0);
   const [prevSyncStatus, setPrevSyncStatus] = useState<boolean>(false);
 
+  // Pagination and filtering state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(20);
+  const [dateFilter, setDateFilter] = useState<string>("");
+
+  // Helper to build sessions URL with optional date filter
+  const buildSessionsUrl = (filterDate: string) => {
+    let url = `/api/show/${decodedShowName}/sessions`;
+    if (filterDate) {
+      // Calculate 12am local time of selected date
+      const startOfDay = new Date(filterDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const startTs = startOfDay.getTime();
+      // Calculate 12am of next day
+      const endOfDay = new Date(filterDate);
+      endOfDay.setDate(endOfDay.getDate() + 1);
+      endOfDay.setHours(0, 0, 0, 0);
+      const endTs = endOfDay.getTime();
+      url += `?start_ts=${startTs}&end_ts=${endTs}`;
+    }
+    return url;
+  };
+
   useEffect(() => {
     if (!decodedShowName) return;
 
@@ -166,7 +189,7 @@ function ShowDetail({
       try {
         const [formatData, sessionsData] = await Promise.all([
           fetch(`/api/show/${decodedShowName}/format`).then((r) => r.json()),
-          fetch(`/api/show/${decodedShowName}/sessions`).then((r) => r.json()),
+          fetch(buildSessionsUrl(dateFilter)).then((r) => r.json()),
         ]);
 
         setAudioFormat(formatData.format || "opus");
@@ -206,7 +229,7 @@ function ShowDetail({
     };
 
     loadShowData();
-  }, [decodedShowName]);
+  }, [decodedShowName, dateFilter]);
 
   // Check for new data when sync completes
   useEffect(() => {
@@ -215,7 +238,7 @@ function ShowDetail({
       // Sync just completed, check for new data
       const checkForNewData = async () => {
         try {
-          const sessionsData = await fetch(`/api/show/${decodedShowName}/sessions`).then((r) => r.json());
+          const sessionsData = await fetch(buildSessionsUrl(dateFilter)).then((r) => r.json());
           const newMaxEndId = getMaxEndId(sessionsData.sessions);
           if (newMaxEndId > lastKnownEndId) {
             setNewDataAvailable(true);
@@ -227,14 +250,14 @@ function ShowDetail({
       checkForNewData();
     }
     setPrevSyncStatus(syncStatus);
-  }, [syncStatus, prevSyncStatus, decodedShowName, lastKnownEndId, loading]);
+  }, [syncStatus, prevSyncStatus, decodedShowName, lastKnownEndId, loading, dateFilter]);
 
   const handleReloadSessions = async () => {
     if (isReloading) return;
 
     setIsReloading(true);
     try {
-      const sessionsData = await fetch(`/api/show/${decodedShowName}/sessions`).then((r) => r.json());
+      const sessionsData = await fetch(buildSessionsUrl(dateFilter)).then((r) => r.json());
       setData(sessionsData);
       setLastKnownEndId(getMaxEndId(sessionsData.sessions));
       setNewDataAvailable(false);
@@ -274,6 +297,19 @@ function ShowDetail({
   if (!data) {
     return null;
   }
+
+  // Pagination calculations (server already filtered by date)
+  const totalSessions = data.sessions.length;
+  const totalPages = Math.ceil(totalSessions / pageSize);
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+  const paginatedSessions = data.sessions.slice(startIndex, endIndex);
+
+  const handleClearFilter = () => {
+    setDateFilter("");
+    setCurrentPage(1);
+    setSelectedSessionIndex(null);
+  };
 
   return (
     <div id="app">
@@ -324,15 +360,48 @@ function ShowDetail({
             </div>
           )}
         </div>
-        {data.sessions.length === 0 ? (
-          <p>No recording sessions found.</p>
+
+        {/* Filter controls */}
+        <div className="filter-controls">
+          <div className="filter-group">
+            <label htmlFor="date-filter">Date:</label>
+            <input
+              type="date"
+              id="date-filter"
+              value={dateFilter}
+              onChange={(e) => {
+                setDateFilter(e.target.value);
+                setCurrentPage(1);
+                setSelectedSessionIndex(null);
+              }}
+              className="date-input"
+            />
+            {dateFilter && (
+              <button
+                className="clear-filter-btn"
+                onClick={handleClearFilter}
+                title="Clear filter"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <div className="filter-info">
+            {dateFilter
+              ? `${totalSessions} session${totalSessions !== 1 ? "s" : ""} on ${dateFilter}`
+              : `${totalSessions} session${totalSessions !== 1 ? "s" : ""} total`}
+          </div>
+        </div>
+
+        {totalSessions === 0 ? (
+          <p>{dateFilter ? "No sessions found for this date." : "No recording sessions found."}</p>
         ) : (
           <div className="sessions-list">
-            {data.sessions.map((session, index) => {
+            {paginatedSessions.map((session, index) => {
               const isSelected = selectedSessionIndex === index;
               return (
                 <div
-                  key={index}
+                  key={session.section_id}
                   className={`session-card ${isSelected ? "selected" : ""}`}
                 >
                   <div
@@ -378,6 +447,59 @@ function ShowDetail({
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Pagination controls */}
+        {totalPages > 1 && (
+          <div className="pagination-controls">
+            <button
+              className="pagination-btn"
+              onClick={() => {
+                setCurrentPage(1);
+                setSelectedSessionIndex(null);
+              }}
+              disabled={currentPage === 1}
+              title="First page"
+            >
+              &laquo;
+            </button>
+            <button
+              className="pagination-btn"
+              onClick={() => {
+                setCurrentPage((p) => Math.max(1, p - 1));
+                setSelectedSessionIndex(null);
+              }}
+              disabled={currentPage === 1}
+              title="Previous page"
+            >
+              &lsaquo;
+            </button>
+            <span className="pagination-info">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              className="pagination-btn"
+              onClick={() => {
+                setCurrentPage((p) => Math.min(totalPages, p + 1));
+                setSelectedSessionIndex(null);
+              }}
+              disabled={currentPage === totalPages}
+              title="Next page"
+            >
+              &rsaquo;
+            </button>
+            <button
+              className="pagination-btn"
+              onClick={() => {
+                setCurrentPage(totalPages);
+                setSelectedSessionIndex(null);
+              }}
+              disabled={currentPage === totalPages}
+              title="Last page"
+            >
+              &raquo;
+            </button>
           </div>
         )}
       </div>

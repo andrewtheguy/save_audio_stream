@@ -1490,9 +1490,16 @@ async fn receiver_show_format_handler(
         .into_response()
 }
 
+#[derive(serde::Deserialize)]
+struct SessionsQueryParams {
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+}
+
 async fn receiver_show_sessions_handler(
     State(state): State<StdArc<ReceiverAppState>>,
     Path(show_name): Path<String>,
+    Query(params): Query<SessionsQueryParams>,
 ) -> impl IntoResponse {
     let pool = match open_show_pg_pool(&state, &show_name).await {
         Ok(p) => p,
@@ -1523,8 +1530,8 @@ async fn receiver_show_sessions_handler(
         Err(_) => 10.0,
     };
 
-    // Get all sections with their start id and timestamp
-    let sql = segments::select_sessions_with_join_pg();
+    // Get all sections with their start id and timestamp, optionally filtered by date range
+    let sql = segments::select_sessions_with_join_pg_filtered(params.start_ts, params.end_ts);
     let rows = match sqlx::query(&sql).fetch_all(&pool).await {
         Ok(r) => r,
         Err(e) => {

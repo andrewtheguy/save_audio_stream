@@ -354,3 +354,43 @@ pub fn select_sessions_with_join_pg() -> String {
         .order_by((Sections::Table, Sections::StartTimestampMs), Order::Asc)
         .to_string(PostgresQueryBuilder)
 }
+
+/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id
+/// FROM sections s
+/// LEFT JOIN segments seg ON s.id = seg.section_id
+/// WHERE s.start_timestamp_ms >= start_ts AND s.start_timestamp_ms < end_ts (optional)
+/// GROUP BY s.id
+/// ORDER BY s.start_timestamp_ms - PostgreSQL with optional timestamp filtering
+pub fn select_sessions_with_join_pg_filtered(start_ts: Option<i64>, end_ts: Option<i64>) -> String {
+    let mut query = Query::select();
+    query
+        .column((Sections::Table, Sections::Id))
+        .column((Sections::Table, Sections::StartTimestampMs))
+        .expr_as(
+            Func::min(Expr::col((Segments::Table, Segments::Id))),
+            sea_query::Alias::new("start_segment_id"),
+        )
+        .expr_as(
+            Func::max(Expr::col((Segments::Table, Segments::Id))),
+            sea_query::Alias::new("end_segment_id"),
+        )
+        .from(Sections::Table)
+        .left_join(
+            Segments::Table,
+            Expr::col((Sections::Table, Sections::Id))
+                .equals((Segments::Table, Segments::SectionId)),
+        );
+
+    // Add timestamp filters if provided
+    if let Some(start) = start_ts {
+        query.and_where(Expr::col((Sections::Table, Sections::StartTimestampMs)).gte(start));
+    }
+    if let Some(end) = end_ts {
+        query.and_where(Expr::col((Sections::Table, Sections::StartTimestampMs)).lt(end));
+    }
+
+    query
+        .group_by_col((Sections::Table, Sections::Id))
+        .order_by((Sections::Table, Sections::StartTimestampMs), Order::Asc)
+        .to_string(PostgresQueryBuilder)
+}
