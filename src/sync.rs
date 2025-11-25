@@ -109,7 +109,8 @@ pub fn sync_shows(
     // Spawn lease renewal thread
     let renewal_pool = global_pool.clone();
     let renewal_holder_id = holder_id.clone();
-    let renewal_interval = std::time::Duration::from_millis((lease_duration_ms / 3) as u64);
+    let renewal_interval_ms = (lease_duration_ms / 4).clamp(10_000, 30_000) as u64;
+    let renewal_interval = std::time::Duration::from_millis(renewal_interval_ms);
     let (stop_tx, stop_rx) = mpsc::channel();
 
     let renewal_handle = std::thread::spawn(move || {
