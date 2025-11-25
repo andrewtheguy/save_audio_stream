@@ -6,7 +6,9 @@ use axum::{
     routing::get,
     Router,
 };
-use log::{error, warn};
+use log::error;
+#[cfg(debug_assertions)]
+use log::warn;
 
 #[cfg(not(debug_assertions))]
 use axum::response::Response;

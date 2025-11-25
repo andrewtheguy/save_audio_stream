@@ -21,7 +21,7 @@ pub struct SyncDbPg {
 }
 
 impl SyncDbPg {
-    /// Connect to a PostgreSQL database with embedded runtime
+    /// Connect to a PostgreSQL database with embedded runtime, creating the database if it doesn't exist
     ///
     /// # Arguments
     /// * `base_url` - Base PostgreSQL URL without database (e.g., postgres://user@host:5432)
@@ -31,7 +31,7 @@ impl SyncDbPg {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let pool = runtime.block_on(open_postgres_connection(base_url, password, database))?;
+        let pool = runtime.block_on(open_postgres_connection_create_if_needed(base_url, password, database))?;
         Ok(Self { pool, runtime })
     }
 
@@ -90,6 +90,95 @@ pub async fn open_postgres_connection(
         .await?;
 
     Ok(pool)
+}
+
+/// Create a PostgreSQL database if it doesn't exist
+pub async fn create_database_if_not_exists(
+    base_url: &str,
+    password: &str,
+    database: &str,
+) -> Result<(), DynError> {
+    // Connect to the default 'postgres' database to create the target database
+    let admin_url = build_postgres_url(base_url, password, "postgres")?;
+    let admin_options = PgConnectOptions::from_str(&admin_url)?;
+
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(admin_options)
+        .await?;
+
+    // Check if database exists
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)"
+    )
+    .bind(database)
+    .fetch_one(&admin_pool)
+    .await?;
+
+    if !exists {
+        // Create the database (note: CREATE DATABASE cannot use prepared statements)
+        // We need to use a safe identifier here
+        let create_sql = format!("CREATE DATABASE \"{}\"", database.replace('"', "\"\""));
+        match sqlx::query(&create_sql).execute(&admin_pool).await {
+            Ok(_) => {}
+            Err(e) => {
+                // Handle race condition: another process may have created the database
+                // between our EXISTS check and CREATE. PostgreSQL error code 42P04 means
+                // "duplicate_database" - the database already exists.
+                let err_str = e.to_string();
+                if !err_str.contains("already exists") && !err_str.contains("42P04") {
+                    return Err(e.into());
+                }
+                // Database was created by another process, that's fine
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Open a PostgreSQL connection pool, creating the database if it doesn't exist
+pub async fn open_postgres_connection_create_if_needed(
+    base_url: &str,
+    password: &str,
+    database: &str,
+) -> Result<PgPool, DynError> {
+    // First ensure the database exists
+    create_database_if_not_exists(base_url, password, database).await?;
+
+    // Then connect to it
+    open_postgres_connection(base_url, password, database).await
+}
+
+/// Drop a PostgreSQL database if it exists
+pub async fn drop_database_if_exists(
+    base_url: &str,
+    password: &str,
+    database: &str,
+) -> Result<(), DynError> {
+    // Connect to the default 'postgres' database to drop the target database
+    let admin_url = build_postgres_url(base_url, password, "postgres")?;
+    let admin_options = PgConnectOptions::from_str(&admin_url)?;
+
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(admin_options)
+        .await?;
+
+    // Terminate existing connections to the database
+    let terminate_sql = format!(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
+        database.replace('\'', "''")
+    );
+    let _ = sqlx::query(&terminate_sql).execute(&admin_pool).await;
+
+    // Drop the database
+    let drop_sql = format!("DROP DATABASE IF EXISTS \"{}\"", database.replace('"', "\"\""));
+    sqlx::query(&drop_sql)
+        .execute(&admin_pool)
+        .await?;
+
+    Ok(())
 }
 
 /// Initialize database schema for PostgreSQL

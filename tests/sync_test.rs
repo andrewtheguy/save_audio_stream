@@ -427,12 +427,7 @@ async fn verify_destination_db_pg(
 /// Helper to drop a test database
 async fn drop_test_database(postgres_url: &str, password: &str, show_name: &str) {
     let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
-    // Connect to postgres database to drop the test database
-    if let Ok(pool) = save_audio_stream::db_postgres::open_postgres_connection(postgres_url, password, "postgres").await {
-        let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\"", database_name))
-            .execute(&pool)
-            .await;
-    }
+    let _ = save_audio_stream::db_postgres::drop_database_if_exists(postgres_url, password, &database_name).await;
 }
 
 #[tokio::test]
@@ -441,15 +436,17 @@ async fn test_sync_new_show() {
     let (postgres_url, password) = get_test_postgres_config()
         .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
 
+    let show_name = "test_new_show";
+
     // Clean up any existing test database
-    drop_test_database(&postgres_url, &password, "test_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create source database with 3 sections, 5 segments each
-    let (source_db, _db_guard) = create_source_database("test_show", "source_unique_123", 3, 5).await;
+    let (source_db, _db_guard) = create_source_database(show_name, "source_unique_123", 3, 5).await;
 
     // Start test server
     let mut databases = HashMap::new();
-    databases.insert("test_show".to_string(), source_db);
+    databases.insert(show_name.to_string(), source_db);
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Sync to destination (spawn blocking since sync_shows uses blocking reqwest client)
@@ -467,7 +464,7 @@ async fn test_sync_new_show() {
     verify_destination_db_pg(
         &postgres_url,
         &password,
-        "test_show",
+        show_name,
         "source_unique_123",
         15, // 3 sections * 5 segments
         3,  // 3 sections
@@ -475,7 +472,7 @@ async fn test_sync_new_show() {
     .await;
 
     // Cleanup
-    drop_test_database(&postgres_url, &password, "test_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 }
 
 #[tokio::test]
@@ -484,15 +481,17 @@ async fn test_sync_incremental() {
     let (postgres_url, password) = get_test_postgres_config()
         .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
 
+    let show_name = "test_incremental";
+
     // Clean up any existing test database
-    drop_test_database(&postgres_url, &password, "test_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create initial source database with 2 sections
-    let (source_db, _db_guard) = create_source_database("test_show", "source_unique_456", 2, 5).await;
+    let (source_db, _db_guard) = create_source_database(show_name, "source_unique_456", 2, 5).await;
 
     // Start test server
     let mut databases = HashMap::new();
-    databases.insert("test_show".to_string(), source_db);
+    databases.insert(show_name.to_string(), source_db);
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Initial sync
@@ -506,7 +505,7 @@ async fn test_sync_incremental() {
     assert!(result.is_ok());
 
     // Verify initial sync
-    verify_destination_db_pg(&postgres_url, &password, "test_show", "source_unique_456", 10, 2).await;
+    verify_destination_db_pg(&postgres_url, &password, show_name, "source_unique_456", 10, 2).await;
 
     // Now add more data to source and sync again
     // (In a real scenario, we'd update the source DB and restart server)
@@ -521,10 +520,10 @@ async fn test_sync_incremental() {
     assert!(result.is_ok());
 
     // Should still have same data
-    verify_destination_db_pg(&postgres_url, &password, "test_show", "source_unique_456", 10, 2).await;
+    verify_destination_db_pg(&postgres_url, &password, show_name, "source_unique_456", 10, 2).await;
 
     // Cleanup
-    drop_test_database(&postgres_url, &password, "test_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 }
 
 #[tokio::test]
@@ -587,15 +586,17 @@ async fn test_sync_metadata_validation() {
     let (postgres_url, password) = get_test_postgres_config()
         .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
 
+    let show_name = "test_metadata_validation";
+
     // Clean up any existing test database
-    drop_test_database(&postgres_url, &password, "test_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create source database
-    let (source_db, _db_guard) = create_source_database("test_show", "source_unique_789", 2, 5).await;
+    let (source_db, _db_guard) = create_source_database(show_name, "source_unique_789", 2, 5).await;
 
     // Start test server
     let mut databases = HashMap::new();
-    databases.insert("test_show".to_string(), source_db);
+    databases.insert(show_name.to_string(), source_db);
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Initial sync
@@ -609,7 +610,7 @@ async fn test_sync_metadata_validation() {
     assert!(result.is_ok());
 
     // Manually tamper with destination metadata in PostgreSQL to cause validation failure
-    let database_name = save_audio_stream::sync::get_pg_database_name("test_show");
+    let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
     let pool = save_audio_stream::db_postgres::open_postgres_connection(&postgres_url, &password, &database_name)
         .await
         .unwrap();
@@ -632,7 +633,7 @@ async fn test_sync_metadata_validation() {
     assert!(err_msg.contains("Audio format mismatch") || err_msg.contains("mismatch"));
 
     // Cleanup
-    drop_test_database(&postgres_url, &password, "test_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 }
 
 #[tokio::test]
@@ -641,8 +642,10 @@ async fn test_sync_rejects_old_version() {
     let (postgres_url, password) = get_test_postgres_config()
         .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
 
+    let show_name = "test_old_version";
+
     // Clean up any existing test database
-    drop_test_database(&postgres_url, &password, "old_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create source database with old version (version "2" instead of "3")
     let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
@@ -684,7 +687,7 @@ async fn test_sync_rejects_old_version() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO metadata (key, value) VALUES ('name', 'old_show')")
+    sqlx::query(&format!("INSERT INTO metadata (key, value) VALUES ('name', '{}')", show_name))
         .execute(&pool)
         .await
         .unwrap();
@@ -722,7 +725,7 @@ async fn test_sync_rejects_old_version() {
 
     // Start test server with old database
     let mut databases = HashMap::new();
-    databases.insert("old_show".to_string(), pool);
+    databases.insert(show_name.to_string(), pool);
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Try to sync - should fail due to version mismatch
@@ -743,7 +746,7 @@ async fn test_sync_rejects_old_version() {
     );
 
     // Cleanup (database may not have been created due to version rejection)
-    drop_test_database(&postgres_url, &password, "old_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 }
 
 #[tokio::test]
@@ -752,8 +755,10 @@ async fn test_sync_rejects_recipient_database() {
     let (postgres_url, password) = get_test_postgres_config()
         .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
 
+    let show_name = "test_recipient_reject";
+
     // Clean up any existing test database
-    drop_test_database(&postgres_url, &password, "test_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create source database marked as recipient (sync target)
     let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
@@ -793,7 +798,7 @@ async fn test_sync_rejects_recipient_database() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO metadata (key, value) VALUES ('name', 'test_show')")
+    sqlx::query(&format!("INSERT INTO metadata (key, value) VALUES ('name', '{}')", show_name))
         .execute(&pool)
         .await
         .unwrap();
@@ -836,7 +841,7 @@ async fn test_sync_rejects_recipient_database() {
     .unwrap();
 
     let mut databases = HashMap::new();
-    databases.insert("test_show".to_string(), pool);
+    databases.insert(show_name.to_string(), pool);
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Try to sync - should fail with forbidden error
@@ -862,5 +867,5 @@ async fn test_sync_rejects_recipient_database() {
     );
 
     // Cleanup (database may not have been created due to recipient rejection)
-    drop_test_database(&postgres_url, &password, "test_show").await;
+    drop_test_database(&postgres_url, &password, show_name).await;
 }
