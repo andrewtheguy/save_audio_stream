@@ -950,55 +950,33 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    // (section_id, start_segment_id, timestamp_ms)
-    let boundaries: Vec<(i64, i64, i64)> = rows
+    // (section_id, start_segment_id, end_segment_id, timestamp_ms)
+    let sessions: Vec<SessionInfo> = rows
         .iter()
         .filter_map(|row| {
             let section_id: i64 = row.get(0);
             let timestamp_ms: i64 = row.get(1);
             let start_segment_id: Option<i64> = row.get(2);
-            start_segment_id.map(|sid| (section_id, sid, timestamp_ms))
+            let end_segment_id: Option<i64> = row.get(3);
+            match (start_segment_id, end_segment_id) {
+                (Some(start_id), Some(end_id)) => {
+                    let segment_count = (end_id - start_id + 1) as f64;
+                    let duration_seconds = segment_count * split_interval;
+                    Some(SessionInfo {
+                        section_id,
+                        start_id,
+                        end_id,
+                        timestamp_ms,
+                        duration_seconds,
+                    })
+                }
+                _ => None,
+            }
         })
         .collect();
 
-    if boundaries.is_empty() {
+    if sessions.is_empty() {
         return (StatusCode::NOT_FOUND, "No recording sessions found").into_response();
-    }
-
-    // Get max segment ID to handle the last session
-    let sql = segments::select_max_id();
-    let max_id: i64 = match sqlx::query_scalar(&sql).fetch_one(pool).await {
-        Ok(id) => id,
-        Err(e) => {
-            error!("Failed to query max segment ID: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response();
-        }
-    };
-
-    // Build sessions by grouping segments between boundaries
-    let mut sessions = Vec::new();
-    for i in 0..boundaries.len() {
-        let (section_id, start_id, timestamp_ms) = boundaries[i];
-        let end_id = if i + 1 < boundaries.len() {
-            boundaries[i + 1].1 - 1
-        } else {
-            max_id
-        };
-
-        let segment_count = (end_id - start_id + 1) as f64;
-        let duration_seconds = segment_count * split_interval;
-
-        sessions.push(SessionInfo {
-            section_id,
-            start_id,
-            end_id,
-            timestamp_ms,
-            duration_seconds,
-        });
     }
 
     let response = SessionsResponse { name, sessions };
@@ -1558,18 +1536,32 @@ async fn receiver_show_sessions_handler(
         }
     };
 
-    // (section_id, start_segment_id, timestamp_ms)
-    let boundaries: Vec<(i64, i64, i64)> = rows
+    // (section_id, start_segment_id, end_segment_id, timestamp_ms)
+    let sessions: Vec<SessionInfo> = rows
         .iter()
         .filter_map(|row| {
             let section_id: i64 = row.get(0);
             let timestamp_ms: i64 = row.get(1);
             let start_segment_id: Option<i64> = row.get(2);
-            start_segment_id.map(|sid| (section_id, sid, timestamp_ms))
+            let end_segment_id: Option<i64> = row.get(3);
+            match (start_segment_id, end_segment_id) {
+                (Some(start_id), Some(end_id)) => {
+                    let segment_count = (end_id - start_id + 1) as f64;
+                    let duration_seconds = segment_count * split_interval;
+                    Some(SessionInfo {
+                        section_id,
+                        start_id,
+                        end_id,
+                        timestamp_ms,
+                        duration_seconds,
+                    })
+                }
+                _ => None,
+            }
         })
         .collect();
 
-    if boundaries.is_empty() {
+    if sessions.is_empty() {
         return (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "application/json")],
@@ -1580,40 +1572,6 @@ async fn receiver_show_sessions_handler(
             .unwrap(),
         )
             .into_response();
-    }
-
-    let sql = segments::select_max_id_pg();
-    let max_id: i64 = match sqlx::query_scalar(&sql).fetch_one(&pool).await {
-        Ok(id) => id,
-        Err(e) => {
-            error!("Failed to query max segment ID: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response();
-        }
-    };
-
-    let mut sessions = Vec::new();
-    for i in 0..boundaries.len() {
-        let (section_id, start_id, timestamp_ms) = boundaries[i];
-        let end_id = if i + 1 < boundaries.len() {
-            boundaries[i + 1].1 - 1
-        } else {
-            max_id
-        };
-
-        let segment_count = (end_id - start_id + 1) as f64;
-        let duration_seconds = segment_count * split_interval;
-
-        sessions.push(SessionInfo {
-            section_id,
-            start_id,
-            end_id,
-            timestamp_ms,
-            duration_seconds,
-        });
     }
 
     (

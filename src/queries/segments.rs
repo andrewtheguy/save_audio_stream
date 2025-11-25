@@ -173,10 +173,11 @@ pub fn select_max_and_count_for_section(section_id: i64) -> String {
         .to_string(SqliteQueryBuilder)
 }
 
-/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id
+/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id
 /// FROM sections s
 /// LEFT JOIN segments seg ON s.id = seg.section_id
 /// GROUP BY s.id
+/// ORDER BY s.start_timestamp_ms
 pub fn select_sessions_with_join() -> String {
     Query::select()
         .column((Sections::Table, Sections::Id))
@@ -185,6 +186,10 @@ pub fn select_sessions_with_join() -> String {
             Func::min(Expr::col((Segments::Table, Segments::Id))),
             sea_query::Alias::new("start_segment_id"),
         )
+        .expr_as(
+            Func::max(Expr::col((Segments::Table, Segments::Id))),
+            sea_query::Alias::new("end_segment_id"),
+        )
         .from(Sections::Table)
         .left_join(
             Segments::Table,
@@ -192,6 +197,7 @@ pub fn select_sessions_with_join() -> String {
                 .equals((Segments::Table, Segments::SectionId)),
         )
         .group_by_col((Sections::Table, Sections::Id))
+        .order_by((Sections::Table, Sections::StartTimestampMs), Order::Asc)
         .to_string(SqliteQueryBuilder)
 }
 
@@ -321,10 +327,11 @@ pub fn select_audio_by_id_pg(id: i64) -> String {
         .to_string(PostgresQueryBuilder)
 }
 
-/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id
+/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id
 /// FROM sections s
 /// LEFT JOIN segments seg ON s.id = seg.section_id
-/// GROUP BY s.id - PostgreSQL
+/// GROUP BY s.id
+/// ORDER BY s.start_timestamp_ms - PostgreSQL
 pub fn select_sessions_with_join_pg() -> String {
     Query::select()
         .column((Sections::Table, Sections::Id))
@@ -333,6 +340,10 @@ pub fn select_sessions_with_join_pg() -> String {
             Func::min(Expr::col((Segments::Table, Segments::Id))),
             sea_query::Alias::new("start_segment_id"),
         )
+        .expr_as(
+            Func::max(Expr::col((Segments::Table, Segments::Id))),
+            sea_query::Alias::new("end_segment_id"),
+        )
         .from(Sections::Table)
         .left_join(
             Segments::Table,
@@ -340,5 +351,6 @@ pub fn select_sessions_with_join_pg() -> String {
                 .equals((Segments::Table, Segments::SectionId)),
         )
         .group_by_col((Sections::Table, Sections::Id))
+        .order_by((Sections::Table, Sections::StartTimestampMs), Order::Asc)
         .to_string(PostgresQueryBuilder)
 }
