@@ -171,7 +171,7 @@ pub fn create_segments_table_pg() -> String {
         )
         .col(
             ColumnDef::new(Segments::DurationSamples)
-                .integer()
+                .big_integer()
                 .not_null(),
         )
         .foreign_key(
