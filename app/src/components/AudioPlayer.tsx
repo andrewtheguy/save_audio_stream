@@ -212,29 +212,38 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     const audio = audioRef.current;
     if (!audio) return;
 
-    const updateTime = () => {
-      setCurrentTime(audio.currentTime);
-
-      // Debounced save to localStorage (every 2 seconds)
-      if (saveTimerRef.current !== null) {
-        clearTimeout(saveTimerRef.current);
-      }
-      saveTimerRef.current = window.setTimeout(() => {
-        savePlaybackPosition(audio.currentTime);
-      }, 2000);
-    };
+    const updateTime = () => setCurrentTime(audio.currentTime);
     const updateDuration = () => setDuration(audio.duration);
-    const handlePlay = () => setIsPlaying(true);
+    const handlePlay = () => {
+      setIsPlaying(true);
+      // Start periodic save interval (every 5 seconds)
+      if (saveTimerRef.current !== null) {
+        clearInterval(saveTimerRef.current);
+      }
+      saveTimerRef.current = window.setInterval(() => {
+        if (audio && !audio.paused) {
+          savePlaybackPosition(audio.currentTime);
+        }
+      }, 5000);
+    };
     const handlePause = () => {
       setIsPlaying(false);
       setIsLoading(false);
-      // Save immediately on pause
+      // Stop periodic save and save once immediately
       if (saveTimerRef.current !== null) {
-        clearTimeout(saveTimerRef.current);
+        clearInterval(saveTimerRef.current);
+        saveTimerRef.current = null;
       }
       savePlaybackPosition(audio.currentTime);
     };
-    const handleEnded = () => setIsPlaying(false);
+    const handleEnded = () => {
+      setIsPlaying(false);
+      // Stop periodic save on end
+      if (saveTimerRef.current !== null) {
+        clearInterval(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
     const handleWaiting = () => setIsLoading(true);
     const handlePlaying = () => setIsLoading(false);
     const handleCanPlay = () => setIsLoading(false);
@@ -250,9 +259,10 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     audio.addEventListener("canplay", handleCanPlay);
 
     return () => {
-      // Save position immediately on unmount
+      // Stop periodic save and save position on unmount
       if (saveTimerRef.current !== null) {
-        clearTimeout(saveTimerRef.current);
+        clearInterval(saveTimerRef.current);
+        saveTimerRef.current = null;
       }
       savePlaybackPosition(audio.currentTime);
 
