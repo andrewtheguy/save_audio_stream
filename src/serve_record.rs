@@ -160,7 +160,6 @@ struct ShowMetadata {
     unique_id: String,
     name: String,
     audio_format: String,
-    split_interval: String,
     bitrate: String,
     sample_rate: String,
     version: String,
@@ -405,22 +404,6 @@ pub async fn sync_show_metadata_handler(
             }
         };
 
-    let split_interval: String =
-        match sqlx::query_scalar::<_, String>(&metadata::select_by_key("split_interval"))
-            .fetch_one(&pool)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Failed to query split_interval metadata: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
-                )
-                    .into_response();
-            }
-        };
-
     let bitrate: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("bitrate"))
         .fetch_one(&pool)
         .await
@@ -487,7 +470,6 @@ pub async fn sync_show_metadata_handler(
         unique_id,
         name,
         audio_format,
-        split_interval,
         bitrate,
         sample_rate,
         version,

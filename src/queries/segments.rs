@@ -173,7 +173,8 @@ pub fn select_max_and_count_for_section(section_id: i64) -> String {
         .to_string(SqliteQueryBuilder)
 }
 
-/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id
+/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id,
+///        SUM(seg.duration_samples) as total_duration_samples
 /// FROM sections s
 /// LEFT JOIN segments seg ON s.id = seg.section_id
 /// GROUP BY s.id
@@ -189,6 +190,10 @@ pub fn select_sessions_with_join() -> String {
         .expr_as(
             Func::max(Expr::col((Segments::Table, Segments::Id))),
             sea_query::Alias::new("end_segment_id"),
+        )
+        .expr_as(
+            Func::sum(Expr::col((Segments::Table, Segments::DurationSamples))),
+            sea_query::Alias::new("total_duration_samples"),
         )
         .from(Sections::Table)
         .left_join(
@@ -327,7 +332,8 @@ pub fn select_audio_by_id_pg(id: i64) -> String {
         .to_string(PostgresQueryBuilder)
 }
 
-/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id
+/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id,
+///        SUM(seg.duration_samples) as total_duration_samples
 /// FROM sections s
 /// LEFT JOIN segments seg ON s.id = seg.section_id
 /// GROUP BY s.id
@@ -344,6 +350,10 @@ pub fn select_sessions_with_join_pg() -> String {
             Func::max(Expr::col((Segments::Table, Segments::Id))),
             sea_query::Alias::new("end_segment_id"),
         )
+        .expr_as(
+            Func::sum(Expr::col((Segments::Table, Segments::DurationSamples))),
+            sea_query::Alias::new("total_duration_samples"),
+        )
         .from(Sections::Table)
         .left_join(
             Segments::Table,
@@ -355,7 +365,8 @@ pub fn select_sessions_with_join_pg() -> String {
         .to_string(PostgresQueryBuilder)
 }
 
-/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id
+/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id,
+///        SUM(seg.duration_samples) as total_duration_samples
 /// FROM sections s
 /// LEFT JOIN segments seg ON s.id = seg.section_id
 /// WHERE s.start_timestamp_ms >= start_ts AND s.start_timestamp_ms < end_ts (optional)
@@ -373,6 +384,10 @@ pub fn select_sessions_with_join_pg_filtered(start_ts: Option<i64>, end_ts: Opti
         .expr_as(
             Func::max(Expr::col((Segments::Table, Segments::Id))),
             sea_query::Alias::new("end_segment_id"),
+        )
+        .expr_as(
+            Func::sum(Expr::col((Segments::Table, Segments::DurationSamples))),
+            sea_query::Alias::new("total_duration_samples"),
         )
         .from(Sections::Table)
         .left_join(

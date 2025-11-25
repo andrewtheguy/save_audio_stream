@@ -346,14 +346,12 @@ fn run_connection_loop(
     let existing_unique_id: Option<String> = query_optional_metadata(&db, "unique_id")?;
     let existing_name: Option<String> = query_optional_metadata(&db, "name")?;
     let existing_format: Option<String> = query_optional_metadata(&db, "audio_format")?;
-    let existing_interval: Option<String> = query_optional_metadata(&db, "split_interval")?;
     let existing_bitrate: Option<String> = query_optional_metadata(&db, "bitrate")?;
     let existing_version: Option<String> = query_optional_metadata(&db, "version")?;
     let existing_is_recipient: Option<String> = query_optional_metadata(&db, "is_recipient")?;
 
     // Check if this is an existing database
-    let is_existing_db =
-        existing_name.is_some() || existing_format.is_some() || existing_interval.is_some();
+    let is_existing_db = existing_name.is_some() || existing_format.is_some();
 
     if is_existing_db {
         // Validate version first
@@ -377,8 +375,6 @@ fn run_connection_loop(
         let db_unique_id = existing_unique_id.ok_or("Database is missing unique_id in metadata")?;
         let db_name = existing_name.ok_or("Database is missing name in metadata")?;
         let db_format = existing_format.ok_or("Database is missing audio_format in metadata")?;
-        let db_interval =
-            existing_interval.ok_or("Database is missing split_interval in metadata")?;
         let db_bitrate = existing_bitrate.ok_or("Database is missing bitrate in metadata")?;
 
         // Validate metadata matches config
@@ -393,14 +389,6 @@ fn run_connection_loop(
             return Err(format!(
                 "Config mismatch: database has audio_format '{}' but config specifies '{}'",
                 db_format, audio_format_str
-            )
-            .into());
-        }
-        let db_interval_val: u64 = db_interval.parse().unwrap_or(0);
-        if db_interval_val != split_interval {
-            return Err(format!(
-                "Config mismatch: database has split_interval '{}' but config specifies '{}'",
-                db_interval_val, split_interval
             )
             .into());
         }
@@ -492,7 +480,6 @@ fn run_connection_loop(
         db::insert_metadata_sync(&db, "unique_id", &session_unique_id)?;
         db::insert_metadata_sync(&db, "name", name)?;
         db::insert_metadata_sync(&db, "audio_format", audio_format_str)?;
-        db::insert_metadata_sync(&db, "split_interval", &split_interval.to_string())?;
         db::insert_metadata_sync(&db, "bitrate", &bitrate_to_store.to_string())?;
         db::insert_metadata_sync(&db, "sample_rate", &output_sample_rate.to_string())?;
         db::insert_metadata_sync(&db, "is_recipient", "false")?;

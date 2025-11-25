@@ -241,7 +241,6 @@ struct Metadata {
     unique_id: String,
     name: String,
     audio_format: String,
-    split_interval: String,
     bitrate: String,
     sample_rate: String,
     version: String,
@@ -797,22 +796,6 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let split_interval = match get_meta(pool, "split_interval").await {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Failed to query split_interval metadata: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(
-                    &serde_json::json!({"error": format!("Database error: {}", e)}),
-                )
-                .unwrap(),
-            )
-                .into_response();
-        }
-    };
-
     let bitrate = match get_meta(pool, "bitrate").await {
         Ok(v) => v,
         Err(e) => {
@@ -887,7 +870,6 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         unique_id,
         name,
         audio_format,
-        split_interval,
         bitrate,
         sample_rate,
         version,
@@ -920,11 +902,11 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    // Get split interval
-    let sql = metadata::select_by_key("split_interval");
-    let split_interval: f64 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(pool).await {
-        Ok(val) => val.parse().unwrap_or(10.0),
-        Err(_) => 10.0,
+    // Get sample rate for duration calculation
+    let sql = metadata::select_by_key("sample_rate");
+    let sample_rate: f64 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(pool).await {
+        Ok(val) => val.parse().unwrap_or(48000.0),
+        Err(_) => 48000.0,
     };
 
     // Session Boundary Detection using is_timestamp_from_source
@@ -937,7 +919,7 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
     // connection) vs. which come from different recording attempts after reconnection
     // or schedule breaks.
 
-    // Get all sections with their start id and timestamp from sections table
+    // Get all sections with their start id, timestamp, and total duration samples
     let sql = segments::select_sessions_with_join();
     let rows = match sqlx::query(&sql).fetch_all(pool).await {
         Ok(r) => r,
@@ -950,7 +932,7 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    // (section_id, start_segment_id, end_segment_id, timestamp_ms)
+    // (section_id, timestamp_ms, start_segment_id, end_segment_id, total_duration_samples)
     let sessions: Vec<SessionInfo> = rows
         .iter()
         .filter_map(|row| {
@@ -958,10 +940,10 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             let timestamp_ms: i64 = row.get(1);
             let start_segment_id: Option<i64> = row.get(2);
             let end_segment_id: Option<i64> = row.get(3);
-            match (start_segment_id, end_segment_id) {
-                (Some(start_id), Some(end_id)) => {
-                    let segment_count = (end_id - start_id + 1) as f64;
-                    let duration_seconds = segment_count * split_interval;
+            let total_duration_samples: Option<i64> = row.get(4);
+            match (start_segment_id, end_segment_id, total_duration_samples) {
+                (Some(start_id), Some(end_id), Some(samples)) => {
+                    let duration_seconds = samples as f64 / sample_rate;
                     Some(SessionInfo {
                         section_id,
                         start_id,
@@ -1523,14 +1505,14 @@ async fn receiver_show_sessions_handler(
         }
     };
 
-    // Get split interval
-    let sql = metadata::select_by_key_pg("split_interval");
-    let split_interval: f64 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(&pool).await {
-        Ok(val) => val.parse().unwrap_or(10.0),
-        Err(_) => 10.0,
+    // Get sample rate for duration calculation
+    let sql = metadata::select_by_key_pg("sample_rate");
+    let sample_rate: f64 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(&pool).await {
+        Ok(val) => val.parse().unwrap_or(48000.0),
+        Err(_) => 48000.0,
     };
 
-    // Get all sections with their start id and timestamp, optionally filtered by date range
+    // Get all sections with their start id, timestamp, and total duration samples, optionally filtered by date range
     let sql = segments::select_sessions_with_join_pg_filtered(params.start_ts, params.end_ts);
     let rows = match sqlx::query(&sql).fetch_all(&pool).await {
         Ok(r) => r,
@@ -1543,7 +1525,7 @@ async fn receiver_show_sessions_handler(
         }
     };
 
-    // (section_id, start_segment_id, end_segment_id, timestamp_ms)
+    // (section_id, timestamp_ms, start_segment_id, end_segment_id, total_duration_samples)
     let sessions: Vec<SessionInfo> = rows
         .iter()
         .filter_map(|row| {
@@ -1551,10 +1533,10 @@ async fn receiver_show_sessions_handler(
             let timestamp_ms: i64 = row.get(1);
             let start_segment_id: Option<i64> = row.get(2);
             let end_segment_id: Option<i64> = row.get(3);
-            match (start_segment_id, end_segment_id) {
-                (Some(start_id), Some(end_id)) => {
-                    let segment_count = (end_id - start_id + 1) as f64;
-                    let duration_seconds = segment_count * split_interval;
+            let total_duration_samples: Option<i64> = row.get(4);
+            match (start_segment_id, end_segment_id, total_duration_samples) {
+                (Some(start_id), Some(end_id), Some(samples)) => {
+                    let duration_seconds = samples as f64 / sample_rate;
                     Some(SessionInfo {
                         section_id,
                         start_id,
@@ -1622,13 +1604,6 @@ async fn receiver_show_metadata_handler(
             .ok()
             .flatten()
             .unwrap_or_default();
-    let split_interval: String =
-        sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("split_interval"))
-            .fetch_optional(&pool)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
     let bitrate: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("bitrate"))
         .fetch_optional(&pool)
         .await
@@ -1661,7 +1636,6 @@ async fn receiver_show_metadata_handler(
         unique_id,
         name,
         audio_format,
-        split_interval,
         bitrate,
         sample_rate,
         version,

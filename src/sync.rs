@@ -24,7 +24,6 @@ struct ShowMetadata {
     unique_id: String,
     name: String,
     audio_format: String,
-    split_interval: String,
     bitrate: String,
     sample_rate: String,
     version: String,
@@ -387,11 +386,6 @@ fn sync_single_show(
         crate::db_postgres::insert_metadata_pg_sync(&db, "unique_id", &target_unique_id)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "name", &metadata.name)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "audio_format", &metadata.audio_format)?;
-        crate::db_postgres::insert_metadata_pg_sync(
-            &db,
-            "split_interval",
-            &metadata.split_interval,
-        )?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "bitrate", &metadata.bitrate)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "sample_rate", &metadata.sample_rate)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "is_recipient", "true")?;
@@ -573,17 +567,6 @@ fn validate_metadata(
         return Err(format!(
             "Audio format mismatch: local='{}', remote='{}'",
             local_format, remote.audio_format
-        )
-        .into());
-    }
-
-    // Validate split_interval
-    let local_interval: String = crate::db_postgres::query_metadata_pg_sync(db, "split_interval")?
-        .ok_or_else(|| "Failed to read split_interval from local database: key not found")?;
-    if local_interval != remote.split_interval {
-        return Err(format!(
-            "Split interval mismatch: local='{}', remote='{}'",
-            local_interval, remote.split_interval
         )
         .into());
     }
