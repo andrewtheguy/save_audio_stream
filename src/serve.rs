@@ -16,8 +16,8 @@ use axum::response::Response;
 #[cfg(debug_assertions)]
 use axum::response::Response;
 use serde::Serialize;
-use sqlx::sqlite::SqlitePool;
 use sqlx::postgres::PgPool;
+use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -73,7 +73,11 @@ pub struct AppState {
 // serve_for_sync moved to serve_record.rs
 
 /// Inspect a single database file via HTTP server
-pub fn inspect_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub fn inspect_audio(
+    sqlite_file: PathBuf,
+    port: u16,
+    immutable: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Verify database exists and is Opus format
     if !sqlite_file.exists() {
         return Err(format!("Database file not found: {}", sqlite_file.display()).into());
@@ -81,7 +85,9 @@ pub fn inspect_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result
 
     // Warn if immutable mode is enabled
     if immutable {
-        eprintln!("WARNING: Immutable mode enabled. Only use this for databases on read-only media");
+        eprintln!(
+            "WARNING: Immutable mode enabled. Only use this for databases on read-only media"
+        );
         eprintln!("WARNING: or network filesystems. Using immutable mode on databases that can be");
         eprintln!("WARNING: modified will cause SQLITE_CORRUPT errors or incorrect query results.");
         eprintln!("WARNING: See: https://www.sqlite.org/uri.html#uriimmutable");
@@ -158,7 +164,10 @@ pub fn inspect_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result
             .route("/api/segments/range", get(segments_range_handler))
             .route("/api/metadata", get(metadata_handler))
             .route("/api/sessions", get(sessions_handler))
-            .route("/api/session/{section_id}/latest", get(session_latest_handler));
+            .route(
+                "/api/session/{section_id}/latest",
+                get(session_latest_handler),
+            );
 
         // Add format-specific routes
         if audio_format == "opus" {
@@ -249,14 +258,15 @@ async fn hls_playlist_handler(
 
     // Get metadata
     let sql = metadata::select_by_key("sample_rate");
-    let sample_rate: u32 = match sqlx::query_scalar::<_, String>(&sql)
-        .fetch_one(pool)
-        .await
-    {
+    let sample_rate: u32 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(pool).await {
         Ok(sr) => sr.parse().unwrap_or(16000),
         Err(e) => {
             error!("Failed to query sample_rate metadata: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response();
         }
     };
 
@@ -278,7 +288,7 @@ async fn hls_playlist_handler(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Database error: {}", e),
                 )
-                    .into_response()
+                    .into_response();
             }
         }
     };
@@ -349,14 +359,15 @@ async fn aac_segment_handler(
     let pool = &state.pool;
 
     let sql = segments::select_audio_by_id(seg_id);
-    let audio_data: Vec<u8> = match sqlx::query_scalar(&sql)
-        .fetch_one(pool)
-        .await
-    {
+    let audio_data: Vec<u8> = match sqlx::query_scalar(&sql).fetch_one(pool).await {
         Ok(data) => data,
         Err(e) => {
             error!("Failed to query segment {}: {}", seg_id, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response();
         }
     };
 
@@ -418,7 +429,6 @@ async fn aac_segment_handler(
         .into_response()
 }
 
-
 // HLS playlist handler for Opus format
 async fn opus_hls_playlist_handler(
     State(state): State<StdArc<AppState>>,
@@ -428,14 +438,15 @@ async fn opus_hls_playlist_handler(
 
     // Get sample rate (Opus is 48kHz)
     let sql = metadata::select_by_key("sample_rate");
-    let sample_rate: u32 = match sqlx::query_scalar::<_, String>(&sql)
-        .fetch_one(pool)
-        .await
-    {
+    let sample_rate: u32 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(pool).await {
         Ok(sr) => sr.parse().unwrap_or(48000),
         Err(e) => {
             error!("Failed to query sample_rate metadata: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response();
         }
     };
 
@@ -457,7 +468,7 @@ async fn opus_hls_playlist_handler(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Database error: {}", e),
                 )
-                    .into_response()
+                    .into_response();
             }
         }
     };
@@ -564,14 +575,15 @@ async fn opus_segment_handler(
     let pool = &state.pool;
 
     let sql = segments::select_audio_by_id(seg_id);
-    let audio_data: Vec<u8> = match sqlx::query_scalar(&sql)
-        .fetch_one(pool)
-        .await
-    {
+    let audio_data: Vec<u8> = match sqlx::query_scalar(&sql).fetch_one(pool).await {
         Ok(data) => data,
         Err(e) => {
             error!("Failed to query segment {}: {}", seg_id, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response();
         }
     };
 
@@ -718,7 +730,11 @@ async fn segments_range_handler(State(state): State<StdArc<AppState>>) -> impl I
         Ok(None) => (StatusCode::NOT_FOUND, "No segments found in database").into_response(),
         Err(e) => {
             error!("Failed to query segment range: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
         }
     }
 }
@@ -740,7 +756,10 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Database error: {}", e)}),
+                )
+                .unwrap(),
             )
                 .into_response();
         }
@@ -753,7 +772,10 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Database error: {}", e)}),
+                )
+                .unwrap(),
             )
                 .into_response();
         }
@@ -766,7 +788,10 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Database error: {}", e)}),
+                )
+                .unwrap(),
             )
                 .into_response();
         }
@@ -779,7 +804,10 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Database error: {}", e)}),
+                )
+                .unwrap(),
             )
                 .into_response();
         }
@@ -792,7 +820,10 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Database error: {}", e)}),
+                )
+                .unwrap(),
             )
                 .into_response();
         }
@@ -805,7 +836,10 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Database error: {}", e)}),
+                )
+                .unwrap(),
             )
                 .into_response();
         }
@@ -818,7 +852,10 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Database error: {}", e)}),
+                )
+                .unwrap(),
             )
                 .into_response();
         }
@@ -837,7 +874,10 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Database error: {}", e)}),
+                )
+                .unwrap(),
             )
                 .into_response();
         }
@@ -872,7 +912,11 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         Ok(n) => n,
         Err(e) => {
             error!("Failed to query name metadata: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response();
         }
     };
 
@@ -931,7 +975,7 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1001,11 +1045,17 @@ async fn session_latest_handler(
                 .into_response()
         }
         Err(e) => {
-            error!("Failed to query latest segment for section {}: {}", section_id, e);
+            error!(
+                "Failed to query latest segment for section {}: {}",
+                section_id, e
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Database error: {}", e)}),
+                )
+                .unwrap(),
             )
                 .into_response()
         }
@@ -1035,7 +1085,9 @@ async fn proxy_to_vite(path: &str) -> Response {
                         if name_str != "transfer-encoding" {
                             if let Ok(value_str) = value.to_str() {
                                 if let Ok(header_value) = HeaderValue::from_str(value_str) {
-                                    if let Ok(header_name) = header::HeaderName::from_bytes(name_str.as_bytes()) {
+                                    if let Ok(header_name) =
+                                        header::HeaderName::from_bytes(name_str.as_bytes())
+                                    {
                                         response.headers_mut().insert(header_name, header_value);
                                     }
                                 }
@@ -1047,12 +1099,19 @@ async fn proxy_to_vite(path: &str) -> Response {
                 }
                 Err(e) => {
                     warn!("Failed to read response from dev server: {}", e);
-                    (StatusCode::BAD_GATEWAY, "Failed to read response from dev server").into_response()
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        "Failed to read response from dev server",
+                    )
+                        .into_response()
                 }
             }
         }
         Err(e) => {
-            warn!("Failed to connect to dev server at {}: {}", VITE_DEV_SERVER, e);
+            warn!(
+                "Failed to connect to dev server at {}: {}",
+                VITE_DEV_SERVER, e
+            );
             (
                 StatusCode::BAD_GATEWAY,
                 format!("Failed to connect to dev server at {}. Make sure to run 'deno task dev' in the app/ directory.", VITE_DEV_SERVER)
@@ -1158,7 +1217,10 @@ pub struct ReceiverAppState {
 }
 
 /// Receiver mode: serve frontend with show selection and background sync (PostgreSQL)
-pub fn receiver_audio(config: crate::config::SyncConfig, password: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub fn receiver_audio(
+    config: crate::config::SyncConfig,
+    password: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port = config.port;
 
     println!("Starting receiver server (PostgreSQL mode)...");
@@ -1176,7 +1238,8 @@ pub fn receiver_audio(config: crate::config::SyncConfig, password: String) -> Re
             &config.postgres_url,
             &password,
             crate::db_postgres::GLOBAL_DATABASE_NAME,
-        ).await?;
+        )
+        .await?;
         crate::db_postgres::create_leases_table_pg(&pool).await?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(pool)
     })?;
@@ -1188,22 +1251,20 @@ pub fn receiver_audio(config: crate::config::SyncConfig, password: String) -> Re
     let bg_global_pool = global_pool.clone();
 
     // Spawn background sync thread (lease handling is inside sync_shows)
-    std::thread::spawn(move || {
-        loop {
-            println!("[Sync] Starting background sync...");
-            match crate::sync::sync_shows(&sync_config, &sync_password, &bg_global_pool) {
-                Ok(crate::sync::SyncResult::Completed) => {
-                    println!("[Sync] Background sync completed successfully");
-                }
-                Ok(crate::sync::SyncResult::Skipped) => {
-                    println!("[Sync] Background sync skipped (another instance is syncing)");
-                }
-                Err(e) => {
-                    eprintln!("[Sync] Background sync error: {}", e);
-                }
+    std::thread::spawn(move || loop {
+        println!("[Sync] Starting background sync...");
+        match crate::sync::sync_shows(&sync_config, &sync_password, &bg_global_pool) {
+            Ok(crate::sync::SyncResult::Completed) => {
+                println!("[Sync] Background sync completed successfully");
             }
-            std::thread::sleep(std::time::Duration::from_secs(sync_interval));
+            Ok(crate::sync::SyncResult::Skipped) => {
+                println!("[Sync] Background sync skipped (another instance is syncing)");
+            }
+            Err(e) => {
+                eprintln!("[Sync] Background sync error: {}", e);
+            }
         }
+        std::thread::sleep(std::time::Duration::from_secs(sync_interval));
     });
 
     // Create tokio runtime and run server
@@ -1226,15 +1287,39 @@ pub fn receiver_audio(config: crate::config::SyncConfig, password: String) -> Re
             .route("/api/shows", get(receiver_shows_handler))
             .route("/api/mode", get(receiver_mode_handler))
             // Per-show routes
-            .route("/api/show/{show_name}/format", get(receiver_show_format_handler))
-            .route("/api/show/{show_name}/sessions", get(receiver_show_sessions_handler))
-            .route("/api/show/{show_name}/metadata", get(receiver_show_metadata_handler))
-            .route("/api/show/{show_name}/segments/range", get(receiver_show_segments_range_handler))
+            .route(
+                "/api/show/{show_name}/format",
+                get(receiver_show_format_handler),
+            )
+            .route(
+                "/api/show/{show_name}/sessions",
+                get(receiver_show_sessions_handler),
+            )
+            .route(
+                "/api/show/{show_name}/metadata",
+                get(receiver_show_metadata_handler),
+            )
+            .route(
+                "/api/show/{show_name}/segments/range",
+                get(receiver_show_segments_range_handler),
+            )
             // HLS routes for selected show
-            .route("/show/{show_name}/opus-playlist.m3u8", get(receiver_opus_playlist_handler))
-            .route("/show/{show_name}/opus-segment/{filename}", get(receiver_opus_segment_handler))
-            .route("/show/{show_name}/playlist.m3u8", get(receiver_aac_playlist_handler))
-            .route("/show/{show_name}/aac-segment/{filename}", get(receiver_aac_segment_handler))
+            .route(
+                "/show/{show_name}/opus-playlist.m3u8",
+                get(receiver_opus_playlist_handler),
+            )
+            .route(
+                "/show/{show_name}/opus-segment/{filename}",
+                get(receiver_opus_segment_handler),
+            )
+            .route(
+                "/show/{show_name}/playlist.m3u8",
+                get(receiver_aac_playlist_handler),
+            )
+            .route(
+                "/show/{show_name}/aac-segment/{filename}",
+                get(receiver_aac_segment_handler),
+            )
             // Sync control
             .route("/api/sync", post(receiver_trigger_sync_handler))
             .route("/api/sync/status", get(receiver_sync_status_handler));
@@ -1315,24 +1400,23 @@ async fn receiver_shows_handler(
         let client = reqwest::Client::new();
         let shows_url = format!("{}/api/sync/shows", state.config.remote_url);
         match client.get(&shows_url).send().await {
-            Ok(resp) => {
-                match resp.json::<serde_json::Value>().await {
-                    Ok(json) => {
-                        json.get("shows")
-                            .and_then(|s| s.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
-                                    .collect()
+            Ok(resp) => match resp.json::<serde_json::Value>().await {
+                Ok(json) => json
+                    .get("shows")
+                    .and_then(|s| s.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| {
+                                v.get("name").and_then(|n| n.as_str()).map(String::from)
                             })
-                            .unwrap_or_default()
-                    }
-                    Err(e) => {
-                        error!("Failed to parse shows list: {}", e);
-                        Vec::new()
-                    }
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                Err(e) => {
+                    error!("Failed to parse shows list: {}", e);
+                    Vec::new()
                 }
-            }
+            },
             Err(e) => {
                 error!("Failed to fetch shows from remote: {}", e);
                 Vec::new()
@@ -1347,10 +1431,15 @@ async fn receiver_shows_handler(
             &state.config.postgres_url,
             &state.password,
             &database_name,
-        ).await {
+        )
+        .await
+        {
             Ok(pool) => {
                 let sql = metadata::select_by_key_pg("audio_format");
-                sqlx::query_scalar::<_, String>(&sql).fetch_one(&pool).await.ok()
+                sqlx::query_scalar::<_, String>(&sql)
+                    .fetch_one(&pool)
+                    .await
+                    .ok()
             }
             Err(_) => None,
         };
@@ -1400,15 +1489,25 @@ async fn receiver_show_format_handler(
     let audio_format: String = match sqlx::query_scalar(&sql).fetch_one(&pool).await {
         Ok(f) => f,
         Err(e) => {
-            error!("Failed to query audio_format for show '{}': {}", show_name, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            error!(
+                "Failed to query audio_format for show '{}': {}",
+                show_name, e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response();
         }
     };
 
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&FormatResponse { format: audio_format }).unwrap(),
+        serde_json::to_string(&FormatResponse {
+            format: audio_format,
+        })
+        .unwrap(),
     )
         .into_response()
 }
@@ -1431,7 +1530,11 @@ async fn receiver_show_sessions_handler(
         Ok(n) => n,
         Err(e) => {
             error!("Failed to query name metadata: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response();
         }
     };
 
@@ -1447,7 +1550,11 @@ async fn receiver_show_sessions_handler(
     let rows = match sqlx::query(&sql).fetch_all(&pool).await {
         Ok(r) => r,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query error: {}", e),
+            )
+                .into_response();
         }
     };
 
@@ -1466,8 +1573,13 @@ async fn receiver_show_sessions_handler(
         return (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "application/json")],
-            serde_json::to_string(&SessionsResponse { name, sessions: vec![] }).unwrap(),
-        ).into_response();
+            serde_json::to_string(&SessionsResponse {
+                name,
+                sessions: vec![],
+            })
+            .unwrap(),
+        )
+            .into_response();
     }
 
     let sql = segments::select_max_id_pg();
@@ -1475,7 +1587,11 @@ async fn receiver_show_sessions_handler(
         Ok(id) => id,
         Err(e) => {
             error!("Failed to query max segment ID: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response();
         }
     };
 
@@ -1521,20 +1637,52 @@ async fn receiver_show_metadata_handler(
     };
 
     // Query all metadata fields using SeaQuery (PostgreSQL)
-    let unique_id: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("unique_id"))
-        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+    let unique_id: String =
+        sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("unique_id"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
     let name: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("name"))
-        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
-    let audio_format: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("audio_format"))
-        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
-    let split_interval: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("split_interval"))
-        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let audio_format: String =
+        sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("audio_format"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+    let split_interval: String =
+        sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("split_interval"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
     let bitrate: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("bitrate"))
-        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
-    let sample_rate: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("sample_rate"))
-        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let sample_rate: String =
+        sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("sample_rate"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
     let version: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("version"))
-        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
     let (min_id, max_id) = sqlx::query(&segments::select_min_max_id_pg())
         .fetch_optional(&pool)
@@ -1586,7 +1734,11 @@ async fn receiver_show_segments_range_handler(
             (
                 StatusCode::OK,
                 [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&SegmentRange { start_id: min, end_id: max }).unwrap(),
+                serde_json::to_string(&SegmentRange {
+                    start_id: min,
+                    end_id: max,
+                })
+                .unwrap(),
             )
                 .into_response()
         }
@@ -1615,13 +1767,14 @@ async fn receiver_opus_playlist_handler(
         }
     };
 
-    let sample_rate: u32 = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("sample_rate"))
-        .fetch_optional(&pool)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(48000);
+    let sample_rate: u32 =
+        sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("sample_rate"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(48000);
 
     let start_id = params.start_id.unwrap_or(1);
     let end_id = match params.end_id {
@@ -1639,7 +1792,13 @@ async fn receiver_opus_playlist_handler(
         .await
     {
         Ok(rows) => rows,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query error: {}", e),
+            )
+                .into_response()
+        }
     };
 
     let segment_list: Vec<(i64, i64)> = segment_rows
@@ -1648,22 +1807,39 @@ async fn receiver_opus_playlist_handler(
         .collect();
 
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:7\n");
-    let max_duration: f64 = segment_list.iter().map(|(_, d)| *d as f64 / sample_rate as f64).fold(0.0, f64::max);
+    let max_duration: f64 = segment_list
+        .iter()
+        .map(|(_, d)| *d as f64 / sample_rate as f64)
+        .fold(0.0, f64::max);
 
     playlist.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", start_id));
     playlist.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
-    playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
-    playlist.push_str(&format!("#EXT-X-MAP:URI=\"/show/{}/opus-segment/init.mp4\"\n", show_name));
+    playlist.push_str(&format!(
+        "#EXT-X-TARGETDURATION:{}\n",
+        max_duration.ceil() as u64
+    ));
+    playlist.push_str(&format!(
+        "#EXT-X-MAP:URI=\"/show/{}/opus-segment/init.mp4\"\n",
+        show_name
+    ));
 
     for (seg_id, duration_samples) in segment_list {
         let duration = duration_samples as f64 / sample_rate as f64;
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        playlist.push_str(&format!("/show/{}/opus-segment/{}.m4s\n", show_name, seg_id));
+        playlist.push_str(&format!(
+            "/show/{}/opus-segment/{}.m4s\n",
+            show_name, seg_id
+        ));
     }
 
     playlist.push_str("#EXT-X-ENDLIST\n");
 
-    (StatusCode::OK, [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")], playlist).into_response()
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+        playlist,
+    )
+        .into_response()
 }
 
 async fn receiver_opus_segment_handler(
@@ -1675,14 +1851,26 @@ async fn receiver_opus_segment_handler(
     if filename == "init.mp4" {
         let init_segment = match generate_init_segment(48000, 1, 1, 48000) {
             Ok(data) => data,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate init segment: {}", e)).into_response(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to generate init segment: {}", e),
+                )
+                    .into_response()
+            }
         };
         return (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
-             (header::CONTENT_LENGTH, HeaderValue::from_str(&init_segment.len().to_string()).unwrap())],
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
+                (
+                    header::CONTENT_LENGTH,
+                    HeaderValue::from_str(&init_segment.len().to_string()).unwrap(),
+                ),
+            ],
             init_segment,
-        ).into_response();
+        )
+            .into_response();
     }
 
     let seg_id: i64 = match filename.strip_suffix(".m4s").and_then(|s| s.parse().ok()) {
@@ -1692,26 +1880,58 @@ async fn receiver_opus_segment_handler(
 
     let pool = match open_show_pg_pool(&state, &show_name).await {
         Ok(p) => p,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        }
     };
 
-    let audio_data: Vec<u8> = match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id_pg(seg_id))
-        .fetch_one(&pool)
-        .await
-    {
-        Ok(data) => data,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
-    };
+    let audio_data: Vec<u8> =
+        match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id_pg(seg_id))
+            .fetch_one(&pool)
+            .await
+        {
+            Ok(data) => data,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Database error: {}", e),
+                )
+                    .into_response()
+            }
+        };
 
     let opus_packets = match parse_opus_packets(&audio_data) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to parse Opus packets: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to parse Opus packets: {}", e),
+            )
+                .into_response()
+        }
     };
 
     let base_media_decode_time = ((seg_id - 1) as u64) * (opus_packets.len() as u64 * 960);
-    let media_segment = match generate_media_segment(seg_id as u32, 1, base_media_decode_time, &opus_packets, 48000, 960) {
+    let media_segment = match generate_media_segment(
+        seg_id as u32,
+        1,
+        base_media_decode_time,
+        &opus_packets,
+        48000,
+        960,
+    ) {
         Ok(data) => data,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate media segment: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to generate media segment: {}", e),
+            )
+                .into_response()
+        }
     };
 
     let total_len = media_segment.len() as u64;
@@ -1723,23 +1943,51 @@ async fn receiver_opus_segment_handler(
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
-                    let end: u64 = if parts[1].is_empty() { total_len - 1 } else { parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1) };
+                    let end: u64 = if parts[1].is_empty() {
+                        total_len - 1
+                    } else {
+                        parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
+                    };
                     if start < total_len {
                         let range_data = media_segment[start as usize..=(end as usize)].to_vec();
                         return (
                             StatusCode::PARTIAL_CONTENT,
-                            [(header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
-                             (header::CONTENT_RANGE, HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len)).unwrap()),
-                             (header::CONTENT_LENGTH, HeaderValue::from_str(&(end - start + 1).to_string()).unwrap())],
+                            [
+                                (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
+                                (
+                                    header::CONTENT_RANGE,
+                                    HeaderValue::from_str(&format!(
+                                        "bytes {}-{}/{}",
+                                        start, end, total_len
+                                    ))
+                                    .unwrap(),
+                                ),
+                                (
+                                    header::CONTENT_LENGTH,
+                                    HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
+                                ),
+                            ],
                             range_data,
-                        ).into_response();
+                        )
+                            .into_response();
                     }
                 }
             }
         }
     }
 
-    (StatusCode::OK, [(header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")), (header::CONTENT_LENGTH, HeaderValue::from_str(&total_len.to_string()).unwrap())], media_segment).into_response()
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
+            (
+                header::CONTENT_LENGTH,
+                HeaderValue::from_str(&total_len.to_string()).unwrap(),
+            ),
+        ],
+        media_segment,
+    )
+        .into_response()
 }
 
 async fn receiver_aac_playlist_handler(
@@ -1755,13 +2003,14 @@ async fn receiver_aac_playlist_handler(
         }
     };
 
-    let sample_rate: u32 = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("sample_rate"))
-        .fetch_optional(&pool)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(16000);
+    let sample_rate: u32 =
+        sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("sample_rate"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16000);
 
     let start_id = params.start_id.unwrap_or(1);
     let end_id = match params.end_id {
@@ -1779,7 +2028,13 @@ async fn receiver_aac_playlist_handler(
         .await
     {
         Ok(rows) => rows,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query error: {}", e),
+            )
+                .into_response()
+        }
     };
 
     let segment_list: Vec<(i64, i64)> = segment_rows
@@ -1788,9 +2043,15 @@ async fn receiver_aac_playlist_handler(
         .collect();
 
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
-    let max_duration: f64 = segment_list.iter().map(|(_, d)| *d as f64 / sample_rate as f64).fold(0.0, f64::max);
+    let max_duration: f64 = segment_list
+        .iter()
+        .map(|(_, d)| *d as f64 / sample_rate as f64)
+        .fold(0.0, f64::max);
 
-    playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
+    playlist.push_str(&format!(
+        "#EXT-X-TARGETDURATION:{}\n",
+        max_duration.ceil() as u64
+    ));
 
     for (seg_id, duration_samples) in segment_list {
         let duration = duration_samples as f64 / sample_rate as f64;
@@ -1800,7 +2061,12 @@ async fn receiver_aac_playlist_handler(
 
     playlist.push_str("#EXT-X-ENDLIST\n");
 
-    (StatusCode::OK, [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")], playlist).into_response()
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+        playlist,
+    )
+        .into_response()
 }
 
 async fn receiver_aac_segment_handler(
@@ -1821,13 +2087,20 @@ async fn receiver_aac_segment_handler(
         }
     };
 
-    let audio_data: Vec<u8> = match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id_pg(seg_id))
-        .fetch_one(&pool)
-        .await
-    {
-        Ok(data) => data,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
-    };
+    let audio_data: Vec<u8> =
+        match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id_pg(seg_id))
+            .fetch_one(&pool)
+            .await
+        {
+            Ok(data) => data,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Database error: {}", e),
+                )
+                    .into_response()
+            }
+        };
 
     let total_len = audio_data.len() as u64;
 
@@ -1838,23 +2111,51 @@ async fn receiver_aac_segment_handler(
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
-                    let end: u64 = if parts[1].is_empty() { total_len - 1 } else { parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1) };
+                    let end: u64 = if parts[1].is_empty() {
+                        total_len - 1
+                    } else {
+                        parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
+                    };
                     if start < total_len {
                         let range_data = audio_data[start as usize..=(end as usize)].to_vec();
                         return (
                             StatusCode::PARTIAL_CONTENT,
-                            [(header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
-                             (header::CONTENT_RANGE, HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_len)).unwrap()),
-                             (header::CONTENT_LENGTH, HeaderValue::from_str(&(end - start + 1).to_string()).unwrap())],
+                            [
+                                (header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
+                                (
+                                    header::CONTENT_RANGE,
+                                    HeaderValue::from_str(&format!(
+                                        "bytes {}-{}/{}",
+                                        start, end, total_len
+                                    ))
+                                    .unwrap(),
+                                ),
+                                (
+                                    header::CONTENT_LENGTH,
+                                    HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
+                                ),
+                            ],
                             range_data,
-                        ).into_response();
+                        )
+                            .into_response();
                     }
                 }
             }
         }
     }
 
-    (StatusCode::OK, [(header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")), (header::CONTENT_LENGTH, HeaderValue::from_str(&total_len.to_string()).unwrap())], audio_data).into_response()
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
+            (
+                header::CONTENT_LENGTH,
+                HeaderValue::from_str(&total_len.to_string()).unwrap(),
+            ),
+        ],
+        audio_data,
+    )
+        .into_response()
 }
 
 // Sync control handlers
@@ -1867,12 +2168,10 @@ struct SyncStatusResponse {
 async fn receiver_sync_status_handler(
     State(state): State<StdArc<ReceiverAppState>>,
 ) -> impl IntoResponse {
-    let in_progress = crate::db_postgres::is_lease_held_pg(
-        &state.global_pool,
-        crate::sync::SYNC_LEASE_NAME,
-    )
-    .await
-    .unwrap_or(false);
+    let in_progress =
+        crate::db_postgres::is_lease_held_pg(&state.global_pool, crate::sync::SYNC_LEASE_NAME)
+            .await
+            .unwrap_or(false);
 
     (
         StatusCode::OK,
@@ -1891,12 +2190,10 @@ async fn receiver_trigger_sync_handler(
     State(state): State<StdArc<ReceiverAppState>>,
 ) -> impl IntoResponse {
     // Check if sync is already in progress
-    let in_progress = crate::db_postgres::is_lease_held_pg(
-        &state.global_pool,
-        crate::sync::SYNC_LEASE_NAME,
-    )
-    .await
-    .unwrap_or(false);
+    let in_progress =
+        crate::db_postgres::is_lease_held_pg(&state.global_pool, crate::sync::SYNC_LEASE_NAME)
+            .await
+            .unwrap_or(false);
 
     if in_progress {
         return (
@@ -1947,13 +2244,19 @@ async fn receiver_trigger_sync_handler(
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 async fn receiver_index_handler_release() -> Response {
     let mut response = Response::new(Body::from(INDEX_HTML));
-    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
     response
 }
 
 #[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
 async fn receiver_index_handler_release() -> Response {
-    (StatusCode::NOT_FOUND, "Web frontend not available in this build").into_response()
+    (
+        StatusCode::NOT_FOUND,
+        "Web frontend not available in this build",
+    )
+        .into_response()
 }
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
@@ -1964,11 +2267,17 @@ async fn receiver_assets_handler_release(Path(path): Path<String>) -> Response {
         _ => return (StatusCode::NOT_FOUND, "Asset not found").into_response(),
     };
     let mut response = Response::new(Body::from(content));
-    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
     response
 }
 
 #[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
 async fn receiver_assets_handler_release(Path(_path): Path<String>) -> Response {
-    (StatusCode::NOT_FOUND, "Web frontend not available in this build").into_response()
+    (
+        StatusCode::NOT_FOUND,
+        "Web frontend not available in this build",
+    )
+        .into_response()
 }

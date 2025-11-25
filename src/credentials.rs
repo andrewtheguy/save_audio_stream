@@ -45,17 +45,18 @@ pub fn load_credentials() -> Result<Option<Credentials>, Box<dyn std::error::Err
 }
 
 /// Get password for a specific profile
-pub fn get_password(
-    credentials: &Option<Credentials>,
-    profile: &str,
-) -> Result<String, String> {
+pub fn get_password(credentials: &Option<Credentials>, profile: &str) -> Result<String, String> {
     match credentials {
-        Some(creds) => {
-            creds.profiles
-                .get(profile)
-                .map(|p| p.password.clone())
-                .ok_or_else(|| format!("Credential profile '{}' not found in credentials file", profile))
-        }
+        Some(creds) => creds
+            .profiles
+            .get(profile)
+            .map(|p| p.password.clone())
+            .ok_or_else(|| {
+                format!(
+                    "Credential profile '{}' not found in credentials file",
+                    profile
+                )
+            }),
         None => Err(format!(
             "Credentials file not found. Expected at: {}",
             get_credentials_path().display()

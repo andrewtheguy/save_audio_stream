@@ -20,10 +20,14 @@ fn create_test_database_with_sections(
 ) -> SqlitePool {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let pool = save_audio_stream::db::open_database_connection(db_path).await.unwrap();
+        let pool = save_audio_stream::db::open_database_connection(db_path)
+            .await
+            .unwrap();
 
         // Create schema using common helper
-        save_audio_stream::db::init_database_schema(&pool).await.unwrap();
+        save_audio_stream::db::init_database_schema(&pool)
+            .await
+            .unwrap();
 
         // Insert metadata
         let sql = metadata::insert("version", EXPECTED_DB_VERSION);
@@ -67,7 +71,8 @@ fn create_test_database_with_sections(
                     create_test_aac_segment()
                 };
 
-                let sql = segments::insert(timestamp_ms, is_from_source, section_id, &audio_data, 0);
+                let sql =
+                    segments::insert(timestamp_ms, is_from_source, section_id, &audio_data, 0);
                 sqlx::query(&sql).execute(&pool).await.unwrap();
             }
         }
@@ -79,9 +84,7 @@ fn create_test_database_with_sections(
 /// Create a test Opus segment (encoded packets with length prefixes)
 fn create_test_opus_segment(sample_rate: u32) -> Vec<u8> {
     let mut encoder = OpusEncoder::new(sample_rate, Channels::Mono, Application::Voip).unwrap();
-    encoder
-        .set_bitrate(OpusBitrate::Bits(16000))
-        .unwrap();
+    encoder.set_bitrate(OpusBitrate::Bits(16000)).unwrap();
 
     let frame_size = 960; // 20ms at 48kHz
     let mut encode_buffer = vec![0u8; 8192];
@@ -142,7 +145,7 @@ fn test_export_opus_section() {
         "test_show",
         "opus",
         48000,
-        2, // 2 sections
+        2,  // 2 sections
         10, // 10 segments per section
     );
 
@@ -152,7 +155,9 @@ fn test_export_opus_section() {
     // Verify the database structure
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let pool = save_audio_stream::db::open_readonly_connection(&db_path).await.unwrap();
+        let pool = save_audio_stream::db::open_readonly_connection(&db_path)
+            .await
+            .unwrap();
 
         let row = sqlx::query("SELECT MIN(id), MAX(id) FROM segments WHERE section_id = ?")
             .bind(section_id)
@@ -166,11 +171,12 @@ fn test_export_opus_section() {
         assert!(min_id > 0, "Should have segments");
         assert!(max_id >= min_id, "Max ID should be >= min ID");
 
-        let segment_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments WHERE section_id = ?")
-            .bind(section_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let segment_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM segments WHERE section_id = ?")
+                .bind(section_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         assert_eq!(segment_count, 10, "Should have 10 segments in section");
 
@@ -208,20 +214,24 @@ fn test_export_aac_section() {
     // Verify database setup
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let pool = save_audio_stream::db::open_readonly_connection(&db_path).await.unwrap();
-
-        let audio_format: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'audio_format'")
-            .fetch_one(&pool)
+        let pool = save_audio_stream::db::open_readonly_connection(&db_path)
             .await
             .unwrap();
+
+        let audio_format: String =
+            sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'audio_format'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         assert_eq!(audio_format, "aac", "Should be AAC format");
 
-        let segment_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments WHERE section_id = ?")
-            .bind(section_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let segment_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM segments WHERE section_id = ?")
+                .bind(section_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         assert_eq!(segment_count, 5, "Should have 5 segments");
     });
@@ -262,7 +272,10 @@ fn test_export_concurrent_lock() {
     let lock_file3 = File::create(&lock_path).unwrap();
     let result = lock_file3.try_lock_exclusive();
 
-    assert!(result.is_ok(), "Lock should succeed after first is released");
+    assert!(
+        result.is_ok(),
+        "Lock should succeed after first is released"
+    );
 
     // Clean up
     drop(lock_file3);
@@ -293,10 +306,7 @@ fn test_export_concurrent_lock_different_sections() {
     let lock_file2 = File::create(&lock_path2).unwrap();
     let result = lock_file2.try_lock_exclusive();
 
-    assert!(
-        result.is_ok(),
-        "Lock on different section should succeed"
-    );
+    assert!(result.is_ok(), "Lock on different section should succeed");
 
     // Clean up
     drop(lock_file1);
@@ -320,20 +330,37 @@ fn test_export_filename_format() {
     };
 
     // Verify format is yyyymmdd_hhmmss (8 digits + underscore + 6 digits)
-    assert_eq!(formatted_time.len(), 15, "Timestamp should be 15 characters");
-    assert_eq!(&formatted_time[8..9], "_", "Should have underscore at position 8");
+    assert_eq!(
+        formatted_time.len(),
+        15,
+        "Timestamp should be 15 characters"
+    );
+    assert_eq!(
+        &formatted_time[8..9],
+        "_",
+        "Should have underscore at position 8"
+    );
 
     // Verify date part is numeric
     let date_part = &formatted_time[0..8];
-    assert!(date_part.parse::<u32>().is_ok(), "Date part should be numeric");
+    assert!(
+        date_part.parse::<u32>().is_ok(),
+        "Date part should be numeric"
+    );
 
     // Verify time part is numeric
     let time_part = &formatted_time[9..15];
-    assert!(time_part.parse::<u32>().is_ok(), "Time part should be numeric");
+    assert!(
+        time_part.parse::<u32>().is_ok(),
+        "Time part should be numeric"
+    );
 
     // Format section_id as hex
     let hex_section_id = format!("{:x}", section_id);
-    assert_eq!(hex_section_id, "62c4b12369400", "Section ID should be in hex");
+    assert_eq!(
+        hex_section_id, "62c4b12369400",
+        "Section ID should be in hex"
+    );
 
     // Generate filename
     let filename = format!(
@@ -342,9 +369,19 @@ fn test_export_filename_format() {
     );
 
     // Verify filename structure (not exact timestamp since it depends on timezone)
-    assert!(filename.starts_with("am1430_"), "Filename should start with show name");
-    assert!(filename.ends_with("_62c4b12369400.ogg"), "Filename should end with hex section ID and extension");
-    assert_eq!(filename.matches('_').count(), 3, "Filename should have 3 underscores");
+    assert!(
+        filename.starts_with("am1430_"),
+        "Filename should start with show name"
+    );
+    assert!(
+        filename.ends_with("_62c4b12369400.ogg"),
+        "Filename should end with hex section ID and extension"
+    );
+    assert_eq!(
+        filename.matches('_').count(),
+        3,
+        "Filename should have 3 underscores"
+    );
 }
 
 #[test]
@@ -353,25 +390,21 @@ fn test_export_section_not_found() {
     let db_path = temp_dir.path().join("test_not_found.sqlite");
 
     // Create test database
-    let _pool = create_test_database_with_sections(
-        &db_path,
-        "test_show",
-        "opus",
-        48000,
-        1,
-        5,
-    );
+    let _pool = create_test_database_with_sections(&db_path, "test_show", "opus", 48000, 1, 5);
 
     // Try to query a non-existent section
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let pool = save_audio_stream::db::open_readonly_connection(&db_path).await.unwrap();
+        let pool = save_audio_stream::db::open_readonly_connection(&db_path)
+            .await
+            .unwrap();
         let non_existent_section_id = 9999999999999999i64;
 
-        let result: Result<(i64, i64), _> = sqlx::query_as("SELECT id, start_timestamp_ms FROM sections WHERE id = ?")
-            .bind(non_existent_section_id)
-            .fetch_one(&pool)
-            .await;
+        let result: Result<(i64, i64), _> =
+            sqlx::query_as("SELECT id, start_timestamp_ms FROM sections WHERE id = ?")
+                .bind(non_existent_section_id)
+                .fetch_one(&pool)
+                .await;
 
         assert!(
             result.is_err(),

@@ -1,3 +1,5 @@
+use crate::db::SyncDb;
+use crate::sftp::{SftpClient, SftpConfig, UploadOptions};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -5,12 +7,10 @@ use axum::{
     routing::get,
     Router,
 };
-use crate::sftp::{SftpClient, SftpConfig, UploadOptions};
 use fs2::FileExt;
 use log::{error, warn};
 use ogg::writing::PacketWriter;
 use serde::{Deserialize, Serialize};
-use crate::db::SyncDb;
 use sqlx::Row;
 use std::fs::File;
 use std::io::Write;
@@ -23,7 +23,7 @@ use crate::queries::{metadata, sections, segments};
 
 // Import ShowLocks and get_show_lock from the crate root
 // (defined in both lib.rs and main.rs)
-use crate::{ShowLocks, get_show_lock};
+use crate::{get_show_lock, ShowLocks};
 
 // State for record mode API handlers
 pub struct AppState {
@@ -64,7 +64,6 @@ pub fn serve_for_sync(
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-
         // Clone sftp_config for periodic export task if needed
         let sftp_config_for_export = sftp_config.clone();
 
@@ -88,7 +87,9 @@ pub fn serve_for_sync(
                     show_locks.clone(),
                 );
             } else {
-                println!("Warning: export_to_remote_periodically is enabled but SFTP config is missing");
+                println!(
+                    "Warning: export_to_remote_periodically is enabled but SFTP config is missing"
+                );
             }
         }
 
@@ -220,7 +221,7 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
             Err(e) => {
                 eprintln!("Warning: Failed to read directory entry: {}", e);
                 continue;
-            },
+            }
         };
 
         let path = entry.path();
@@ -243,15 +244,16 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
             Err(e) => {
                 warn!("Failed to open database {:?} for show listing: {}", path, e);
                 continue;
-            },
+            }
         };
 
         // Check is_recipient flag
-        let is_recipient: Option<String> = sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
-            .fetch_optional(&pool)
-            .await
-            .ok()
-            .flatten();
+        let is_recipient: Option<String> =
+            sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
+                .fetch_optional(&pool)
+                .await
+                .ok()
+                .flatten();
 
         if let Some(is_recipient) = is_recipient {
             if is_recipient == "true" {
@@ -260,11 +262,12 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
         }
 
         // Get name from metadata
-        let name: Option<String> = sqlx::query_scalar::<_, String>(&metadata::select_by_key("name"))
-            .fetch_optional(&pool)
-            .await
-            .ok()
-            .flatten();
+        let name: Option<String> =
+            sqlx::query_scalar::<_, String>(&metadata::select_by_key("name"))
+                .fetch_optional(&pool)
+                .await
+                .ok()
+                .flatten();
 
         let name = match name {
             Some(n) => n,
@@ -306,7 +309,8 @@ pub async fn sync_show_metadata_handler(
             return (
                 StatusCode::NOT_FOUND,
                 axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -322,7 +326,11 @@ pub async fn sync_show_metadata_handler(
     let pool = match crate::db::open_readonly_connection(path).await {
         Ok(p) => p,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", path.display(), e);
+            error!(
+                "Failed to open readonly database connection at '{}': {}",
+                path.display(),
+                e
+            );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
@@ -332,11 +340,12 @@ pub async fn sync_show_metadata_handler(
     };
 
     // Check is_recipient flag - reject if true
-    let is_recipient: Option<String> = sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
-        .fetch_optional(&pool)
-        .await
-        .ok()
-        .flatten();
+    let is_recipient: Option<String> =
+        sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
 
     if let Some(is_recipient) = &is_recipient {
         if is_recipient == "true" {
@@ -349,20 +358,21 @@ pub async fn sync_show_metadata_handler(
     }
 
     // Fetch all required metadata
-    let unique_id: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("unique_id"))
-        .fetch_one(&pool)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Failed to query unique_id metadata: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    let unique_id: String =
+        match sqlx::query_scalar::<_, String>(&metadata::select_by_key("unique_id"))
+            .fetch_one(&pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to query unique_id metadata: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
 
     let name: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("name"))
         .fetch_one(&pool)
@@ -379,35 +389,37 @@ pub async fn sync_show_metadata_handler(
         }
     };
 
-    let audio_format: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("audio_format"))
-        .fetch_one(&pool)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Failed to query audio_format metadata: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    let audio_format: String =
+        match sqlx::query_scalar::<_, String>(&metadata::select_by_key("audio_format"))
+            .fetch_one(&pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to query audio_format metadata: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
 
-    let split_interval: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("split_interval"))
-        .fetch_one(&pool)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Failed to query split_interval metadata: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    let split_interval: String =
+        match sqlx::query_scalar::<_, String>(&metadata::select_by_key("split_interval"))
+            .fetch_one(&pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to query split_interval metadata: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
 
     let bitrate: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("bitrate"))
         .fetch_one(&pool)
@@ -424,20 +436,21 @@ pub async fn sync_show_metadata_handler(
         }
     };
 
-    let sample_rate: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("sample_rate"))
-        .fetch_one(&pool)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Failed to query sample_rate metadata: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    let sample_rate: String =
+        match sqlx::query_scalar::<_, String>(&metadata::select_by_key("sample_rate"))
+            .fetch_one(&pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to query sample_rate metadata: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
 
     let version: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("version"))
         .fetch_one(&pool)
@@ -497,7 +510,8 @@ pub async fn db_sections_handler(
             return (
                 StatusCode::NOT_FOUND,
                 axum::Json(serde_json::json!({"error": format!("Show '{}' not found", name)})),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -513,7 +527,11 @@ pub async fn db_sections_handler(
     let pool = match crate::db::open_readonly_connection(path).await {
         Ok(p) => p,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", path.display(), e);
+            error!(
+                "Failed to open readonly database connection at '{}': {}",
+                path.display(),
+                e
+            );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
@@ -523,15 +541,14 @@ pub async fn db_sections_handler(
     };
 
     // Fetch all sections
-    let rows = match sqlx::query(&sections::select_all())
-        .fetch_all(&pool)
-        .await
-    {
+    let rows = match sqlx::query(&sections::select_all()).fetch_all(&pool).await {
         Ok(rows) => rows,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to fetch sections: {}", e)})),
+                axum::Json(
+                    serde_json::json!({"error": format!("Failed to fetch sections: {}", e)}),
+                ),
             )
                 .into_response();
         }
@@ -560,7 +577,8 @@ pub async fn sync_show_segments_handler(
             return (
                 StatusCode::NOT_FOUND,
                 axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
-            ).into_response();
+            )
+                .into_response();
         }
     };
     let path = std::path::Path::new(&db_path);
@@ -577,7 +595,11 @@ pub async fn sync_show_segments_handler(
     let pool = match crate::db::open_readonly_connection(path).await {
         Ok(p) => p,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", path.display(), e);
+            error!(
+                "Failed to open readonly database connection at '{}': {}",
+                path.display(),
+                e
+            );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
@@ -587,11 +609,12 @@ pub async fn sync_show_segments_handler(
     };
 
     // Check is_recipient flag - reject if true
-    let is_recipient: Option<String> = sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
-        .fetch_optional(&pool)
-        .await
-        .ok()
-        .flatten();
+    let is_recipient: Option<String> =
+        sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
 
     if let Some(is_recipient) = is_recipient {
         if is_recipient == "true" {
@@ -605,15 +628,21 @@ pub async fn sync_show_segments_handler(
 
     // Fetch segments
     let limit = query.limit.unwrap_or(100);
-    let rows = match sqlx::query(&segments::select_range_with_limit(query.start_id, query.end_id, limit))
-        .fetch_all(&pool)
-        .await
+    let rows = match sqlx::query(&segments::select_range_with_limit(
+        query.start_id,
+        query.end_id,
+        limit,
+    ))
+    .fetch_all(&pool)
+    .await
     {
         Ok(rows) => rows,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to query segments: {}", e)})),
+                axum::Json(
+                    serde_json::json!({"error": format!("Failed to query segments: {}", e)}),
+                ),
             )
                 .into_response();
         }
@@ -677,12 +706,8 @@ fn upload_to_sftp(
 
     // Upload from memory using streaming
     let mut cursor = Cursor::new(data);
-    let upload_result = client.upload_stream(
-        &mut cursor,
-        &remote_path,
-        data.len() as u64,
-        &options,
-    );
+    let upload_result =
+        client.upload_stream(&mut cursor, &remote_path, data.len() as u64, &options);
 
     // Disconnect from SFTP
     let _ = client.disconnect();
@@ -721,10 +746,11 @@ fn spawn_periodic_export_task(
                 };
 
                 // Get pending section ID (to exclude from export)
-                let pending_section_id: Option<i64> = crate::db::query_metadata_sync(&db, "pending_section_id")
-                    .ok()
-                    .flatten()
-                    .and_then(|s| s.parse().ok());
+                let pending_section_id: Option<i64> =
+                    crate::db::query_metadata_sync(&db, "pending_section_id")
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.parse().ok());
 
                 // Query for unexported sections
                 let unexported_sections: Vec<i64> = {
@@ -744,7 +770,10 @@ fn spawn_periodic_export_task(
                     match rows_result {
                         Ok(rows) => rows.iter().map(|r| r.get::<i64, _>(0)).collect(),
                         Err(e) => {
-                            error!("Failed to query unexported sections for {}: {}", show_name, e);
+                            error!(
+                                "Failed to query unexported sections for {}: {}",
+                                show_name, e
+                            );
                             continue;
                         }
                     }
@@ -763,9 +792,15 @@ fn spawn_periodic_export_task(
                     for section_id in unexported_sections {
                         // Acquire lock before export to prevent concurrent cleanup
                         let show_lock = get_show_lock(&show_locks, show_name);
-                        println!("[{}] Acquiring export lock for section {}...", show_name, section_id);
-                        let _export_guard = show_lock.lock().unwrap();  // BLOCKS if cleanup is running
-                        println!("[{}] Export lock acquired for section {}", show_name, section_id);
+                        println!(
+                            "[{}] Acquiring export lock for section {}...",
+                            show_name, section_id
+                        );
+                        let _export_guard = show_lock.lock().unwrap(); // BLOCKS if cleanup is running
+                        println!(
+                            "[{}] Export lock acquired for section {}",
+                            show_name, section_id
+                        );
 
                         match export_section(
                             &output_dir,
@@ -790,7 +825,10 @@ fn spawn_periodic_export_task(
 
                         // Lock automatically released when _export_guard drops
                         drop(_export_guard);
-                        println!("[{}] Export lock released for section {}", show_name, section_id);
+                        println!(
+                            "[{}] Export lock released for section {}",
+                            show_name, section_id
+                        );
                     }
                 }
             }
@@ -846,7 +884,10 @@ fn generate_export_filename(
         _ => return Err(format!("Unsupported audio format: {}", audio_format)),
     };
 
-    Ok(format!("{}_{}_{}.{}", show_name, formatted_time, compact_section_id, extension))
+    Ok(format!(
+        "{}_{}_{}.{}",
+        show_name, formatted_time, compact_section_id, extension
+    ))
 }
 
 fn map_to_io_error<E: std::fmt::Display + Send + Sync + 'static>(err: E) -> std::io::Error {
@@ -864,12 +905,14 @@ fn write_ogg_stream<W: Write>(
 ) -> Result<W, std::io::Error> {
     // Fetch segments synchronously using embedded runtime
     let sql = segments::select_by_id_range(start_id, end_id);
-    let rows = db.block_on(async {
-        sqlx::query(&sql)
-            .fetch_all(db.pool())
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-    }).map_err(map_to_io_error)?;
+    let rows = db
+        .block_on(async {
+            sqlx::query(&sql)
+                .fetch_all(db.pool())
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })
+        .map_err(map_to_io_error)?;
 
     let mut writer = PacketWriter::new(writer);
 
@@ -942,13 +985,15 @@ fn export_opus_section(
 ) -> Result<Vec<u8>, std::io::Error> {
     // Get segment ID range for this section using embedded runtime
     let sql = segments::select_min_max_id_for_section(section_id);
-    let (start_id, end_id): (i64, i64) = db.block_on(async {
-        sqlx::query(&sql)
-            .fetch_one(db.pool())
-            .await
-            .map(|row| (row.get(0), row.get(1)))
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-    }).map_err(map_to_io_error)?;
+    let (start_id, end_id): (i64, i64) = db
+        .block_on(async {
+            sqlx::query(&sql)
+                .fetch_one(db.pool())
+                .await
+                .map(|row| (row.get(0), row.get(1)))
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })
+        .map_err(map_to_io_error)?;
 
     // Write Ogg stream to memory buffer
     let mut buffer = Vec::new();
@@ -968,9 +1013,7 @@ fn export_opus_section(
 }
 
 /// Export AAC audio for a section to a memory buffer (raw ADTS frames)
-fn export_aac_section(
-    segments: &[(i64, Vec<u8>)],
-) -> Result<Vec<u8>, std::io::Error> {
+fn export_aac_section(segments: &[(i64, Vec<u8>)]) -> Result<Vec<u8>, std::io::Error> {
     // Create buffer
     let mut buffer = Vec::new();
 
@@ -1007,11 +1050,22 @@ pub fn export_section(
 
     // Acquire exclusive lock to prevent concurrent exports of the same show
     let lock_path = tmp_dir.join(format!("export_{}.lock", show_name));
-    let _lock_file = File::create(&lock_path)
-        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path.display(), e))?;
+    let _lock_file = File::create(&lock_path).map_err(|e| {
+        format!(
+            "Failed to create lock file '{}': {}",
+            lock_path.display(),
+            e
+        )
+    })?;
 
-    _lock_file.try_lock_exclusive()
-        .map_err(|e| format!("Export already in progress for show '{}'. Lock file: {}. Error: {}", show_name, lock_path.display(), e))?;
+    _lock_file.try_lock_exclusive().map_err(|e| {
+        format!(
+            "Export already in progress for show '{}'. Lock file: {}. Error: {}",
+            show_name,
+            lock_path.display(),
+            e
+        )
+    })?;
     // Lock will be held until _lock_file is dropped (when function exits)
 
     // Construct database path
@@ -1022,20 +1076,25 @@ pub fn export_section(
     }
 
     // Open read/write database connection (needed for updating is_exported_to_remote)
-    let db = crate::db::SyncDb::connect(&db_path)
-        .map_err(|e| {
-            error!("Failed to open database connection at '{}': {}", db_path.display(), e);
-            format!("Failed to open database: {}", e)
-        })?;
+    let db = crate::db::SyncDb::connect(&db_path).map_err(|e| {
+        error!(
+            "Failed to open database connection at '{}': {}",
+            db_path.display(),
+            e
+        );
+        format!("Failed to open database: {}", e)
+    })?;
 
     // Get section info including is_exported_to_remote
     let sql = sections::select_by_id(section_id);
-    let section_row = db.block_on(async {
-        sqlx::query(&sql)
-            .fetch_optional(db.pool())
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-    }).map_err(|e| format!("Failed to fetch section: {}", e))?;
+    let section_row = db
+        .block_on(async {
+            sqlx::query(&sql)
+                .fetch_optional(db.pool())
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })
+        .map_err(|e| format!("Failed to fetch section: {}", e))?;
 
     let (section_id, start_timestamp_ms, is_exported_to_remote) = match section_row {
         Some(row) => {
@@ -1061,19 +1120,25 @@ pub fn export_section(
     // Helper function to fetch segments for a section
     let fetch_segments = |db: &SyncDb, section_id: i64| -> Result<Vec<(i64, Vec<u8>)>, String> {
         let sql = segments::select_by_section_id(section_id);
-        let rows = db.block_on(async {
-            sqlx::query(&sql)
-                .fetch_all(db.pool())
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        }).map_err(|e| format!("Failed to fetch segments: {}", e))?;
-        Ok(rows.iter().map(|r| (r.get::<i64, _>(0), r.get::<Vec<u8>, _>(1))).collect())
+        let rows = db
+            .block_on(async {
+                sqlx::query(&sql)
+                    .fetch_all(db.pool())
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            })
+            .map_err(|e| format!("Failed to fetch segments: {}", e))?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get::<i64, _>(0), r.get::<Vec<u8>, _>(1)))
+            .collect())
     };
 
     // If section has already been exported to remote and SFTP is configured, return the SFTP path directly
     if is_exported_to_remote == Some(1) && sftp_config.is_some() {
         // Generate filename using helper function
-        let filename = generate_export_filename(show_name, start_timestamp_ms, section_id, &audio_format)?;
+        let filename =
+            generate_export_filename(show_name, start_timestamp_ms, section_id, &audio_format)?;
 
         // Construct remote path
         let sftp_cfg = sftp_config.unwrap();
@@ -1134,7 +1199,8 @@ pub fn export_section(
     }
 
     // Generate filename using helper function
-    let filename = generate_export_filename(show_name, start_timestamp_ms, section_id, &audio_format)?;
+    let filename =
+        generate_export_filename(show_name, start_timestamp_ms, section_id, &audio_format)?;
 
     // Calculate duration in seconds
     let total_samples = if audio_format == "opus" {
@@ -1186,7 +1252,10 @@ pub fn export_section(
         // SFTP upload succeeded, update is_exported_to_remote column
         let update_sql = sections::mark_exported(section_id);
         if let Err(e) = crate::db::execute_sync(&db, &update_sql) {
-            error!("Failed to update is_exported_to_remote for section {}: {}", section_id, e);
+            error!(
+                "Failed to update is_exported_to_remote for section {}: {}",
+                section_id, e
+            );
             // Don't fail the request, just log the error
         }
 
@@ -1233,9 +1302,15 @@ async fn export_section_handler(
 
     // Acquire lock before export to prevent concurrent cleanup
     let show_lock = get_show_lock(&state.show_locks, &show_name);
-    println!("[{}] Acquiring on-demand export lock for section {}...", show_name, section_id);
-    let _export_guard = show_lock.lock().unwrap();  // BLOCKS if cleanup is running
-    println!("[{}] On-demand export lock acquired for section {}", show_name, section_id);
+    println!(
+        "[{}] Acquiring on-demand export lock for section {}...",
+        show_name, section_id
+    );
+    let _export_guard = show_lock.lock().unwrap(); // BLOCKS if cleanup is running
+    println!(
+        "[{}] On-demand export lock acquired for section {}",
+        show_name, section_id
+    );
 
     // Call the export_section function
     let result = match export_section(
@@ -1248,15 +1323,16 @@ async fn export_section_handler(
         Ok(response) => axum::Json(response).into_response(),
         Err(error_msg) => {
             // Determine appropriate status code based on error message
-            let status_code = if error_msg.contains("not found") || error_msg.contains("No segments") {
-                StatusCode::NOT_FOUND
-            } else if error_msg.contains("already in progress") {
-                StatusCode::CONFLICT
-            } else if error_msg.contains("Invalid") || error_msg.contains("Unsupported") {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
+            let status_code =
+                if error_msg.contains("not found") || error_msg.contains("No segments") {
+                    StatusCode::NOT_FOUND
+                } else if error_msg.contains("already in progress") {
+                    StatusCode::CONFLICT
+                } else if error_msg.contains("Invalid") || error_msg.contains("Unsupported") {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
 
             (
                 status_code,
@@ -1268,7 +1344,10 @@ async fn export_section_handler(
 
     // Lock automatically released when _export_guard drops
     drop(_export_guard);
-    println!("[{}] On-demand export lock released for section {}", show_name, section_id);
+    println!(
+        "[{}] On-demand export lock released for section {}",
+        show_name, section_id
+    );
 
     result
 }

@@ -112,8 +112,12 @@ fn encode_aac_split(
                         transport: Transport::Adts,
                         audio_object_type: AudioObjectType::Mpeg4LowComplexity,
                     };
-                    encoder = AacEncoder::new(new_params)
-                        .map_err(|e| format!("Failed to create AAC encoder for segment {}: {:?}", segment_number, e))?;
+                    encoder = AacEncoder::new(new_params).map_err(|e| {
+                        format!(
+                            "Failed to create AAC encoder for segment {}: {:?}",
+                            segment_number, e
+                        )
+                    })?;
                 }
             }
             Err(e) => {
@@ -273,7 +277,12 @@ fn decode_aac_files(files: &[String]) -> Result<Vec<i16>, Box<dyn std::error::Er
         hint.with_extension("aac");
 
         let probed = symphonia::default::get_probe()
-            .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+            .format(
+                &hint,
+                mss,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
             .map_err(|e| format!("Failed to probe AAC file {}: {}", filename, e))?;
 
         let mut format = probed.format;
@@ -296,7 +305,9 @@ fn decode_aac_files(files: &[String]) -> Result<Vec<i16>, Box<dyn std::error::Er
             // Get next packet
             let packet = match format.next_packet() {
                 Ok(packet) => packet,
-                Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                Err(SymphoniaError::IoError(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
                     break; // End of stream
                 }
                 Err(SymphoniaError::ResetRequired) => {
@@ -309,7 +320,8 @@ fn decode_aac_files(files: &[String]) -> Result<Vec<i16>, Box<dyn std::error::Er
             };
 
             // Decode the packet
-            let decoded = decoder.decode(&packet)
+            let decoded = decoder
+                .decode(&packet)
                 .map_err(|e| format!("Failed to decode packet in {}: {}", filename, e))?;
 
             // Convert decoded audio to i16 samples
@@ -333,11 +345,7 @@ fn decode_aac_files(files: &[String]) -> Result<Vec<i16>, Box<dyn std::error::Er
                         .collect()
                 }
                 _ => {
-                    return Err(format!(
-                        "Unsupported audio buffer format in {}",
-                        filename
-                    )
-                    .into());
+                    return Err(format!("Unsupported audio buffer format in {}", filename).into());
                 }
             };
 
@@ -348,8 +356,12 @@ fn decode_aac_files(files: &[String]) -> Result<Vec<i16>, Box<dyn std::error::Er
         if file_samples.len() > AAC_ENCODER_DELAY {
             all_samples.extend_from_slice(&file_samples[AAC_ENCODER_DELAY..]);
         } else {
-            eprintln!("Warning: File {} has fewer samples ({}) than encoder delay ({})",
-                     filename, file_samples.len(), AAC_ENCODER_DELAY);
+            eprintln!(
+                "Warning: File {} has fewer samples ({}) than encoder delay ({})",
+                filename,
+                file_samples.len(),
+                AAC_ENCODER_DELAY
+            );
         }
     }
 

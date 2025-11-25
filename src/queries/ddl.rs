@@ -1,4 +1,6 @@
-use sea_query::{ColumnDef, ForeignKey, ForeignKeyAction, Index, PostgresQueryBuilder, SqliteQueryBuilder, Table};
+use sea_query::{
+    ColumnDef, ForeignKey, ForeignKeyAction, Index, PostgresQueryBuilder, SqliteQueryBuilder, Table,
+};
 
 use crate::schema::{Metadata, Sections, Segments};
 
@@ -61,11 +63,7 @@ pub fn create_segments_table() -> String {
                 .default(0),
         )
         .col(ColumnDef::new(Segments::AudioData).blob().not_null())
-        .col(
-            ColumnDef::new(Segments::SectionId)
-                .big_integer()
-                .not_null(),
-        )
+        .col(ColumnDef::new(Segments::SectionId).big_integer().not_null())
         .col(
             ColumnDef::new(Segments::DurationSamples)
                 .integer()
@@ -164,11 +162,7 @@ pub fn create_segments_table_pg() -> String {
                 .default(0),
         )
         .col(ColumnDef::new(Segments::AudioData).binary().not_null()) // BYTEA in PostgreSQL
-        .col(
-            ColumnDef::new(Segments::SectionId)
-                .big_integer()
-                .not_null(),
-        )
+        .col(ColumnDef::new(Segments::SectionId).big_integer().not_null())
         .col(
             ColumnDef::new(Segments::DurationSamples)
                 .big_integer()

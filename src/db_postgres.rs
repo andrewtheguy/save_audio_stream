@@ -31,7 +31,9 @@ impl SyncDbPg {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let pool = runtime.block_on(open_postgres_connection_create_if_needed(base_url, password, database))?;
+        let pool = runtime.block_on(open_postgres_connection_create_if_needed(
+            base_url, password, database,
+        ))?;
         Ok(Self { pool, runtime })
     }
 
@@ -53,7 +55,11 @@ impl SyncDbPg {
 ///
 /// Takes a base URL like `postgres://user@host:5432` and inserts the password
 /// and appends the database name.
-pub fn build_postgres_url(base_url: &str, password: &str, database: &str) -> Result<String, DynError> {
+pub fn build_postgres_url(
+    base_url: &str,
+    password: &str,
+    database: &str,
+) -> Result<String, DynError> {
     // Parse the base URL to insert password
     let url = url::Url::parse(base_url)?;
 
@@ -108,12 +114,11 @@ pub async fn create_database_if_not_exists(
         .await?;
 
     // Check if database exists
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)"
-    )
-    .bind(database)
-    .fetch_one(&admin_pool)
-    .await?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+            .bind(database)
+            .fetch_one(&admin_pool)
+            .await?;
 
     if !exists {
         // Create the database (note: CREATE DATABASE cannot use prepared statements)
@@ -173,10 +178,11 @@ pub async fn drop_database_if_exists(
     let _ = sqlx::query(&terminate_sql).execute(&admin_pool).await;
 
     // Drop the database
-    let drop_sql = format!("DROP DATABASE IF EXISTS \"{}\"", database.replace('"', "\"\""));
-    sqlx::query(&drop_sql)
-        .execute(&admin_pool)
-        .await?;
+    let drop_sql = format!(
+        "DROP DATABASE IF EXISTS \"{}\"",
+        database.replace('"', "\"\"")
+    );
+    sqlx::query(&drop_sql).execute(&admin_pool).await?;
 
     Ok(())
 }
@@ -212,11 +218,7 @@ pub async fn init_database_schema_pg(pool: &PgPool) -> Result<(), DynError> {
 }
 
 /// Update or insert a metadata key-value pair (PostgreSQL version)
-pub async fn upsert_metadata_pg<'e, E>(
-    executor: E,
-    key: &str,
-    value: &str,
-) -> Result<(), DynError>
+pub async fn upsert_metadata_pg<'e, E>(executor: E, key: &str, value: &str) -> Result<(), DynError>
 where
     E: Executor<'e, Database = sqlx::Postgres>,
 {
@@ -226,27 +228,18 @@ where
 }
 
 /// Query a single metadata value by key (PostgreSQL version)
-pub async fn query_metadata_pg<'e, E>(
-    executor: E,
-    key: &str,
-) -> Result<Option<String>, DynError>
+pub async fn query_metadata_pg<'e, E>(executor: E, key: &str) -> Result<Option<String>, DynError>
 where
     E: Executor<'e, Database = sqlx::Postgres>,
 {
     let sql = metadata::select_by_key_pg(key);
-    let result = sqlx::query(&sql)
-        .fetch_optional(executor)
-        .await?;
+    let result = sqlx::query(&sql).fetch_optional(executor).await?;
 
     Ok(result.map(|row| row.get::<String, _>(0)))
 }
 
 /// Insert a new metadata key-value pair (PostgreSQL version)
-pub async fn insert_metadata_pg<'e, E>(
-    executor: E,
-    key: &str,
-    value: &str,
-) -> Result<(), DynError>
+pub async fn insert_metadata_pg<'e, E>(executor: E, key: &str, value: &str) -> Result<(), DynError>
 where
     E: Executor<'e, Database = sqlx::Postgres>,
 {
@@ -266,9 +259,7 @@ pub async fn query_one_optional_pg<T>(pool: &PgPool, sql: &str) -> Result<Option
 where
     T: for<'r> sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Send + Unpin,
 {
-    let result = sqlx::query_scalar::<_, T>(sql)
-        .fetch_optional(pool)
-        .await?;
+    let result = sqlx::query_scalar::<_, T>(sql).fetch_optional(pool).await?;
     Ok(result)
 }
 
@@ -277,28 +268,38 @@ pub async fn query_one_pg<T>(pool: &PgPool, sql: &str) -> Result<T, DynError>
 where
     T: for<'r> sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Send + Unpin,
 {
-    let result = sqlx::query_scalar::<_, T>(sql)
-        .fetch_one(pool)
-        .await?;
+    let result = sqlx::query_scalar::<_, T>(sql).fetch_one(pool).await?;
     Ok(result)
 }
 
 /// Insert a section row (PostgreSQL version)
-pub async fn insert_section_pg(pool: &PgPool, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
+pub async fn insert_section_pg(
+    pool: &PgPool,
+    id: i64,
+    start_timestamp_ms: i64,
+) -> Result<(), DynError> {
     let sql = sections::insert_pg(id, start_timestamp_ms);
     sqlx::query(&sql).execute(pool).await?;
     Ok(())
 }
 
 /// Insert a section row if it does not already exist (PostgreSQL version)
-pub async fn insert_section_or_ignore_pg(pool: &PgPool, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
+pub async fn insert_section_or_ignore_pg(
+    pool: &PgPool,
+    id: i64,
+    start_timestamp_ms: i64,
+) -> Result<(), DynError> {
     let sql = sections::insert_or_ignore_pg(id, start_timestamp_ms);
     sqlx::query(&sql).execute(pool).await?;
     Ok(())
 }
 
 /// Delete sections older than the cutoff while keeping the specified id (PostgreSQL version)
-pub async fn delete_old_sections_pg(pool: &PgPool, cutoff_ms: i64, keeper_section_id: i64) -> Result<u64, DynError> {
+pub async fn delete_old_sections_pg(
+    pool: &PgPool,
+    cutoff_ms: i64,
+    keeper_section_id: i64,
+) -> Result<u64, DynError> {
     let sql = sections::delete_old_sections_pg(cutoff_ms, keeper_section_id);
     let result = sqlx::query(&sql).execute(pool).await?;
     Ok(result.rows_affected())
@@ -314,17 +315,25 @@ pub async fn insert_segment_with_id_pg(
     section_id: i64,
     duration_samples: i64,
 ) -> Result<(), DynError> {
-    let sql = segments::insert_with_id_pg(id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples);
+    let sql = segments::insert_with_id_pg(
+        id,
+        timestamp_ms,
+        is_timestamp_from_source,
+        audio_data,
+        section_id,
+        duration_samples,
+    );
     sqlx::query(&sql).execute(pool).await?;
     Ok(())
 }
 
 /// Check if segments exist for a section id (PostgreSQL version)
-pub async fn segments_exist_for_section_pg(pool: &PgPool, section_id: i64) -> Result<bool, DynError> {
+pub async fn segments_exist_for_section_pg(
+    pool: &PgPool,
+    section_id: i64,
+) -> Result<bool, DynError> {
     let sql = segments::exists_for_section_pg(section_id);
-    let result: Option<bool> = sqlx::query_scalar(&sql)
-        .fetch_optional(pool)
-        .await?;
+    let result: Option<bool> = sqlx::query_scalar(&sql).fetch_optional(pool).await?;
     Ok(result.unwrap_or(false))
 }
 
@@ -338,18 +347,17 @@ pub async fn update_metadata_pg(pool: &PgPool, key: &str, value: &str) -> Result
 /// Determine whether a metadata key exists (PostgreSQL version)
 pub async fn metadata_exists_pg(pool: &PgPool, key: &str) -> Result<bool, DynError> {
     let sql = metadata::exists_pg(key);
-    let result: Option<i32> = sqlx::query_scalar(&sql)
-        .fetch_optional(pool)
-        .await?;
+    let result: Option<i32> = sqlx::query_scalar(&sql).fetch_optional(pool).await?;
     Ok(result.is_some())
 }
 
 /// Get the latest section id before a cutoff timestamp (PostgreSQL version)
-pub async fn get_latest_section_before_cutoff_pg(pool: &PgPool, cutoff_ms: i64) -> Result<Option<i64>, DynError> {
+pub async fn get_latest_section_before_cutoff_pg(
+    pool: &PgPool,
+    cutoff_ms: i64,
+) -> Result<Option<i64>, DynError> {
     let sql = sections::select_latest_before_cutoff_pg(cutoff_ms);
-    let result: Option<i64> = sqlx::query_scalar(&sql)
-        .fetch_optional(pool)
-        .await?;
+    let result: Option<i64> = sqlx::query_scalar(&sql).fetch_optional(pool).await?;
     Ok(result)
 }
 
@@ -421,18 +429,38 @@ where
 }
 
 /// Sync wrapper: Insert a section (PostgreSQL)
-pub fn insert_section_pg_sync(db: &SyncDbPg, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
+pub fn insert_section_pg_sync(
+    db: &SyncDbPg,
+    id: i64,
+    start_timestamp_ms: i64,
+) -> Result<(), DynError> {
     db.block_on(insert_section_pg(db.pool(), id, start_timestamp_ms))
 }
 
 /// Sync wrapper: Insert or ignore a section (PostgreSQL)
-pub fn insert_section_or_ignore_pg_sync(db: &SyncDbPg, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
-    db.block_on(insert_section_or_ignore_pg(db.pool(), id, start_timestamp_ms))
+pub fn insert_section_or_ignore_pg_sync(
+    db: &SyncDbPg,
+    id: i64,
+    start_timestamp_ms: i64,
+) -> Result<(), DynError> {
+    db.block_on(insert_section_or_ignore_pg(
+        db.pool(),
+        id,
+        start_timestamp_ms,
+    ))
 }
 
 /// Sync wrapper: Delete old sections (PostgreSQL)
-pub fn delete_old_sections_pg_sync(db: &SyncDbPg, cutoff_ms: i64, keeper_section_id: i64) -> Result<u64, DynError> {
-    db.block_on(delete_old_sections_pg(db.pool(), cutoff_ms, keeper_section_id))
+pub fn delete_old_sections_pg_sync(
+    db: &SyncDbPg,
+    cutoff_ms: i64,
+    keeper_section_id: i64,
+) -> Result<u64, DynError> {
+    db.block_on(delete_old_sections_pg(
+        db.pool(),
+        cutoff_ms,
+        keeper_section_id,
+    ))
 }
 
 /// Sync wrapper: Insert a segment with explicit ID (PostgreSQL)
@@ -445,11 +473,22 @@ pub fn insert_segment_with_id_pg_sync(
     section_id: i64,
     duration_samples: i64,
 ) -> Result<(), DynError> {
-    db.block_on(insert_segment_with_id_pg(db.pool(), id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples))
+    db.block_on(insert_segment_with_id_pg(
+        db.pool(),
+        id,
+        timestamp_ms,
+        is_timestamp_from_source,
+        audio_data,
+        section_id,
+        duration_samples,
+    ))
 }
 
 /// Sync wrapper: Check if segments exist for a section (PostgreSQL)
-pub fn segments_exist_for_section_pg_sync(db: &SyncDbPg, section_id: i64) -> Result<bool, DynError> {
+pub fn segments_exist_for_section_pg_sync(
+    db: &SyncDbPg,
+    section_id: i64,
+) -> Result<bool, DynError> {
     db.block_on(segments_exist_for_section_pg(db.pool(), section_id))
 }
 
@@ -464,7 +503,10 @@ pub fn metadata_exists_pg_sync(db: &SyncDbPg, key: &str) -> Result<bool, DynErro
 }
 
 /// Sync wrapper: Get latest section before cutoff (PostgreSQL)
-pub fn get_latest_section_before_cutoff_pg_sync(db: &SyncDbPg, cutoff_ms: i64) -> Result<Option<i64>, DynError> {
+pub fn get_latest_section_before_cutoff_pg_sync(
+    db: &SyncDbPg,
+    cutoff_ms: i64,
+) -> Result<Option<i64>, DynError> {
     db.block_on(get_latest_section_before_cutoff_pg(db.pool(), cutoff_ms))
 }
 
@@ -555,7 +597,11 @@ pub async fn renew_lease_pg(
 }
 
 /// Release a lease. Only releases if held by the specified holder.
-pub async fn release_lease_pg(pool: &PgPool, name: &str, holder_id: &str) -> Result<bool, DynError> {
+pub async fn release_lease_pg(
+    pool: &PgPool,
+    name: &str,
+    holder_id: &str,
+) -> Result<bool, DynError> {
     let result = sqlx::query(
         r#"
         DELETE FROM sync_leases

@@ -164,10 +164,14 @@ async fn create_source_database(
     num_sections: usize,
     segments_per_section: usize,
 ) -> (SqlitePool, tempfile::TempDir) {
-    let (pool, guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
+    let (pool, guard) = save_audio_stream::db::create_test_connection_in_temporary_file()
+        .await
+        .unwrap();
 
     // Create schema using common helper
-    save_audio_stream::db::init_database_schema(&pool).await.unwrap();
+    save_audio_stream::db::init_database_schema(&pool)
+        .await
+        .unwrap();
 
     // Insert metadata
     let sql = metadata::insert("version", EXPECTED_DB_VERSION);
@@ -208,7 +212,13 @@ async fn create_source_database(
             let segment_timestamp_ms = section_timestamp_ms + seg_idx as i64 * 1000;
             let audio_data = format!("audio_data_sec{}_seg{}", sec_idx, seg_idx).into_bytes();
 
-            let sql = segments::insert(segment_timestamp_ms, is_boundary, section_id, &audio_data, 0);
+            let sql = segments::insert(
+                segment_timestamp_ms,
+                is_boundary,
+                section_id,
+                &audio_data,
+                0,
+            );
             sqlx::query(&sql).execute(&pool).await.unwrap();
         }
     }
@@ -246,11 +256,12 @@ async fn get_metadata_handler(
     };
 
     // Check is_recipient flag - reject if true
-    let is_recipient: Option<String> = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'is_recipient'")
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
+    let is_recipient: Option<String> =
+        sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'is_recipient'")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
 
     if let Some(is_recipient) = &is_recipient {
         if is_recipient == "true" {
@@ -263,30 +274,34 @@ async fn get_metadata_handler(
     }
 
     // Fetch metadata
-    let unique_id: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'unique_id'")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let unique_id: String =
+        sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'unique_id'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
     let name: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'name'")
         .fetch_one(pool)
         .await
         .unwrap();
-    let audio_format: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'audio_format'")
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    let split_interval: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'split_interval'")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let audio_format: String =
+        sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'audio_format'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let split_interval: String =
+        sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'split_interval'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
     let bitrate: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'bitrate'")
         .fetch_one(pool)
         .await
         .unwrap();
-    let sample_rate: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'sample_rate'")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let sample_rate: String =
+        sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'sample_rate'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
     let version: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'version'")
         .fetch_one(pool)
         .await
@@ -436,15 +451,20 @@ async fn verify_destination_db_pg(
     expected_num_sections: usize,
 ) {
     let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
-    let pool = save_audio_stream::db_postgres::open_postgres_connection(postgres_url, password, &database_name)
-        .await
-        .unwrap();
+    let pool = save_audio_stream::db_postgres::open_postgres_connection(
+        postgres_url,
+        password,
+        &database_name,
+    )
+    .await
+    .unwrap();
 
     // Verify metadata
-    let source_unique_id: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'source_unique_id'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let source_unique_id: String =
+        sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'source_unique_id'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(source_unique_id, expected_source_unique_id);
 
     let name: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'name'")
@@ -453,10 +473,11 @@ async fn verify_destination_db_pg(
         .unwrap();
     assert_eq!(name, show_name);
 
-    let is_recipient: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'is_recipient'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let is_recipient: String =
+        sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'is_recipient'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(is_recipient, "true");
 
     // Verify segment count
@@ -477,7 +498,12 @@ async fn verify_destination_db_pg(
 /// Helper to drop a test database
 async fn drop_test_database(postgres_url: &str, password: &str, show_name: &str) {
     let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
-    let _ = save_audio_stream::db_postgres::drop_database_if_exists(postgres_url, password, &database_name).await;
+    let _ = save_audio_stream::db_postgres::drop_database_if_exists(
+        postgres_url,
+        password,
+        &database_name,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -555,7 +581,15 @@ async fn test_sync_incremental() {
     assert!(result.is_ok());
 
     // Verify initial sync
-    verify_destination_db_pg(&postgres_url, &password, show_name, "source_unique_456", 10, 2).await;
+    verify_destination_db_pg(
+        &postgres_url,
+        &password,
+        show_name,
+        "source_unique_456",
+        10,
+        2,
+    )
+    .await;
 
     // Now add more data to source and sync again
     // (In a real scenario, we'd update the source DB and restart server)
@@ -570,7 +604,15 @@ async fn test_sync_incremental() {
     assert!(result.is_ok());
 
     // Should still have same data
-    verify_destination_db_pg(&postgres_url, &password, show_name, "source_unique_456", 10, 2).await;
+    verify_destination_db_pg(
+        &postgres_url,
+        &password,
+        show_name,
+        "source_unique_456",
+        10,
+        2,
+    )
+    .await;
 
     // Cleanup
     drop_test_database(&postgres_url, &password, show_name).await;
@@ -619,7 +661,12 @@ async fn test_sync_with_whitelist() {
 
     // Verify show2 does NOT exist (connection should fail)
     let show2_db_name = save_audio_stream::sync::get_pg_database_name("show2");
-    let show2_result = save_audio_stream::db_postgres::open_postgres_connection(&postgres_url, &password, &show2_db_name).await;
+    let show2_result = save_audio_stream::db_postgres::open_postgres_connection(
+        &postgres_url,
+        &password,
+        &show2_db_name,
+    )
+    .await;
     assert!(show2_result.is_err(), "show2 database should not exist");
 
     // Verify show3 exists in PostgreSQL
@@ -661,9 +708,13 @@ async fn test_sync_metadata_validation() {
 
     // Manually tamper with destination metadata in PostgreSQL to cause validation failure
     let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
-    let pool = save_audio_stream::db_postgres::open_postgres_connection(&postgres_url, &password, &database_name)
-        .await
-        .unwrap();
+    let pool = save_audio_stream::db_postgres::open_postgres_connection(
+        &postgres_url,
+        &password,
+        &database_name,
+    )
+    .await
+    .unwrap();
     sqlx::query("UPDATE metadata SET value = 'aac' WHERE key = 'audio_format'")
         .execute(&pool)
         .await
@@ -698,7 +749,9 @@ async fn test_sync_rejects_old_version() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create source database with old version (version "2" instead of "3")
-    let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
+    let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file()
+        .await
+        .unwrap();
 
     // Create old schema (version 2)
     sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -737,10 +790,13 @@ async fn test_sync_rejects_old_version() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(&format!("INSERT INTO metadata (key, value) VALUES ('name', '{}')", show_name))
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(&format!(
+        "INSERT INTO metadata (key, value) VALUES ('name', '{}')",
+        show_name
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO metadata (key, value) VALUES ('audio_format', 'opus')")
         .execute(&pool)
         .await
@@ -811,7 +867,9 @@ async fn test_sync_rejects_recipient_database() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create source database marked as recipient (sync target)
-    let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
+    let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file()
+        .await
+        .unwrap();
 
     // Create schema
     sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -848,10 +906,13 @@ async fn test_sync_rejects_recipient_database() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(&format!("INSERT INTO metadata (key, value) VALUES ('name', '{}')", show_name))
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(&format!(
+        "INSERT INTO metadata (key, value) VALUES ('name', '{}')",
+        show_name
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO metadata (key, value) VALUES ('audio_format', 'opus')")
         .execute(&pool)
         .await

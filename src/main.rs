@@ -62,7 +62,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     match args.command {
         Command::Record { config, port } => record_multi_session(config, port),
-        Command::Inspect { sqlite_file, port, immutable } => serve::inspect_audio(sqlite_file, port, immutable),
+        Command::Inspect {
+            sqlite_file,
+            port,
+            immutable,
+        } => serve::inspect_audio(sqlite_file, port, immutable),
         Command::Receiver { config, sync_only } => receiver_from_config(config, sync_only),
     }
 }
@@ -105,7 +109,10 @@ fn record_multi_session(
     record::run_multi_session(multi_config, port_override)
 }
 
-fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn receiver_from_config(
+    config_path: PathBuf,
+    sync_only: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load receiver/sync config file
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
@@ -134,8 +141,14 @@ fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box
 
     // Load credentials and get password for PostgreSQL
     let credentials = save_audio_stream::credentials::load_credentials()?;
-    let password = save_audio_stream::credentials::get_password(&credentials, &sync_config.credential_profile)
-        .map_err(|e| format!("Failed to get password for profile '{}': {}", sync_config.credential_profile, e))?;
+    let password =
+        save_audio_stream::credentials::get_password(&credentials, &sync_config.credential_profile)
+            .map_err(|e| {
+                format!(
+                    "Failed to get password for profile '{}': {}",
+                    sync_config.credential_profile, e
+                )
+            })?;
 
     if sync_only {
         // Sync once and exit - create global pool for lease management
@@ -145,7 +158,8 @@ fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box
                 &sync_config.postgres_url,
                 &password,
                 save_audio_stream::db_postgres::GLOBAL_DATABASE_NAME,
-            ).await?;
+            )
+            .await?;
             save_audio_stream::db_postgres::create_leases_table_pg(&pool).await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(pool)
         })?;

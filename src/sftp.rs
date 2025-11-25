@@ -125,10 +125,7 @@ impl SftpConfig {
         config: &crate::config::SftpExportConfig,
         credentials: &Option<crate::credentials::Credentials>,
     ) -> std::result::Result<Self, String> {
-        let password = crate::credentials::get_password(
-            credentials,
-            &config.credential_profile,
-        )?;
+        let password = crate::credentials::get_password(credentials, &config.credential_profile)?;
 
         Ok(Self::with_password(
             config.host.clone(),
@@ -201,12 +198,7 @@ impl SftpClient {
             }
             SftpAuth::KeyFile(key_path, passphrase) => {
                 session
-                    .userauth_pubkey_file(
-                        &config.username,
-                        None,
-                        key_path,
-                        passphrase.as_deref(),
-                    )
+                    .userauth_pubkey_file(&config.username, None, key_path, passphrase.as_deref())
                     .map_err(|e| {
                         SftpError::AuthenticationFailed(format!(
                             "Key-based authentication failed for user '{}' with key '{}': {}",
@@ -291,10 +283,7 @@ impl SftpClient {
         // Determine actual remote path (temp or final)
         let (actual_remote_path, is_temp) = if options.atomic {
             // Use temporary path with .tmpupload suffix to avoid extra tmp file on reupload
-            let temp_path = PathBuf::from(format!(
-                "{}.tmpupload",
-                remote_path.display()
-            ));
+            let temp_path = PathBuf::from(format!("{}.tmpupload", remote_path.display()));
             (temp_path, true)
         } else {
             (remote_path.to_path_buf(), false)
@@ -463,10 +452,7 @@ impl SftpClient {
     /// Returns file size and other metadata for the specified path.
     pub fn stat(&self, path: &Path) -> Result<ssh2::FileStat> {
         self.sftp.stat(path).map_err(|e| {
-            SftpError::RemoteFileError(
-                path.to_path_buf(),
-                format!("Failed to stat file: {}", e),
-            )
+            SftpError::RemoteFileError(path.to_path_buf(), format!("Failed to stat file: {}", e))
         })
     }
 

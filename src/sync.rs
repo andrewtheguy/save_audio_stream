@@ -2,8 +2,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use sqlx::postgres::PgPool;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 
 use crate::config::SyncConfig;
 use crate::constants::EXPECTED_DB_VERSION;
@@ -91,7 +90,13 @@ pub fn sync_shows(
     // Try to acquire the lease
     let rt = tokio::runtime::Runtime::new()?;
     let acquired = rt.block_on(async {
-        db_postgres::try_acquire_lease_pg(global_pool, SYNC_LEASE_NAME, &holder_id, lease_duration_ms).await
+        db_postgres::try_acquire_lease_pg(
+            global_pool,
+            SYNC_LEASE_NAME,
+            &holder_id,
+            lease_duration_ms,
+        )
+        .await
     })?;
 
     if !acquired {
@@ -105,29 +110,31 @@ pub fn sync_shows(
     let renewal_pool = global_pool.clone();
     let renewal_holder_id = holder_id.clone();
     let renewal_interval = std::time::Duration::from_millis((lease_duration_ms / 3) as u64);
-    let stop_renewal = Arc::new(AtomicBool::new(false));
-    let stop_renewal_clone = stop_renewal.clone();
+    let (stop_tx, stop_rx) = mpsc::channel();
 
     let renewal_handle = std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create renewal runtime");
-        while !stop_renewal_clone.load(Ordering::SeqCst) {
-            std::thread::sleep(renewal_interval);
-            if stop_renewal_clone.load(Ordering::SeqCst) {
-                break;
-            }
-            let renewed = rt.block_on(async {
-                db_postgres::renew_lease_pg(
-                    &renewal_pool,
-                    SYNC_LEASE_NAME,
-                    &renewal_holder_id,
-                    lease_duration_ms,
-                )
-                .await
-            });
-            match renewed {
-                Ok(true) => println!("[Sync] Lease renewed"),
-                Ok(false) => eprintln!("[Sync] Warning: Failed to renew lease - lost ownership"),
-                Err(e) => eprintln!("[Sync] Warning: Lease renewal error: {}", e),
+        loop {
+            match stop_rx.recv_timeout(renewal_interval) {
+                Ok(_) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    let renewed = rt.block_on(async {
+                        db_postgres::renew_lease_pg(
+                            &renewal_pool,
+                            SYNC_LEASE_NAME,
+                            &renewal_holder_id,
+                            lease_duration_ms,
+                        )
+                        .await
+                    });
+                    match renewed {
+                        Ok(true) => println!("[Sync] Lease renewed"),
+                        Ok(false) => {
+                            eprintln!("[Sync] Warning: Failed to renew lease - lost ownership")
+                        }
+                        Err(e) => eprintln!("[Sync] Warning: Lease renewal error: {}", e),
+                    }
+                }
             }
         }
     });
@@ -136,7 +143,7 @@ pub fn sync_shows(
     let sync_result = sync_shows_internal(config, password);
 
     // Stop renewal thread
-    stop_renewal.store(true, Ordering::SeqCst);
+    let _ = stop_tx.send(());
     let _ = renewal_handle.join();
 
     // Release the lease
@@ -224,7 +231,13 @@ fn sync_shows_internal(
         );
 
         // Sync single show - exit immediately on any error
-        sync_single_show(remote_url, &config.postgres_url, password, show_name, chunk_size)?;
+        sync_single_show(
+            remote_url,
+            &config.postgres_url,
+            password,
+            show_name,
+            chunk_size,
+        )?;
 
         println!(
             "[{}/{}] ✓ Show '{}' synced successfully",
@@ -282,21 +295,32 @@ fn sync_single_show(
 
     // Connect to PostgreSQL database
     let database_name = get_pg_database_name(show_name);
-    println!("[{}]   Connecting to PostgreSQL database '{}'...", show_name, database_name);
+    println!(
+        "[{}]   Connecting to PostgreSQL database '{}'...",
+        show_name, database_name
+    );
 
-    let db = SyncDbPg::connect(postgres_url, password, &database_name)
-        .map_err(|e| format!("Failed to connect to PostgreSQL database '{}': {}", database_name, e))?;
+    let db = SyncDbPg::connect(postgres_url, password, &database_name).map_err(|e| {
+        format!(
+            "Failed to connect to PostgreSQL database '{}': {}",
+            database_name, e
+        )
+    })?;
 
     // Initialize schema (idempotent)
     crate::db_postgres::init_database_schema_pg_sync(&db)?;
 
     // Check if database exists (has metadata)
-    let existing_unique_id: Option<String> = crate::db_postgres::query_metadata_pg_sync(&db, "unique_id")?;
+    let existing_unique_id: Option<String> =
+        crate::db_postgres::query_metadata_pg_sync(&db, "unique_id")?;
 
     let start_id = if let Some(existing_unique_id) = existing_unique_id {
         // Existing database - validate and resume
         println!("[{}]   Found existing local database", show_name);
-        println!("[{}]   Existing target unique_id: {}", show_name, existing_unique_id);
+        println!(
+            "[{}]   Existing target unique_id: {}",
+            show_name, existing_unique_id
+        );
 
         // Validate local version matches expected version
         let local_version: String = crate::db_postgres::query_metadata_pg_sync(&db, "version")?
@@ -312,8 +336,10 @@ fn sync_single_show(
         }
 
         // Validate source_unique_id matches remote unique_id
-        let source_unique_id: String = crate::db_postgres::query_metadata_pg_sync(&db, "source_unique_id")?
-            .ok_or_else(|| "Failed to read source_unique_id from local database: key not found")?;
+        let source_unique_id: String =
+            crate::db_postgres::query_metadata_pg_sync(&db, "source_unique_id")?.ok_or_else(
+                || "Failed to read source_unique_id from local database: key not found",
+            )?;
 
         if source_unique_id != metadata.unique_id {
             return Err(format!(
@@ -327,31 +353,44 @@ fn sync_single_show(
         validate_metadata(&db, &metadata)?;
 
         // Get last synced ID
-        let last_synced_id: i64 = crate::db_postgres::query_metadata_pg_sync(&db, "last_synced_id")?
-            .map(|v| v.parse().unwrap_or(0))
-            .unwrap_or(0);
+        let last_synced_id: i64 =
+            crate::db_postgres::query_metadata_pg_sync(&db, "last_synced_id")?
+                .map(|v| v.parse().unwrap_or(0))
+                .unwrap_or(0);
 
         // Ensure last_boundary_end_id exists (for older databases that don't have it)
-        let has_boundary_end = crate::db_postgres::metadata_exists_pg_sync(&db, "last_boundary_end_id")?;
+        let has_boundary_end =
+            crate::db_postgres::metadata_exists_pg_sync(&db, "last_boundary_end_id")?;
 
         if !has_boundary_end {
             crate::db_postgres::insert_metadata_pg_sync(&db, "last_boundary_end_id", "0")?;
         }
 
-        println!("[{}]   Resuming from segment {}", show_name, last_synced_id + 1);
+        println!(
+            "[{}]   Resuming from segment {}",
+            show_name,
+            last_synced_id + 1
+        );
         last_synced_id + 1
     } else {
         // New database - initialize
         let target_unique_id = crate::constants::generate_db_unique_id();
         println!("[{}]   Creating new local database", show_name);
-        println!("[{}]   Initialized with target unique_id: {}", show_name, target_unique_id);
+        println!(
+            "[{}]   Initialized with target unique_id: {}",
+            show_name, target_unique_id
+        );
 
         // Insert metadata from remote
         crate::db_postgres::insert_metadata_pg_sync(&db, "version", &metadata.version)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "unique_id", &target_unique_id)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "name", &metadata.name)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "audio_format", &metadata.audio_format)?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "split_interval", &metadata.split_interval)?;
+        crate::db_postgres::insert_metadata_pg_sync(
+            &db,
+            "split_interval",
+            &metadata.split_interval,
+        )?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "bitrate", &metadata.bitrate)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "sample_rate", &metadata.sample_rate)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "is_recipient", "true")?;
@@ -375,7 +414,11 @@ fn sync_single_show(
     // Insert sections into local database
     let sections_count = remote_sections.len();
     for section in remote_sections {
-        crate::db_postgres::insert_section_or_ignore_pg_sync(&db, section.id, section.start_timestamp_ms)?;
+        crate::db_postgres::insert_section_or_ignore_pg_sync(
+            &db,
+            section.id,
+            section.start_timestamp_ms,
+        )?;
     }
     println!("[{}]   Synced {} sections", show_name, sections_count);
 
@@ -386,7 +429,8 @@ fn sync_single_show(
     if current_id > target_max_id {
         println!(
             "[{}]   Already up to date (local_id {} >= remote_max {})",
-            show_name, current_id - 1,
+            show_name,
+            current_id - 1,
             target_max_id
         );
         return Ok(());
@@ -440,7 +484,10 @@ fn sync_single_show(
         let boundary_end = last_boundary_end_id;
 
         db.block_on(async {
-            let mut tx = db.pool().begin().await
+            let mut tx = db
+                .pool()
+                .begin()
+                .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
             for segment in segments_ref {
@@ -452,30 +499,39 @@ fn sync_single_show(
                     segment.section_id,
                     segment.duration_samples,
                 );
-                sqlx::query(&sql).execute(&mut *tx).await
+                sqlx::query(&sql)
+                    .execute(&mut *tx)
+                    .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
 
             // Update last_synced_id (in same transaction)
             let sql = metadata::update_pg("last_synced_id", &last_id.to_string());
-            sqlx::query(&sql).execute(&mut *tx).await
+            sqlx::query(&sql)
+                .execute(&mut *tx)
+                .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
             // Update last_boundary_end_id if we found a new boundary in this batch
             if let Some(boundary) = boundary_end {
                 let sql = metadata::update_pg("last_boundary_end_id", &boundary.to_string());
-                sqlx::query(&sql).execute(&mut *tx).await
+                sqlx::query(&sql)
+                    .execute(&mut *tx)
+                    .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
 
-            tx.commit().await
+            tx.commit()
+                .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             Ok(())
-        }).map_err(|e| format!("Database transaction error: {}", e))?;
+        })
+        .map_err(|e| format!("Database transaction error: {}", e))?;
 
         println!(
             "[{}]   Synced segments {} to {} ({}/{} segments, {:.1}% complete)",
-            show_name, current_id,
+            show_name,
+            current_id,
             last_id,
             last_id - start_id + 1,
             target_max_id - start_id + 1,
@@ -487,7 +543,8 @@ fn sync_single_show(
 
     println!(
         "[{}]   ✓ Sync complete: {} segments",
-        show_name, target_max_id - start_id + 1
+        show_name,
+        target_max_id - start_id + 1
     );
     Ok(())
 }

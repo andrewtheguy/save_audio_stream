@@ -8,8 +8,8 @@ use crate::schedule::{
 use crate::streaming::StreamingSource;
 
 // Import ShowLocks and get_show_lock from the crate root
-use crate::{ShowLocks, get_show_lock};
-use std::path::{Path, PathBuf};
+use crate::db::SyncDb;
+use crate::{get_show_lock, ShowLocks};
 use chrono::{DateTime, Timelike, Utc};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use fdk_aac::enc::{
@@ -20,9 +20,9 @@ use fs2::FileExt;
 use log::debug;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
 use reqwest::blocking::Client;
-use crate::db::SyncDb;
 use std::fs::File;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -95,7 +95,10 @@ fn test_url_decode(url: &str, name: &str) -> Result<(), Box<dyn std::error::Erro
         }
     };
 
-    println!("[{}] Content-Type: {} (codec: {})", name, content_type, codec_hint);
+    println!(
+        "[{}] Content-Type: {} (codec: {})",
+        name, content_type, codec_hint
+    );
 
     // Read a fixed amount of data for testing (200 KB should be enough for several packets)
     let test_data_size = 200 * 1024; // 200 KB
@@ -265,7 +268,11 @@ pub fn cleanup_old_sections_with_params(
                             }
                         }
                         Err(e) => {
-                            return Err(format!("Failed to check if section {} has segments: {}", pending_id, e).into());
+                            return Err(format!(
+                                "Failed to check if section {} has segments: {}",
+                                pending_id, e
+                            )
+                            .into());
                         }
                     }
                 }
@@ -284,7 +291,9 @@ pub fn cleanup_old_sections_with_params(
     } else {
         // Fallback: Find the section with the latest start_timestamp_ms BEFORE the cutoff
         // This ensures we keep complete sessions and don't break playback continuity
-        db::get_latest_section_before_cutoff_sync(db, cutoff_ms).ok().flatten()
+        db::get_latest_section_before_cutoff_sync(db, cutoff_ms)
+            .ok()
+            .flatten()
     };
 
     // If we found a section to keep, delete all older sections
@@ -418,8 +427,13 @@ fn run_connection_loop(
 
         // Validate AAC gapless metadata matches encoder
         if matches!(audio_format, AudioFormat::Aac) {
-            let db_encoder_delay: Option<String> = db::query_metadata_sync(&db, "aac_encoder_delay").ok().flatten();
-            let db_frame_size: Option<String> = db::query_metadata_sync(&db, "aac_frame_size").ok().flatten();
+            let db_encoder_delay: Option<String> =
+                db::query_metadata_sync(&db, "aac_encoder_delay")
+                    .ok()
+                    .flatten();
+            let db_frame_size: Option<String> = db::query_metadata_sync(&db, "aac_frame_size")
+                .ok()
+                .flatten();
 
             let aac_bitrate = if db_bitrate_val == 0 {
                 32000
@@ -537,7 +551,10 @@ fn run_connection_loop(
 
                 // Check if we've reached schedule end
                 if Instant::now() >= recording_end_time {
-                    println!("[{}] Recording schedule end time reached during retry", name);
+                    println!(
+                        "[{}] Recording schedule end time reached during retry",
+                        name
+                    );
                     break 'connection;
                 }
 
@@ -558,7 +575,10 @@ fn run_connection_loop(
 
             // Check if we've reached schedule end
             if Instant::now() >= recording_end_time {
-                println!("[{}] Recording schedule end time reached during retry", name);
+                println!(
+                    "[{}] Recording schedule end time reached during retry",
+                    name
+                );
                 break 'connection;
             }
 
@@ -661,7 +681,8 @@ fn run_connection_loop(
 
             println!(
                 "[{}] Download complete: {} bytes in {:.1} seconds",
-                name_clone, bytes_downloaded,
+                name_clone,
+                bytes_downloaded,
                 start_time.elapsed().as_secs_f64()
             );
 
@@ -710,7 +731,10 @@ fn run_connection_loop(
             .ok_or("Unknown channel count")?
             .count() as u16;
 
-        println!("[{}] Source: {} Hz, {} channels", name, src_sample_rate, src_channels);
+        println!(
+            "[{}] Source: {} Hz, {} channels",
+            name, src_sample_rate, src_channels
+        );
 
         // Format-specific setup
         let (output_sample_rate, frame_size, default_bitrate) = match audio_format {
@@ -726,7 +750,10 @@ fn run_connection_loop(
         let bitrate = bitrate_kbps_resolved as i32 * 1000;
 
         match audio_format {
-            AudioFormat::Wav => println!("[{}] Target: {} Hz, mono, lossless WAV", name, output_sample_rate),
+            AudioFormat::Wav => println!(
+                "[{}] Target: {} Hz, mono, lossless WAV",
+                name, output_sample_rate
+            ),
             _ => println!(
                 "[{}] Target: {} Hz, mono, {} kbps {:?}",
                 name, output_sample_rate, bitrate_kbps_resolved, audio_format
@@ -735,27 +762,29 @@ fn run_connection_loop(
 
         // Helper to create AAC encoder
         // opus is recommended instead of aac for voip use cases
-        let create_aac_encoder = || -> Result<AacEncoder, Box<dyn std::error::Error + Send + Sync>> {
-            let params = EncoderParams {
-                bit_rate: AacBitRate::Cbr(bitrate as u32),
-                sample_rate: 16000,
-                channels: ChannelMode::Mono,
-                transport: Transport::Adts,
-                audio_object_type: AudioObjectType::Mpeg4LowComplexity,
+        let create_aac_encoder =
+            || -> Result<AacEncoder, Box<dyn std::error::Error + Send + Sync>> {
+                let params = EncoderParams {
+                    bit_rate: AacBitRate::Cbr(bitrate as u32),
+                    sample_rate: 16000,
+                    channels: ChannelMode::Mono,
+                    transport: Transport::Adts,
+                    audio_object_type: AudioObjectType::Mpeg4LowComplexity,
+                };
+                AacEncoder::new(params)
+                    .map_err(|e| format!("Failed to create AAC encoder: {:?}", e).into())
             };
-            AacEncoder::new(params)
-                .map_err(|e| format!("Failed to create AAC encoder: {:?}", e).into())
-        };
 
         // Helper to create Opus encoder
-        let create_opus_encoder = || -> Result<OpusEncoder, Box<dyn std::error::Error + Send + Sync>> {
-            let mut encoder = OpusEncoder::new(48000, Channels::Mono, Application::Voip)
-                .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
-            encoder
-                .set_bitrate(OpusBitrate::Bits(bitrate))
-                .map_err(|e| format!("Failed to set bitrate: {}", e))?;
-            Ok(encoder)
-        };
+        let create_opus_encoder =
+            || -> Result<OpusEncoder, Box<dyn std::error::Error + Send + Sync>> {
+                let mut encoder = OpusEncoder::new(48000, Channels::Mono, Application::Voip)
+                    .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
+                encoder
+                    .set_bitrate(OpusBitrate::Bits(bitrate))
+                    .map_err(|e| format!("Failed to set bitrate: {}", e))?;
+                Ok(encoder)
+            };
 
         // Create encoders (only for SQLite storage)
         let mut aac_encoder = None;
@@ -810,7 +839,14 @@ fn run_connection_loop(
                               data: &[u8],
                               duration_samples: u64|
          -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            db::insert_segment_sync(db, timestamp_ms, is_from_source, section_id, data, duration_samples as i64)?;
+            db::insert_segment_sync(
+                db,
+                timestamp_ms,
+                is_from_source,
+                section_id,
+                data,
+                duration_samples as i64,
+            )?;
             Ok(())
         };
 
@@ -912,7 +948,10 @@ fn run_connection_loop(
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("[{}] AAC encode error: {:?}", name, e);
+                                                    eprintln!(
+                                                        "[{}] AAC encode error: {:?}",
+                                                        name, e
+                                                    );
                                                 }
                                             }
                                         }
@@ -957,7 +996,10 @@ fn run_connection_loop(
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("[{}] Opus encode error: {:?}", name, e);
+                                                    eprintln!(
+                                                        "[{}] Opus encode error: {:?}",
+                                                        name, e
+                                                    );
                                                 }
                                             }
                                         }
@@ -1073,7 +1115,8 @@ fn run_connection_loop(
             )?;
             println!(
                 "[{}] Inserted final segment {} ({} bytes)",
-                name, segment_number,
+                name,
+                segment_number,
                 segment_buffer.len()
             );
         }
@@ -1148,15 +1191,26 @@ pub fn record(
     let retention_hours = config.retention_hours.unwrap_or(RETENTION_HOURS);
 
     // Acquire exclusive lock to prevent multiple instances
-    std::fs::create_dir_all(&output_dir)
-        .map_err(|e| format!("Failed to create output directory '{}': {}", output_dir.display(), e))?;
+    std::fs::create_dir_all(&output_dir).map_err(|e| {
+        format!(
+            "Failed to create output directory '{}': {}",
+            output_dir.display(),
+            e
+        )
+    })?;
     let lock_path = output_dir.join(format!("{}.lock", name));
-    let _lock_file = File::create(&lock_path)
-        .map_err(|e| format!("Failed to create lock file '{}': {}", lock_path.display(), e))?;
+    let _lock_file = File::create(&lock_path).map_err(|e| {
+        format!(
+            "Failed to create lock file '{}': {}",
+            lock_path.display(),
+            e
+        )
+    })?;
     _lock_file.try_lock_exclusive().map_err(|_| {
         format!(
             "Another instance is already recording '{}'. Lock file: {}",
-            name, lock_path.display()
+            name,
+            lock_path.display()
         )
     })?;
     // Lock will be held until lock_file is dropped (end of function)
@@ -1239,13 +1293,11 @@ pub fn record(
         // Acquire lock before cleanup to prevent concurrent export
         let show_lock = get_show_lock(&show_locks, &name);
         println!("[{}] Acquiring cleanup lock...", name);
-        let _cleanup_guard = show_lock.lock().unwrap();  // BLOCKS if export is running
+        let _cleanup_guard = show_lock.lock().unwrap(); // BLOCKS if export is running
         println!("[{}] Cleanup lock acquired", name);
 
         // Run cleanup of old sections - recreate connection for cleanup
-        if let Ok(cleanup_db) =
-            crate::db::SyncDb::connect(&db_path)
-        {
+        if let Ok(cleanup_db) = crate::db::SyncDb::connect(&db_path) {
             if let Err(e) = cleanup_old_sections_with_retention(&cleanup_db, retention_hours) {
                 eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e);
             }
@@ -1290,7 +1342,10 @@ pub fn run_multi_session(
 
     // Load credentials file if SFTP export is enabled
     let credentials = if multi_config.export_to_sftp.unwrap_or(false) {
-        println!("Loading credentials from {}...", crate::credentials::get_credentials_path().display());
+        println!(
+            "Loading credentials from {}...",
+            crate::credentials::get_credentials_path().display()
+        );
         match crate::credentials::load_credentials() {
             Ok(creds) => creds,
             Err(e) => {
@@ -1321,7 +1376,10 @@ pub fn run_multi_session(
     if let Some(ref config) = sftp_config {
         use crate::sftp::{SftpClient, SftpConfig};
 
-        println!("Testing SFTP connection to {}:{}...", config.host, config.port);
+        println!(
+            "Testing SFTP connection to {}:{}...",
+            config.host, config.port
+        );
 
         let sftp_test_config = SftpConfig::from_export_config(config, &credentials)
             .map_err(|e| format!("Failed to create SFTP config: {}", e))?;
@@ -1338,18 +1396,19 @@ pub fn run_multi_session(
         let mut cursor = std::io::Cursor::new(test_data);
         let options = crate::sftp::UploadOptions::default();
 
-        client.upload_stream(
-            &mut cursor,
-            &test_path,
-            test_data.len() as u64,
-            &options,
-        ).map_err(|e| format!("Failed to write test file to SFTP: {}", e))?;
+        client
+            .upload_stream(&mut cursor, &test_path, test_data.len() as u64, &options)
+            .map_err(|e| format!("Failed to write test file to SFTP: {}", e))?;
 
         println!("Successfully wrote test file, cleaning up...");
 
         // Clean up test file
         if let Err(e) = client.remove_file(&test_path) {
-            println!("Warning: Failed to remove test file {}: {}", test_path.display(), e);
+            println!(
+                "Warning: Failed to remove test file {}: {}",
+                test_path.display(),
+                e
+            );
         }
 
         let _ = client.disconnect();
@@ -1360,8 +1419,12 @@ pub fn run_multi_session(
     println!("Testing stream URLs for decode capability...");
     for session_config in &multi_config.sessions {
         println!("Testing session '{}' URL...", session_config.name);
-        test_url_decode(&session_config.url, &session_config.name)
-            .map_err(|e| format!("URL decode test failed for session '{}': {}", session_config.name, e))?;
+        test_url_decode(&session_config.url, &session_config.name).map_err(|e| {
+            format!(
+                "URL decode test failed for session '{}': {}",
+                session_config.name, e
+            )
+        })?;
     }
     println!("All stream URLs tested successfully");
 
@@ -1369,7 +1432,9 @@ pub fn run_multi_session(
     let export_to_remote_periodically = multi_config.export_to_remote_periodically.unwrap_or(false);
 
     // Extract session names for periodic export
-    let session_names: Vec<String> = multi_config.sessions.iter()
+    let session_names: Vec<String> = multi_config
+        .sessions
+        .iter()
         .map(|s| s.name.clone())
         .collect();
 
@@ -1383,21 +1448,39 @@ pub fn run_multi_session(
     let locks_for_recording = show_locks.clone();
 
     // Initialize databases for all sessions BEFORE starting any services
-    println!("Initializing databases for {} session(s)...", multi_config.sessions.len());
+    println!(
+        "Initializing databases for {} session(s)...",
+        multi_config.sessions.len()
+    );
     let mut db_paths = std::collections::HashMap::new();
 
     for session_config in &multi_config.sessions {
         let db_path = crate::db::get_db_path(&output_dir_path, &session_config.name);
-        println!("Initializing database for session '{}' at {}", session_config.name, db_path.display());
+        println!(
+            "Initializing database for session '{}' at {}",
+            session_config.name,
+            db_path.display()
+        );
 
-        let db = crate::db::SyncDb::connect(&db_path)
-            .map_err(|e| format!("Failed to open database for session '{}': {}", session_config.name, e))?;
+        let db = crate::db::SyncDb::connect(&db_path).map_err(|e| {
+            format!(
+                "Failed to open database for session '{}': {}",
+                session_config.name, e
+            )
+        })?;
 
-        crate::db::init_database_schema_sync(&db)
-            .map_err(|e| format!("Failed to initialize schema for session '{}': {}", session_config.name, e))?;
+        crate::db::init_database_schema_sync(&db).map_err(|e| {
+            format!(
+                "Failed to initialize schema for session '{}': {}",
+                session_config.name, e
+            )
+        })?;
 
         db_paths.insert(session_config.name.clone(), db_path.clone());
-        println!("Database initialized successfully for session '{}'", session_config.name);
+        println!(
+            "Database initialized successfully for session '{}'",
+            session_config.name
+        );
     }
     println!("All databases initialized successfully");
 
@@ -1416,8 +1499,8 @@ pub fn run_multi_session(
             export_to_remote_periodically,
             session_names,
             credentials,
-            locks_for_server,  // Pass locks to API server
-            db_paths_for_server,  // Pass pre-initialized db paths
+            locks_for_server,    // Pass locks to API server
+            db_paths_for_server, // Pass pre-initialized db paths
         ) {
             eprintln!("API server failed: {}", e);
             std::process::exit(1);
@@ -1494,7 +1577,8 @@ pub fn run_multi_session(
         let locks_for_session = locks_for_recording.clone();
 
         // Get pre-initialized db path for this session
-        let db_path = db_paths.get(&session_name)
+        let db_path = db_paths
+            .get(&session_name)
             .ok_or_else(|| format!("Database path not found for session '{}'", session_name))?
             .clone();
 
@@ -1503,7 +1587,11 @@ pub fn run_multi_session(
             loop {
                 println!("[{}] Starting recording session", session_name_for_handle);
 
-                match record(session_config.clone(), locks_for_session.clone(), db_path.clone()) {
+                match record(
+                    session_config.clone(),
+                    locks_for_session.clone(),
+                    db_path.clone(),
+                ) {
                     Ok(_) => {
                         // record() runs indefinitely, should never return Ok
                         eprintln!("[{}] Recording ended unexpectedly", session_name_for_handle);

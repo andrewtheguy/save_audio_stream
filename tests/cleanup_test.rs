@@ -5,18 +5,22 @@ use tokio::runtime::Runtime;
 
 // Import the cleanup functions and SyncDb from the library
 use save_audio_stream::db::SyncDb;
+use save_audio_stream::queries::{metadata, sections, segments};
 use save_audio_stream::record::{
     cleanup_old_sections_with_params, cleanup_old_sections_with_retention,
 };
-use save_audio_stream::queries::{metadata, sections, segments};
 
 /// Helper function to create a test database with segments
 /// Returns (pool, db, _guard) - keep _guard alive to prevent temp file deletion
 fn create_test_database() -> (SqlitePool, SyncDb, tempfile::TempDir) {
     let rt = Runtime::new().unwrap();
     let (pool, guard) = rt.block_on(async {
-        let (pool, guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
-        save_audio_stream::db::init_database_schema(&pool).await.unwrap();
+        let (pool, guard) = save_audio_stream::db::create_test_connection_in_temporary_file()
+            .await
+            .unwrap();
+        save_audio_stream::db::init_database_schema(&pool)
+            .await
+            .unwrap();
         (pool, guard)
     });
     // Create a SyncDb from the same path (need the temp_dir path)
@@ -49,10 +53,7 @@ fn insert_segment_with_timestamp(
         } else {
             // Continuation: get the most recent section_id
             let sql = "SELECT section_id FROM segments ORDER BY id DESC LIMIT 1";
-            let result: Option<i64> = sqlx::query_scalar(sql)
-                .fetch_optional(pool)
-                .await
-                .unwrap();
+            let result: Option<i64> = sqlx::query_scalar(sql).fetch_optional(pool).await.unwrap();
 
             match result {
                 Some(id) => id,
@@ -144,10 +145,12 @@ fn segment_exists(pool: &SqlitePool, id: i64) -> bool {
 fn dump_segments(pool: &SqlitePool) {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let rows = sqlx::query("SELECT id, timestamp_ms, is_timestamp_from_source FROM segments ORDER BY id")
-            .fetch_all(pool)
-            .await
-            .unwrap();
+        let rows = sqlx::query(
+            "SELECT id, timestamp_ms, is_timestamp_from_source FROM segments ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
 
         println!("=== Segments in database ===");
         for row in rows {

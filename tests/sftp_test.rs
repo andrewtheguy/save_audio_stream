@@ -66,9 +66,7 @@ fn verify_upload_success(
     println!("✓ Final file '{}' exists", expected_final_name);
 
     // Check 3: Verify file size
-    let stat = client
-        .stat(remote_path)
-        .expect("Failed to stat final file");
+    let stat = client.stat(remote_path).expect("Failed to stat final file");
     let actual_size = stat.size.unwrap_or(0);
     assert_eq!(
         actual_size, expected_size,
@@ -228,12 +226,8 @@ fn test_sftp_upload_nested_directory() {
 #[ignore] // Requires SFTP server running on localhost
 fn test_sftp_upload_multiple_files_nested_directory() {
     // Create two different test files
-    let test_data_1: Vec<u8> = (0..1024)
-        .map(|i| ((i * 3 + 5) % 256) as u8)
-        .collect();
-    let test_data_2: Vec<u8> = (0..2048)
-        .map(|i| ((i * 7 + 11) % 256) as u8)
-        .collect();
+    let test_data_1: Vec<u8> = (0..1024).map(|i| ((i * 3 + 5) % 256) as u8).collect();
+    let test_data_2: Vec<u8> = (0..2048).map(|i| ((i * 7 + 11) % 256) as u8).collect();
 
     // Create temporary files
     let temp_dir = TempDir::new().unwrap();
@@ -436,7 +430,10 @@ fn test_sftp_connection_failure() {
     );
 
     let result = SftpClient::connect(&config);
-    assert!(result.is_err(), "Should fail to connect to non-existent server");
+    assert!(
+        result.is_err(),
+        "Should fail to connect to non-existent server"
+    );
 
     if let Err(e) = result {
         println!("✓ Expected connection error: {}", e);
@@ -503,11 +500,13 @@ fn test_sftp_upload_from_memory() {
 fn test_sftp_upload_large_data_from_memory() {
     // Create 5MB of test data
     let size = 5 * 1024 * 1024;
-    let test_data: Vec<u8> = (0..size)
-        .map(|i| ((i * 31 + 17) % 256) as u8)
-        .collect();
+    let test_data: Vec<u8> = (0..size).map(|i| ((i * 31 + 17) % 256) as u8).collect();
 
-    println!("Large data size: {} bytes ({} MB)", size, size / 1024 / 1024);
+    println!(
+        "Large data size: {} bytes ({} MB)",
+        size,
+        size / 1024 / 1024
+    );
 
     // Configure SFTP connection
     let config = SftpConfig::with_password(

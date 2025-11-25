@@ -88,13 +88,10 @@ pub async fn open_database_connection(db_path: &Path) -> Result<SqlitePool, DynE
 /// Open a read-only database connection pool
 /// Uses explicit read-only mode for safety
 /// Foreign keys are not enabled as no modifications are allowed
-pub async fn open_readonly_connection(
-    db_path: impl AsRef<Path>,
-) -> Result<SqlitePool, DynError> {
+pub async fn open_readonly_connection(db_path: impl AsRef<Path>) -> Result<SqlitePool, DynError> {
     let db_url = format!("sqlite://{}?mode=ro", db_path.as_ref().display());
 
-    let options = SqliteConnectOptions::from_str(&db_url)?
-        .read_only(true);
+    let options = SqliteConnectOptions::from_str(&db_url)?.read_only(true);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -115,7 +112,10 @@ pub async fn open_readonly_connection(
 pub async fn open_readonly_connection_immutable(
     db_path: impl AsRef<Path>,
 ) -> Result<SqlitePool, DynError> {
-    let db_url = format!("sqlite://{}?mode=ro&immutable=1", db_path.as_ref().display());
+    let db_url = format!(
+        "sqlite://{}?mode=ro&immutable=1",
+        db_path.as_ref().display()
+    );
 
     let options = SqliteConnectOptions::from_str(&db_url)?
         .read_only(true)
@@ -133,7 +133,8 @@ pub async fn open_readonly_connection_immutable(
 /// Enables foreign keys for CASCADE delete testing.
 /// Returns (pool, guard) - the guard must be kept alive to prevent the temp file from being deleted.
 #[allow(dead_code)]
-pub async fn create_test_connection_in_temporary_file() -> Result<(SqlitePool, tempfile::TempDir), DynError> {
+pub async fn create_test_connection_in_temporary_file(
+) -> Result<(SqlitePool, tempfile::TempDir), DynError> {
     let temp_dir = tempfile::tempdir()?;
     let db_path = temp_dir.path().join("test.sqlite");
     let dsn = format!("sqlite://{}", db_path.display());
@@ -153,11 +154,7 @@ pub async fn create_test_connection_in_temporary_file() -> Result<(SqlitePool, t
 
 /// Update or insert a metadata key-value pair
 /// Uses INSERT OR REPLACE to handle both new and existing keys
-pub async fn upsert_metadata<'e, E>(
-    executor: E,
-    key: &str,
-    value: &str,
-) -> Result<(), DynError>
+pub async fn upsert_metadata<'e, E>(executor: E, key: &str, value: &str) -> Result<(), DynError>
 where
     E: Executor<'e, Database = sqlx::Sqlite>,
 {
@@ -192,35 +189,24 @@ pub async fn init_database_schema(pool: &SqlitePool) -> Result<(), DynError> {
         .await?;
 
     // Enable WAL mode (PRAGMA - raw SQL since SeaQuery doesn't support it)
-    sqlx::query("PRAGMA journal_mode=WAL")
-        .execute(pool)
-        .await?;
+    sqlx::query("PRAGMA journal_mode=WAL").execute(pool).await?;
 
     Ok(())
 }
 
 /// Query a single metadata value by key
-pub async fn query_metadata<'e, E>(
-    executor: E,
-    key: &str,
-) -> Result<Option<String>, DynError>
+pub async fn query_metadata<'e, E>(executor: E, key: &str) -> Result<Option<String>, DynError>
 where
     E: Executor<'e, Database = sqlx::Sqlite>,
 {
     let sql = metadata::select_by_key(key);
-    let result = sqlx::query(&sql)
-        .fetch_optional(executor)
-        .await?;
+    let result = sqlx::query(&sql).fetch_optional(executor).await?;
 
     Ok(result.map(|row| row.get::<String, _>(0)))
 }
 
 /// Insert a new metadata key-value pair
-pub async fn insert_metadata<'e, E>(
-    executor: E,
-    key: &str,
-    value: &str,
-) -> Result<(), DynError>
+pub async fn insert_metadata<'e, E>(executor: E, key: &str, value: &str) -> Result<(), DynError>
 where
     E: Executor<'e, Database = sqlx::Sqlite>,
 {
@@ -240,9 +226,7 @@ pub async fn query_one_optional<T>(pool: &SqlitePool, sql: &str) -> Result<Optio
 where
     T: for<'r> sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
 {
-    let result = sqlx::query_scalar::<_, T>(sql)
-        .fetch_optional(pool)
-        .await?;
+    let result = sqlx::query_scalar::<_, T>(sql).fetch_optional(pool).await?;
     Ok(result)
 }
 
@@ -251,28 +235,38 @@ pub async fn query_one<T>(pool: &SqlitePool, sql: &str) -> Result<T, DynError>
 where
     T: for<'r> sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
 {
-    let result = sqlx::query_scalar::<_, T>(sql)
-        .fetch_one(pool)
-        .await?;
+    let result = sqlx::query_scalar::<_, T>(sql).fetch_one(pool).await?;
     Ok(result)
 }
 
 /// Insert a section row
-pub async fn insert_section(pool: &SqlitePool, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
+pub async fn insert_section(
+    pool: &SqlitePool,
+    id: i64,
+    start_timestamp_ms: i64,
+) -> Result<(), DynError> {
     let sql = sections::insert(id, start_timestamp_ms);
     sqlx::query(&sql).execute(pool).await?;
     Ok(())
 }
 
 /// Insert a section row if it does not already exist
-pub async fn insert_section_or_ignore(pool: &SqlitePool, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
+pub async fn insert_section_or_ignore(
+    pool: &SqlitePool,
+    id: i64,
+    start_timestamp_ms: i64,
+) -> Result<(), DynError> {
     let sql = sections::insert_or_ignore(id, start_timestamp_ms);
     sqlx::query(&sql).execute(pool).await?;
     Ok(())
 }
 
 /// Delete sections older than the cutoff while keeping the specified id
-pub async fn delete_old_sections(pool: &SqlitePool, cutoff_ms: i64, keeper_section_id: i64) -> Result<u64, DynError> {
+pub async fn delete_old_sections(
+    pool: &SqlitePool,
+    cutoff_ms: i64,
+    keeper_section_id: i64,
+) -> Result<u64, DynError> {
     let sql = sections::delete_old_sections(cutoff_ms, keeper_section_id);
     let result = sqlx::query(&sql).execute(pool).await?;
     Ok(result.rows_affected())
@@ -287,7 +281,13 @@ pub async fn insert_segment(
     audio_data: &[u8],
     duration_samples: i64,
 ) -> Result<(), DynError> {
-    let sql = segments::insert(timestamp_ms, is_timestamp_from_source, section_id, audio_data, duration_samples);
+    let sql = segments::insert(
+        timestamp_ms,
+        is_timestamp_from_source,
+        section_id,
+        audio_data,
+        duration_samples,
+    );
     sqlx::query(&sql).execute(pool).await?;
     Ok(())
 }
@@ -302,17 +302,25 @@ pub async fn insert_segment_with_id(
     section_id: i64,
     duration_samples: i64,
 ) -> Result<(), DynError> {
-    let sql = segments::insert_with_id(id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples);
+    let sql = segments::insert_with_id(
+        id,
+        timestamp_ms,
+        is_timestamp_from_source,
+        audio_data,
+        section_id,
+        duration_samples,
+    );
     sqlx::query(&sql).execute(pool).await?;
     Ok(())
 }
 
 /// Check if segments exist for a section id
-pub async fn segments_exist_for_section(pool: &SqlitePool, section_id: i64) -> Result<bool, DynError> {
+pub async fn segments_exist_for_section(
+    pool: &SqlitePool,
+    section_id: i64,
+) -> Result<bool, DynError> {
     let sql = segments::exists_for_section(section_id);
-    let result: Option<i32> = sqlx::query_scalar(&sql)
-        .fetch_optional(pool)
-        .await?;
+    let result: Option<i32> = sqlx::query_scalar(&sql).fetch_optional(pool).await?;
     Ok(result.map(|v| v != 0).unwrap_or(false))
 }
 
@@ -326,18 +334,17 @@ pub async fn update_metadata(pool: &SqlitePool, key: &str, value: &str) -> Resul
 /// Determine whether a metadata key exists
 pub async fn metadata_exists(pool: &SqlitePool, key: &str) -> Result<bool, DynError> {
     let sql = metadata::exists(key);
-    let result: Option<i32> = sqlx::query_scalar(&sql)
-        .fetch_optional(pool)
-        .await?;
+    let result: Option<i32> = sqlx::query_scalar(&sql).fetch_optional(pool).await?;
     Ok(result.is_some())
 }
 
 /// Get the latest section id before a cutoff timestamp
-pub async fn get_latest_section_before_cutoff(pool: &SqlitePool, cutoff_ms: i64) -> Result<Option<i64>, DynError> {
+pub async fn get_latest_section_before_cutoff(
+    pool: &SqlitePool,
+    cutoff_ms: i64,
+) -> Result<Option<i64>, DynError> {
     let sql = sections::select_latest_before_cutoff(cutoff_ms);
-    let result: Option<i64> = sqlx::query_scalar(&sql)
-        .fetch_optional(pool)
-        .await?;
+    let result: Option<i64> = sqlx::query_scalar(&sql).fetch_optional(pool).await?;
     Ok(result)
 }
 
@@ -414,12 +421,20 @@ pub fn insert_section_sync(db: &SyncDb, id: i64, start_timestamp_ms: i64) -> Res
 }
 
 /// Sync wrapper: Insert or ignore a section (for sync)
-pub fn insert_section_or_ignore_sync(db: &SyncDb, id: i64, start_timestamp_ms: i64) -> Result<(), DynError> {
+pub fn insert_section_or_ignore_sync(
+    db: &SyncDb,
+    id: i64,
+    start_timestamp_ms: i64,
+) -> Result<(), DynError> {
     db.block_on(insert_section_or_ignore(db.pool(), id, start_timestamp_ms))
 }
 
 /// Sync wrapper: Delete old sections
-pub fn delete_old_sections_sync(db: &SyncDb, cutoff_ms: i64, keeper_section_id: i64) -> Result<u64, DynError> {
+pub fn delete_old_sections_sync(
+    db: &SyncDb,
+    cutoff_ms: i64,
+    keeper_section_id: i64,
+) -> Result<u64, DynError> {
     db.block_on(delete_old_sections(db.pool(), cutoff_ms, keeper_section_id))
 }
 
@@ -432,7 +447,14 @@ pub fn insert_segment_sync(
     audio_data: &[u8],
     duration_samples: i64,
 ) -> Result<(), DynError> {
-    db.block_on(insert_segment(db.pool(), timestamp_ms, is_timestamp_from_source, section_id, audio_data, duration_samples))
+    db.block_on(insert_segment(
+        db.pool(),
+        timestamp_ms,
+        is_timestamp_from_source,
+        section_id,
+        audio_data,
+        duration_samples,
+    ))
 }
 
 /// Sync wrapper: Insert a segment with explicit ID (for sync)
@@ -445,7 +467,15 @@ pub fn insert_segment_with_id_sync(
     section_id: i64,
     duration_samples: i64,
 ) -> Result<(), DynError> {
-    db.block_on(insert_segment_with_id(db.pool(), id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples))
+    db.block_on(insert_segment_with_id(
+        db.pool(),
+        id,
+        timestamp_ms,
+        is_timestamp_from_source,
+        audio_data,
+        section_id,
+        duration_samples,
+    ))
 }
 
 /// Sync wrapper: Check if segments exist for a section
@@ -464,7 +494,10 @@ pub fn metadata_exists_sync(db: &SyncDb, key: &str) -> Result<bool, DynError> {
 }
 
 /// Sync wrapper: Get latest section before cutoff
-pub fn get_latest_section_before_cutoff_sync(db: &SyncDb, cutoff_ms: i64) -> Result<Option<i64>, DynError> {
+pub fn get_latest_section_before_cutoff_sync(
+    db: &SyncDb,
+    cutoff_ms: i64,
+) -> Result<Option<i64>, DynError> {
     db.block_on(get_latest_section_before_cutoff(db.pool(), cutoff_ms))
 }
 
