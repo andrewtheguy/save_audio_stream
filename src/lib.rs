@@ -9,6 +9,7 @@ pub mod config;
 pub mod constants;
 pub mod credentials;
 pub mod db;
+pub mod db_postgres;
 pub mod fmp4;
 pub mod queries;
 pub mod record;

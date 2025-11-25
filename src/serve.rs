@@ -15,6 +15,7 @@ use axum::response::Response;
 use axum::response::Response;
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
+use sqlx::postgres::PgPool;
 use sqlx::Row;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1147,37 +1148,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use axum::routing::post;
 use serde::Deserialize;
 
-/// State for receiver mode (multi-show with background sync)
+/// State for receiver mode (multi-show with background sync, using PostgreSQL)
 pub struct ReceiverAppState {
-    pub local_dir: PathBuf,
-    pub remote_url: String,
-    pub shows_filter: Option<Vec<String>>,
-    pub chunk_size: u64,
-    pub sync_interval_seconds: u64,
+    pub config: crate::config::SyncConfig,
+    pub password: String,
     pub sync_in_progress: StdArc<AtomicBool>,
 }
 
-/// Receiver mode: serve frontend with show selection and background sync
-pub fn receiver_audio(config: crate::config::SyncConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Create local_dir if it doesn't exist
-    if !config.local_dir.exists() {
-        std::fs::create_dir_all(&config.local_dir)?;
-    }
-
+/// Receiver mode: serve frontend with show selection and background sync (PostgreSQL)
+pub fn receiver_audio(config: crate::config::SyncConfig, password: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port = config.port;
     let sync_in_progress = StdArc::new(AtomicBool::new(false));
 
-    println!("Starting receiver server...");
-    println!("Local directory: {}", config.local_dir.display());
+    println!("Starting receiver server (PostgreSQL mode)...");
+    println!("PostgreSQL URL: {}", config.postgres_url);
     println!("Remote URL: {}", config.remote_url);
     println!("Sync interval: {} seconds", config.sync_interval_seconds);
     println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
 
     // Clone values for background sync thread
-    let sync_remote_url = config.remote_url.clone();
-    let sync_local_dir = config.local_dir.clone();
-    let sync_shows = config.shows.clone();
-    let sync_chunk_size = config.chunk_size.unwrap_or(100);
+    let sync_config = config.clone();
+    let sync_password = password.clone();
     let sync_interval = config.sync_interval_seconds;
     let sync_flag = sync_in_progress.clone();
 
@@ -1186,12 +1177,7 @@ pub fn receiver_audio(config: crate::config::SyncConfig) -> Result<(), Box<dyn s
         loop {
             if !sync_flag.swap(true, Ordering::SeqCst) {
                 println!("[Sync] Starting background sync...");
-                match crate::sync::sync_shows(
-                    sync_remote_url.clone(),
-                    sync_local_dir.clone(),
-                    sync_shows.clone(),
-                    sync_chunk_size,
-                ) {
+                match crate::sync::sync_shows(&sync_config, &sync_password) {
                     Ok(_) => println!("[Sync] Background sync completed successfully"),
                     Err(e) => eprintln!("[Sync] Background sync error: {}", e),
                 }
@@ -1207,11 +1193,8 @@ pub fn receiver_audio(config: crate::config::SyncConfig) -> Result<(), Box<dyn s
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let app_state = StdArc::new(ReceiverAppState {
-            local_dir: config.local_dir.clone(),
-            remote_url: config.remote_url.clone(),
-            shows_filter: config.shows.clone(),
-            chunk_size: config.chunk_size.unwrap_or(100),
-            sync_interval_seconds: config.sync_interval_seconds,
+            config: config.clone(),
+            password: password.clone(),
             sync_in_progress,
         });
 
@@ -1303,50 +1286,62 @@ async fn receiver_mode_handler() -> impl IntoResponse {
 async fn receiver_shows_handler(
     State(state): State<StdArc<ReceiverAppState>>,
 ) -> impl IntoResponse {
-    // Scan local_dir for .sqlite files
+    // Query PostgreSQL databases for available shows
+    // Try to connect to each show database and verify it exists
     let mut shows = Vec::new();
 
-    let entries = match std::fs::read_dir(&state.local_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            error!("Failed to read local directory: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Failed to read directory: {}", e)})).unwrap(),
-            ).into_response();
+    // If we have a whitelist, use it. Otherwise query the remote for available shows
+    let show_names: Vec<String> = if let Some(ref filter) = state.config.shows {
+        filter.clone()
+    } else {
+        // Query remote server for available shows (same as sync does)
+        let client = reqwest::Client::new();
+        let shows_url = format!("{}/api/sync/shows", state.config.remote_url);
+        match client.get(&shows_url).send().await {
+            Ok(resp) => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(json) => {
+                        json.get("shows")
+                            .and_then(|s| s.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    }
+                    Err(e) => {
+                        error!("Failed to parse shows list: {}", e);
+                        Vec::new()
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to fetch shows from remote: {}", e);
+                Vec::new()
+            }
         }
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "sqlite") {
-            let show_name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-
-            // Filter by shows_filter if present
-            if let Some(ref filter) = state.shows_filter {
-                if !filter.contains(&show_name) {
-                    continue;
-                }
-            }
-
-            // Try to get audio format from database
-            let audio_format = if let Ok(pool) = crate::db::open_readonly_connection(&path).await {
-                let sql = metadata::select_by_key("audio_format");
+    for show_name in show_names {
+        let database_name = crate::sync::get_pg_database_name(&show_name);
+        // Try to connect and get audio format
+        let audio_format = match crate::db_postgres::open_postgres_connection(
+            &state.config.postgres_url,
+            &state.password,
+            &database_name,
+        ).await {
+            Ok(pool) => {
+                let sql = metadata::select_by_key_pg("audio_format");
                 sqlx::query_scalar::<_, String>(&sql).fetch_one(&pool).await.ok()
-            } else {
-                None
-            };
+            }
+            Err(_) => None,
+        };
 
-            shows.push(ReceiverShowInfo {
-                name: show_name,
-                audio_format,
-            });
-        }
+        shows.push(ReceiverShowInfo {
+            name: show_name,
+            audio_format,
+        });
     }
 
     // Sort shows by name
@@ -1360,29 +1355,31 @@ async fn receiver_shows_handler(
         .into_response()
 }
 
-fn get_show_db_path(state: &ReceiverAppState, show_name: &str) -> PathBuf {
-    state.local_dir.join(format!("{}.sqlite", show_name))
+/// Open a PostgreSQL connection for a specific show
+async fn open_show_pg_pool(state: &ReceiverAppState, show_name: &str) -> Result<PgPool, String> {
+    let database_name = crate::sync::get_pg_database_name(show_name);
+    crate::db_postgres::open_postgres_connection(
+        &state.config.postgres_url,
+        &state.password,
+        &database_name,
+    )
+    .await
+    .map_err(|e| format!("Failed to connect to database '{}': {}", database_name, e))
 }
 
 async fn receiver_show_format_handler(
     State(state): State<StdArc<ReceiverAppState>>,
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
-    let db_path = get_show_db_path(&state, &show_name);
-
-    if !db_path.exists() {
-        return (StatusCode::NOT_FOUND, "Show not found").into_response();
-    }
-
-    let pool = match crate::db::open_readonly_connection(&db_path).await {
-        Ok(c) => c,
+    let pool = match open_show_pg_pool(&state, &show_name).await {
+        Ok(p) => p,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (StatusCode::NOT_FOUND, format!("Show not found: {}", e)).into_response();
         }
     };
 
-    let sql = metadata::select_by_key("audio_format");
+    let sql = metadata::select_by_key_pg("audio_format");
     let audio_format: String = match sqlx::query_scalar(&sql).fetch_one(&pool).await {
         Ok(f) => f,
         Err(e) => {
@@ -1403,22 +1400,16 @@ async fn receiver_show_sessions_handler(
     State(state): State<StdArc<ReceiverAppState>>,
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
-    let db_path = get_show_db_path(&state, &show_name);
-
-    if !db_path.exists() {
-        return (StatusCode::NOT_FOUND, "Show not found").into_response();
-    }
-
-    let pool = match crate::db::open_readonly_connection(&db_path).await {
-        Ok(c) => c,
+    let pool = match open_show_pg_pool(&state, &show_name).await {
+        Ok(p) => p,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (StatusCode::NOT_FOUND, format!("Show not found: {}", e)).into_response();
         }
     };
 
     // Get show name from metadata
-    let sql = metadata::select_by_key("name");
+    let sql = metadata::select_by_key_pg("name");
     let name: String = match sqlx::query_scalar(&sql).fetch_one(&pool).await {
         Ok(n) => n,
         Err(e) => {
@@ -1428,14 +1419,14 @@ async fn receiver_show_sessions_handler(
     };
 
     // Get split interval
-    let sql = metadata::select_by_key("split_interval");
+    let sql = metadata::select_by_key_pg("split_interval");
     let split_interval: f64 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(&pool).await {
         Ok(val) => val.parse().unwrap_or(10.0),
         Err(_) => 10.0,
     };
 
     // Get all sections with their start id and timestamp
-    let sql = segments::select_sessions_with_join();
+    let sql = segments::select_sessions_with_join_pg();
     let rows = match sqlx::query(&sql).fetch_all(&pool).await {
         Ok(r) => r,
         Err(e) => {
@@ -1462,7 +1453,7 @@ async fn receiver_show_sessions_handler(
         ).into_response();
     }
 
-    let sql = segments::select_max_id();
+    let sql = segments::select_max_id_pg();
     let max_id: i64 = match sqlx::query_scalar(&sql).fetch_one(&pool).await {
         Ok(id) => id,
         Err(e) => {
@@ -1504,37 +1495,31 @@ async fn receiver_show_metadata_handler(
     State(state): State<StdArc<ReceiverAppState>>,
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
-    let db_path = get_show_db_path(&state, &show_name);
-
-    if !db_path.exists() {
-        return (StatusCode::NOT_FOUND, "Show not found").into_response();
-    }
-
-    let pool = match crate::db::open_readonly_connection(&db_path).await {
+    let pool = match open_show_pg_pool(&state, &show_name).await {
         Ok(p) => p,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (StatusCode::NOT_FOUND, format!("Show not found: {}", e)).into_response();
         }
     };
 
-    // Query all metadata fields using SeaQuery
-    let unique_id: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("unique_id"))
+    // Query all metadata fields using SeaQuery (PostgreSQL)
+    let unique_id: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("unique_id"))
         .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
-    let name: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("name"))
+    let name: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("name"))
         .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
-    let audio_format: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("audio_format"))
+    let audio_format: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("audio_format"))
         .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
-    let split_interval: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("split_interval"))
+    let split_interval: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("split_interval"))
         .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
-    let bitrate: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("bitrate"))
+    let bitrate: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("bitrate"))
         .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
-    let sample_rate: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("sample_rate"))
+    let sample_rate: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("sample_rate"))
         .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
-    let version: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("version"))
+    let version: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("version"))
         .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
 
-    let (min_id, max_id) = sqlx::query(&segments::select_min_max_id())
+    let (min_id, max_id) = sqlx::query(&segments::select_min_max_id_pg())
         .fetch_optional(&pool)
         .await
         .ok()
@@ -1542,7 +1527,7 @@ async fn receiver_show_metadata_handler(
         .map(|row| (row.get::<i64, _>(0), row.get::<i64, _>(1)))
         .unwrap_or((0, 0));
 
-    let metadata = Metadata {
+    let metadata_resp = Metadata {
         unique_id,
         name,
         audio_format,
@@ -1557,7 +1542,7 @@ async fn receiver_show_metadata_handler(
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&metadata).unwrap(),
+        serde_json::to_string(&metadata_resp).unwrap(),
     )
         .into_response()
 }
@@ -1566,21 +1551,15 @@ async fn receiver_show_segments_range_handler(
     State(state): State<StdArc<ReceiverAppState>>,
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
-    let db_path = get_show_db_path(&state, &show_name);
-
-    if !db_path.exists() {
-        return (StatusCode::NOT_FOUND, "Show not found").into_response();
-    }
-
-    let pool = match crate::db::open_readonly_connection(&db_path).await {
+    let pool = match open_show_pg_pool(&state, &show_name).await {
         Ok(p) => p,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (StatusCode::NOT_FOUND, format!("Show not found: {}", e)).into_response();
         }
     };
 
-    match sqlx::query(&segments::select_min_max_id())
+    match sqlx::query(&segments::select_min_max_id_pg())
         .fetch_optional(&pool)
         .await
     {
@@ -1611,21 +1590,15 @@ async fn receiver_opus_playlist_handler(
     Path(show_name): Path<String>,
     Query(params): Query<ReceiverPlaylistParams>,
 ) -> impl IntoResponse {
-    let db_path = get_show_db_path(&state, &show_name);
-
-    if !db_path.exists() {
-        return (StatusCode::NOT_FOUND, "Show not found").into_response();
-    }
-
-    let pool = match crate::db::open_readonly_connection(&db_path).await {
+    let pool = match open_show_pg_pool(&state, &show_name).await {
         Ok(p) => p,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
+            return (StatusCode::NOT_FOUND, format!("Show not found: {}", e)).into_response();
         }
     };
 
-    let sample_rate: u32 = sqlx::query_scalar::<_, String>(&metadata::select_by_key("sample_rate"))
+    let sample_rate: u32 = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("sample_rate"))
         .fetch_optional(&pool)
         .await
         .ok()
@@ -1636,7 +1609,7 @@ async fn receiver_opus_playlist_handler(
     let start_id = params.start_id.unwrap_or(1);
     let end_id = match params.end_id {
         Some(id) => id,
-        None => sqlx::query_scalar::<_, i64>(&segments::select_max_id())
+        None => sqlx::query_scalar::<_, i64>(&segments::select_max_id_pg())
             .fetch_optional(&pool)
             .await
             .ok()
@@ -1644,7 +1617,7 @@ async fn receiver_opus_playlist_handler(
             .unwrap_or(i64::MAX),
     };
 
-    let segment_rows = match sqlx::query(&segments::select_range_for_playlist(start_id, end_id))
+    let segment_rows = match sqlx::query(&segments::select_range_for_playlist_pg(start_id, end_id))
         .fetch_all(&pool)
         .await
     {
@@ -1681,13 +1654,7 @@ async fn receiver_opus_segment_handler(
     Path((show_name, filename)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let db_path = get_show_db_path(&state, &show_name);
-
-    if !db_path.exists() {
-        return (StatusCode::NOT_FOUND, "Show not found").into_response();
-    }
-
-    // Handle init segment
+    // Handle init segment first (doesn't need database)
     if filename == "init.mp4" {
         let init_segment = match generate_init_segment(48000, 1, 1, 48000) {
             Ok(data) => data,
@@ -1706,12 +1673,12 @@ async fn receiver_opus_segment_handler(
         None => return (StatusCode::BAD_REQUEST, "Invalid segment filename").into_response(),
     };
 
-    let pool = match crate::db::open_readonly_connection(&db_path).await {
+    let pool = match open_show_pg_pool(&state, &show_name).await {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
     };
 
-    let audio_data: Vec<u8> = match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id(seg_id))
+    let audio_data: Vec<u8> = match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id_pg(seg_id))
         .fetch_one(&pool)
         .await
     {
@@ -1763,18 +1730,15 @@ async fn receiver_aac_playlist_handler(
     Path(show_name): Path<String>,
     Query(params): Query<ReceiverPlaylistParams>,
 ) -> impl IntoResponse {
-    let db_path = get_show_db_path(&state, &show_name);
-
-    if !db_path.exists() {
-        return (StatusCode::NOT_FOUND, "Show not found").into_response();
-    }
-
-    let pool = match crate::db::open_readonly_connection(&db_path).await {
+    let pool = match open_show_pg_pool(&state, &show_name).await {
         Ok(p) => p,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+        Err(e) => {
+            error!("Failed to open database for show '{}': {}", show_name, e);
+            return (StatusCode::NOT_FOUND, format!("Show not found: {}", e)).into_response();
+        }
     };
 
-    let sample_rate: u32 = sqlx::query_scalar::<_, String>(&metadata::select_by_key("sample_rate"))
+    let sample_rate: u32 = sqlx::query_scalar::<_, String>(&metadata::select_by_key_pg("sample_rate"))
         .fetch_optional(&pool)
         .await
         .ok()
@@ -1785,7 +1749,7 @@ async fn receiver_aac_playlist_handler(
     let start_id = params.start_id.unwrap_or(1);
     let end_id = match params.end_id {
         Some(id) => id,
-        None => sqlx::query_scalar::<_, i64>(&segments::select_max_id())
+        None => sqlx::query_scalar::<_, i64>(&segments::select_max_id_pg())
             .fetch_optional(&pool)
             .await
             .ok()
@@ -1793,7 +1757,7 @@ async fn receiver_aac_playlist_handler(
             .unwrap_or(i64::MAX),
     };
 
-    let segment_rows = match sqlx::query(&segments::select_range_for_playlist(start_id, end_id))
+    let segment_rows = match sqlx::query(&segments::select_range_for_playlist_pg(start_id, end_id))
         .fetch_all(&pool)
         .await
     {
@@ -1827,23 +1791,20 @@ async fn receiver_aac_segment_handler(
     Path((show_name, filename)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let db_path = get_show_db_path(&state, &show_name);
-
-    if !db_path.exists() {
-        return (StatusCode::NOT_FOUND, "Show not found").into_response();
-    }
-
     let seg_id: i64 = match filename.strip_suffix(".aac").and_then(|s| s.parse().ok()) {
         Some(id) => id,
         None => return (StatusCode::BAD_REQUEST, "Invalid segment filename").into_response(),
     };
 
-    let pool = match crate::db::open_readonly_connection(&db_path).await {
+    let pool = match open_show_pg_pool(&state, &show_name).await {
         Ok(p) => p,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
+        Err(e) => {
+            error!("Failed to open database for show '{}': {}", show_name, e);
+            return (StatusCode::NOT_FOUND, format!("Show not found: {}", e)).into_response();
+        }
     };
 
-    let audio_data: Vec<u8> = match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id(seg_id))
+    let audio_data: Vec<u8> = match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id_pg(seg_id))
         .fetch_one(&pool)
         .await
     {
@@ -1922,16 +1883,14 @@ async fn receiver_trigger_sync_handler(
     }
 
     // Spawn a new sync in a separate thread
-    let remote_url = state.remote_url.clone();
-    let local_dir = state.local_dir.clone();
-    let shows = state.shows_filter.clone();
-    let chunk_size = state.chunk_size;
+    let sync_config = state.config.clone();
+    let sync_password = state.password.clone();
     let sync_flag = state.sync_in_progress.clone();
 
     std::thread::spawn(move || {
         sync_flag.store(true, Ordering::SeqCst);
         println!("[Sync] Manual sync triggered...");
-        match crate::sync::sync_shows(remote_url, local_dir, shows, chunk_size) {
+        match crate::sync::sync_shows(&sync_config, &sync_password) {
             Ok(_) => println!("[Sync] Manual sync completed successfully"),
             Err(e) => eprintln!("[Sync] Manual sync error: {}", e),
         }
