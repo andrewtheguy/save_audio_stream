@@ -1,12 +1,11 @@
-use fs2::FileExt;
 use reqwest::blocking::Client;
-use rusqlite::Connection;
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::fs::File;
-use std::path::PathBuf;
 
+use crate::config::SyncConfig;
 use crate::constants::EXPECTED_DB_VERSION;
+use crate::db_postgres::SyncDbPg;
+use crate::queries::{metadata, segments};
 
 #[derive(Debug, Deserialize)]
 struct ShowInfo {
@@ -48,32 +47,19 @@ struct SectionData {
     start_timestamp_ms: i64,
 }
 
-/// Main entry point for syncing multiple shows
-pub fn sync_shows(
-    remote_url: String,
-    local_dir: PathBuf,
-    show_names_filter: Option<Vec<String>>,
-    chunk_size: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Create local directory if it doesn't exist
-    std::fs::create_dir_all(&local_dir)?;
+/// Get the PostgreSQL database name for a show
+/// Pattern: save_audio_{show_name}
+pub fn get_pg_database_name(show_name: &str) -> String {
+    format!("save_audio_{}", show_name)
+}
 
-    // Acquire exclusive lock to prevent multiple sync instances
-    let lock_path = local_dir.join(".sync.lock");
-    let _lock_file = File::create(&lock_path).map_err(|e| {
-        format!(
-            "Failed to create lock file '{}': {}",
-            lock_path.display(),
-            e
-        )
-    })?;
-    _lock_file.try_lock_exclusive().map_err(|_| {
-        format!(
-            "Another sync is already running. Lock file: {}",
-            lock_path.display()
-        )
-    })?;
-    // Lock will be held until _lock_file is dropped (end of function)
+/// Main entry point for syncing multiple shows (PostgreSQL version)
+pub fn sync_shows(
+    config: &SyncConfig,
+    password: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let remote_url = &config.remote_url;
+    let chunk_size = config.chunk_size.unwrap_or(100);
 
     // Fetch available shows from remote server
     println!("Fetching available shows from remote...");
@@ -96,7 +82,7 @@ pub fn sync_shows(
     }
 
     // Determine which shows to sync
-    let show_names: Vec<String> = match show_names_filter {
+    let show_names: Vec<String> = match &config.shows {
         Some(whitelist) => {
             // Validate that all whitelisted shows exist on remote
             let missing_shows: Vec<String> = whitelist
@@ -114,7 +100,7 @@ pub fn sync_shows(
             }
 
             println!("Using whitelist: {} show(s)", whitelist.len());
-            whitelist
+            whitelist.clone()
         }
         None => {
             // Sync all available shows
@@ -141,7 +127,7 @@ pub fn sync_shows(
         );
 
         // Sync single show - exit immediately on any error
-        sync_single_show(&remote_url, &local_dir, show_name, chunk_size)?;
+        sync_single_show(remote_url, &config.postgres_url, password, show_name, chunk_size)?;
 
         println!(
             "[{}/{}] ✓ Show '{}' synced successfully",
@@ -155,13 +141,14 @@ pub fn sync_shows(
     Ok(())
 }
 
-/// Sync a single show from remote to local
+/// Sync a single show from remote to local PostgreSQL database
 fn sync_single_show(
     remote_url: &str,
-    local_dir: &PathBuf,
+    postgres_url: &str,
+    password: &str,
     show_name: &str,
     chunk_size: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
 
     // Fetch remote metadata (no retry on network error)
@@ -187,7 +174,6 @@ fn sync_single_show(
     );
 
     // Validate remote version BEFORE doing anything else
-    // This ensures we never sync from incompatible schema versions
     if metadata.version != EXPECTED_DB_VERSION {
         return Err(format!(
             "Remote database has unsupported schema version '{}' (expected '{}'). \
@@ -197,18 +183,18 @@ fn sync_single_show(
         .into());
     }
 
-    // Open or create local database
-    let local_db_path = local_dir.join(format!("{}.sqlite", show_name));
-    let mut conn = crate::db::open_database_connection(&local_db_path)?;
+    // Connect to PostgreSQL database
+    let database_name = get_pg_database_name(show_name);
+    println!("[{}]   Connecting to PostgreSQL database '{}'...", show_name, database_name);
+
+    let db = SyncDbPg::connect(postgres_url, password, &database_name)
+        .map_err(|e| format!("Failed to connect to PostgreSQL database '{}': {}", database_name, e))?;
+
+    // Initialize schema (idempotent)
+    crate::db_postgres::init_database_schema_pg_sync(&db)?;
 
     // Check if database exists (has metadata)
-    let existing_unique_id: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'unique_id'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
+    let existing_unique_id: Option<String> = crate::db_postgres::query_metadata_pg_sync(&db, "unique_id")?;
 
     let start_id = if let Some(existing_unique_id) = existing_unique_id {
         // Existing database - validate and resume
@@ -216,13 +202,8 @@ fn sync_single_show(
         println!("[{}]   Existing target unique_id: {}", show_name, existing_unique_id);
 
         // Validate local version matches expected version
-        let local_version: String = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'version'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("Failed to read version from local database: {}", e))?;
+        let local_version: String = crate::db_postgres::query_metadata_pg_sync(&db, "version")?
+            .ok_or_else(|| "Failed to read version from local database: key not found")?;
 
         if local_version != EXPECTED_DB_VERSION {
             return Err(format!(
@@ -234,13 +215,8 @@ fn sync_single_show(
         }
 
         // Validate source_unique_id matches remote unique_id
-        let source_unique_id: String = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'source_unique_id'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("Failed to read source_unique_id from local database: {}", e))?;
+        let source_unique_id: String = crate::db_postgres::query_metadata_pg_sync(&db, "source_unique_id")?
+            .ok_or_else(|| "Failed to read source_unique_id from local database: key not found")?;
 
         if source_unique_id != metadata.unique_id {
             return Err(format!(
@@ -250,101 +226,41 @@ fn sync_single_show(
             .into());
         }
 
-        // Validate metadata matches (audio_format, split_interval, bitrate)
-        // Version is already validated above
-        validate_metadata(&conn, &metadata)?;
+        // Validate metadata matches
+        validate_metadata(&db, &metadata)?;
 
         // Get last synced ID
-        let last_synced_id: i64 = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'last_synced_id'",
-                [],
-                |row| {
-                    let val: String = row.get(0)?;
-                    Ok(val.parse().unwrap_or(0))
-                },
-            )
+        let last_synced_id: i64 = crate::db_postgres::query_metadata_pg_sync(&db, "last_synced_id")?
+            .map(|v| v.parse().unwrap_or(0))
             .unwrap_or(0);
 
         // Ensure last_boundary_end_id exists (for older databases that don't have it)
-        let has_boundary_end: bool = match conn.query_row(
-            "SELECT 1 FROM metadata WHERE key = 'last_boundary_end_id'",
-            [],
-            |_| Ok(true),
-        ) {
-            Ok(v) => v,
-            Err(rusqlite::Error::QueryReturnedNoRows) => false, // Expected - key doesn't exist
-            Err(e) => {
-                // Propagate actual errors (corruption, locking, table missing, etc.)
-                return Err(format!("Failed to check for last_boundary_end_id metadata: {}", e).into());
-            }
-        };
+        let has_boundary_end = crate::db_postgres::metadata_exists_pg_sync(&db, "last_boundary_end_id")?;
 
         if !has_boundary_end {
-            conn.execute(
-                "INSERT INTO metadata (key, value) VALUES ('last_boundary_end_id', '0')",
-                [],
-            )?;
+            crate::db_postgres::insert_metadata_pg_sync(&db, "last_boundary_end_id", "0")?;
         }
 
         println!("[{}]   Resuming from segment {}", show_name, last_synced_id + 1);
         last_synced_id + 1
     } else {
         // New database - initialize
-        // Generate a new unique_id for this target database
         let target_unique_id = crate::constants::generate_db_unique_id();
         println!("[{}]   Creating new local database", show_name);
         println!("[{}]   Initialized with target unique_id: {}", show_name, target_unique_id);
 
-        // Initialize schema using common helper
-        crate::db::init_database_schema(&conn)?;
-
         // Insert metadata from remote
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
-            [&metadata.version],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('unique_id', ?1)",
-            [&target_unique_id],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
-            [&metadata.name],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)",
-            [&metadata.audio_format],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)",
-            [&metadata.split_interval],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)",
-            [&metadata.bitrate],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
-            [&metadata.sample_rate],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'true')",
-            [],
-        )?;
-        // Store the source database's unique_id for validation on future syncs
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('source_unique_id', ?1)",
-            [&metadata.unique_id],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('last_synced_id', '0')",
-            [],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('last_boundary_end_id', '0')",
-            [],
-        )?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "version", &metadata.version)?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "unique_id", &target_unique_id)?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "name", &metadata.name)?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "audio_format", &metadata.audio_format)?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "split_interval", &metadata.split_interval)?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "bitrate", &metadata.bitrate)?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "sample_rate", &metadata.sample_rate)?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "is_recipient", "true")?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "source_unique_id", &metadata.unique_id)?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "last_synced_id", "0")?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "last_boundary_end_id", "0")?;
 
         metadata.min_id
     };
@@ -352,7 +268,7 @@ fn sync_single_show(
     // Sync sections table first
     println!("[{}]   Syncing sections metadata...", show_name);
     let sections_url = format!("{}/api/sync/shows/{}/sections", remote_url, show_name);
-    let sections: Vec<SectionData> = client
+    let remote_sections: Vec<SectionData> = client
         .get(&sections_url)
         .send()
         .map_err(|e| format!("Network error fetching sections: {}", e))?
@@ -360,14 +276,9 @@ fn sync_single_show(
         .map_err(|e| format!("Failed to parse sections JSON: {}", e))?;
 
     // Insert sections into local database
-    // Use INSERT OR IGNORE to avoid replacing existing sections
-    // (REPLACE would trigger CASCADE delete of associated segments)
-    let sections_count = sections.len();
-    for section in sections {
-        conn.execute(
-            "INSERT OR IGNORE INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
-            rusqlite::params![section.id, section.start_timestamp_ms],
-        )?;
+    let sections_count = remote_sections.len();
+    for section in remote_sections {
+        crate::db_postgres::insert_section_or_ignore_pg_sync(&db, section.id, section.start_timestamp_ms)?;
     }
     println!("[{}]   Synced {} sections", show_name, sections_count);
 
@@ -410,50 +321,60 @@ fn sync_single_show(
         }
 
         // Insert segments into local database (all operations in one transaction)
-        let tx = conn.transaction()?;
         let mut last_boundary_end_id: Option<i64> = None;
-        {
-            let mut prev_section_id: Option<i64> = None;
-            let mut prev_id: Option<i64> = None;
 
-            for segment in &segments {
-                // Check if we're starting a new section
-                // If so, the previous segment is the end of a complete section
-                if let Some(prev_sec_id) = prev_section_id {
-                    if segment.section_id != prev_sec_id {
-                        if let Some(prev) = prev_id {
-                            last_boundary_end_id = Some(prev);
-                        }
+        // Track section boundaries
+        let mut prev_section_id: Option<i64> = None;
+        let mut prev_id: Option<i64> = None;
+        for segment in &segments {
+            if let Some(prev_sec_id) = prev_section_id {
+                if segment.section_id != prev_sec_id {
+                    if let Some(prev) = prev_id {
+                        last_boundary_end_id = Some(prev);
                     }
                 }
+            }
+            prev_section_id = Some(segment.section_id);
+            prev_id = Some(segment.id);
+        }
 
-                tx.execute(
-                    "INSERT INTO segments (id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![segment.id, segment.timestamp_ms, segment.is_timestamp_from_source, &segment.audio_data, segment.section_id, segment.duration_samples],
-                )?;
+        let last_id = segments.last().unwrap().id;
+        let segments_ref = &segments;
+        let boundary_end = last_boundary_end_id;
 
-                prev_section_id = Some(segment.section_id);
-                prev_id = Some(segment.id);
+        db.block_on(async {
+            let mut tx = db.pool().begin().await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+            for segment in segments_ref {
+                let sql = segments::insert_with_id_pg(
+                    segment.id,
+                    segment.timestamp_ms,
+                    segment.is_timestamp_from_source,
+                    &segment.audio_data,
+                    segment.section_id,
+                    segment.duration_samples,
+                );
+                sqlx::query(&sql).execute(&mut *tx).await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
 
             // Update last_synced_id (in same transaction)
-            let last_id = segments.last().unwrap().id;
-            tx.execute(
-                "UPDATE metadata SET value = ?1 WHERE key = 'last_synced_id'",
-                [last_id.to_string()],
-            )?;
+            let sql = metadata::update_pg("last_synced_id", &last_id.to_string());
+            sqlx::query(&sql).execute(&mut *tx).await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
-            // Update last_boundary_end_id if we found a new boundary in this batch (in same transaction)
-            if let Some(boundary_end) = last_boundary_end_id {
-                tx.execute(
-                    "UPDATE metadata SET value = ?1 WHERE key = 'last_boundary_end_id'",
-                    [boundary_end.to_string()],
-                )?;
+            // Update last_boundary_end_id if we found a new boundary in this batch
+            if let Some(boundary) = boundary_end {
+                let sql = metadata::update_pg("last_boundary_end_id", &boundary.to_string());
+                sqlx::query(&sql).execute(&mut *tx).await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
-        }
-        tx.commit()?;
 
-        let last_id = segments.last().unwrap().id;
+            tx.commit().await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            Ok(())
+        }).map_err(|e| format!("Database transaction error: {}", e))?;
 
         println!(
             "[{}]   Synced segments {} to {} ({}/{} segments, {:.1}% complete)",
@@ -476,17 +397,12 @@ fn sync_single_show(
 
 /// Validate that local metadata matches remote metadata
 fn validate_metadata(
-    conn: &Connection,
+    db: &SyncDbPg,
     remote: &ShowMetadata,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Validate version
-    let local_version: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'version'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to read version from local database: {}", e))?;
+    let local_version: String = crate::db_postgres::query_metadata_pg_sync(db, "version")?
+        .ok_or_else(|| "Failed to read version from local database: key not found")?;
     if local_version != remote.version {
         return Err(format!(
             "Version mismatch: local='{}', remote='{}'. Cannot sync between different schema versions.",
@@ -496,13 +412,8 @@ fn validate_metadata(
     }
 
     // Validate audio_format
-    let local_format: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'audio_format'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to read audio_format from local database: {}", e))?;
+    let local_format: String = crate::db_postgres::query_metadata_pg_sync(db, "audio_format")?
+        .ok_or_else(|| "Failed to read audio_format from local database: key not found")?;
     if local_format != remote.audio_format {
         return Err(format!(
             "Audio format mismatch: local='{}', remote='{}'",
@@ -512,13 +423,8 @@ fn validate_metadata(
     }
 
     // Validate split_interval
-    let local_interval: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'split_interval'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to read split_interval from local database: {}", e))?;
+    let local_interval: String = crate::db_postgres::query_metadata_pg_sync(db, "split_interval")?
+        .ok_or_else(|| "Failed to read split_interval from local database: key not found")?;
     if local_interval != remote.split_interval {
         return Err(format!(
             "Split interval mismatch: local='{}', remote='{}'",
@@ -528,13 +434,8 @@ fn validate_metadata(
     }
 
     // Validate bitrate
-    let local_bitrate: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'bitrate'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to read bitrate from local database: {}", e))?;
+    let local_bitrate: String = crate::db_postgres::query_metadata_pg_sync(db, "bitrate")?
+        .ok_or_else(|| "Failed to read bitrate from local database: key not found")?;
     if local_bitrate != remote.bitrate {
         return Err(format!(
             "Bitrate mismatch: local='{}', remote='{}'",

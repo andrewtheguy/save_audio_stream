@@ -20,7 +20,8 @@ fdk-aac = "0.8.0"
 opus = "0.3"
 ogg = "0.9"
 hound = "3.5"
-rusqlite = { version = "0.37", features = ["bundled"] }
+sea-query = { version = "0.32", features = ["backend-sqlite", "backend-postgres"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres"] }
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 axum = "0.8"
@@ -40,3 +41,4 @@ ssh2 = "0.9.5"
 crc32fast = "1.4"
 dashmap = "5.5"
 base64 = "0.22"
+urlencoding = "2.1"

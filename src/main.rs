@@ -55,7 +55,7 @@ enum Command {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
 
     let args = Args::parse();
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn record_multi_session(
     config_path: PathBuf,
     port_override: Option<u16>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load multi-session config file
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
@@ -105,7 +105,7 @@ fn record_multi_session(
     record::run_multi_session(multi_config, port_override)
 }
 
-fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load receiver/sync config file
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
@@ -132,16 +132,16 @@ fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box
         .into());
     }
 
+    // Load credentials and get password for PostgreSQL
+    let credentials = save_audio_stream::credentials::load_credentials()?;
+    let password = save_audio_stream::credentials::get_password(&credentials, &sync_config.credential_profile)
+        .map_err(|e| format!("Failed to get password for profile '{}': {}", sync_config.credential_profile, e))?;
+
     if sync_only {
         // Sync once and exit
-        save_audio_stream::sync::sync_shows(
-            sync_config.remote_url,
-            sync_config.local_dir,
-            sync_config.shows,
-            sync_config.chunk_size.unwrap_or(100),
-        )
+        save_audio_stream::sync::sync_shows(&sync_config, &password)
     } else {
         // Call receiver function which starts the server and background sync
-        serve::receiver_audio(sync_config)
+        serve::receiver_audio(sync_config, password)
     }
 }

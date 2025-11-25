@@ -1,5 +1,5 @@
 # Sync Configuration
-# This config is for syncing shows from a remote recording server to local databases
+# This config is for syncing shows from a remote recording server to local PostgreSQL databases
 
 # Required: Configuration type (must be 'receiver')
 config_type = 'receiver'
@@ -7,11 +7,23 @@ config_type = 'receiver'
 # Required: URL of remote recording server
 remote_url = 'http://private.hpmp.net:17000'
 
-# Required: Local base directory for synced databases
-local_dir = './tmp/synced'
+# Required: PostgreSQL connection URL (without password)
+# Format: postgres://user@host:port
+postgres_url = 'postgres://it3@localhost:5432'
+
+# Required: Credential profile name
+# Password is stored in ~/.config/save_audio_stream/credentials
+# Format: [profile_name]\npassword = "your_password"
+credential_profile = 'pg-local'
 
 # Optional: whitelist show names to sync (array)
 #shows = ['am1430', 'knx_news']
 
 # Optional: Chunk size for batch fetching segments (default: 100)
 chunk_size = 100
+
+# Optional: HTTP server port for receiver mode (default: 18000)
+port = 18000
+
+# Optional: Seconds between automatic syncs (default: 60)
+sync_interval_seconds = 60

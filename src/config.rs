@@ -89,14 +89,17 @@ fn default_sync_interval() -> u64 {
 }
 
 /// Sync configuration file structure (used by receiver command)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SyncConfig {
-    /// Configuration type (must be "sync")
+    /// Configuration type (must be "receiver")
     pub config_type: ConfigType,
     /// URL of remote recording server (e.g., http://remote:3000)
     pub remote_url: String,
-    /// Local base directory for synced databases
-    pub local_dir: PathBuf,
+    /// PostgreSQL connection URL without password (e.g., postgres://user@host:5432)
+    /// The password will be retrieved from the credentials file using credential_profile
+    pub postgres_url: String,
+    /// Credential profile name to look up password from ~/.config/save_audio_stream/credentials
+    pub credential_profile: String,
     /// Show names to sync (optional - if not specified, sync all shows from remote)
     pub shows: Option<Vec<String>>,
     /// Chunk size for batch fetching (default: 100)

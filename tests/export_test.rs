@@ -1,9 +1,12 @@
 use fs2::FileExt;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
-use rusqlite::Connection;
+use sqlx::sqlite::SqlitePool;
+use sqlx::Row;
 use std::fs::{self, File};
 use std::path::Path;
+use tokio::runtime::Runtime;
 
+use save_audio_stream::queries::{metadata, sections, segments};
 use save_audio_stream::EXPECTED_DB_VERSION;
 
 /// Helper to create a test database with sections and segments
@@ -14,81 +17,63 @@ fn create_test_database_with_sections(
     sample_rate: u32,
     num_sections: usize,
     segments_per_section: usize,
-) -> Connection {
-    let conn = save_audio_stream::db::open_test_connection(db_path);
+) -> SqlitePool {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let pool = save_audio_stream::db::open_database_connection(db_path).await.unwrap();
 
-    // Create schema using common helper
-    save_audio_stream::db::init_database_schema(&conn).unwrap();
+        // Create schema using common helper
+        save_audio_stream::db::init_database_schema(&pool).await.unwrap();
 
-    // Insert metadata
-    conn.execute(
-        "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
-        [EXPECTED_DB_VERSION],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO metadata (key, value) VALUES ('unique_id', 'test-export-db')",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
-        [show_name],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)",
-        [audio_format],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO metadata (key, value) VALUES ('split_interval', '300')",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO metadata (key, value) VALUES ('bitrate', '16')",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
-        [&sample_rate.to_string()],
-    )
-    .unwrap();
+        // Insert metadata
+        let sql = metadata::insert("version", EXPECTED_DB_VERSION);
+        sqlx::query(&sql).execute(&pool).await.unwrap();
 
-    // Insert sections and segments
-    for section_idx in 0..num_sections {
-        let section_id = (1700000000000000i64 + section_idx as i64 * 1000000) as i64;
-        let start_timestamp_ms = 1700000000000i64 + section_idx as i64 * 3600000;
+        let sql = metadata::insert("unique_id", "test-export-db");
+        sqlx::query(&sql).execute(&pool).await.unwrap();
 
-        conn.execute(
-            "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
-            rusqlite::params![section_id, start_timestamp_ms],
-        )
-        .unwrap();
+        let sql = metadata::insert("name", show_name);
+        sqlx::query(&sql).execute(&pool).await.unwrap();
 
-        // Insert segments for this section
-        for seg_idx in 0..segments_per_section {
-            let timestamp_ms = start_timestamp_ms + seg_idx as i64 * 1000;
-            let is_from_source = if seg_idx == 0 { 1 } else { 0 };
+        let sql = metadata::insert("audio_format", audio_format);
+        sqlx::query(&sql).execute(&pool).await.unwrap();
 
-            // Create audio data based on format
-            let audio_data = if audio_format == "opus" {
-                create_test_opus_segment(sample_rate)
-            } else {
-                create_test_aac_segment()
-            };
+        let sql = metadata::insert("split_interval", "300");
+        sqlx::query(&sql).execute(&pool).await.unwrap();
 
-            conn.execute(
-                "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, section_id, audio_data) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![timestamp_ms, is_from_source, section_id, audio_data],
-            )
-            .unwrap();
+        let sql = metadata::insert("bitrate", "16");
+        sqlx::query(&sql).execute(&pool).await.unwrap();
+
+        let sql = metadata::insert("sample_rate", &sample_rate.to_string());
+        sqlx::query(&sql).execute(&pool).await.unwrap();
+
+        // Insert sections and segments
+        for section_idx in 0..num_sections {
+            let section_id = (1700000000000000i64 + section_idx as i64 * 1000000) as i64;
+            let start_timestamp_ms = 1700000000000i64 + section_idx as i64 * 3600000;
+
+            let sql = sections::insert(section_id, start_timestamp_ms);
+            sqlx::query(&sql).execute(&pool).await.unwrap();
+
+            // Insert segments for this section
+            for seg_idx in 0..segments_per_section {
+                let timestamp_ms = start_timestamp_ms + seg_idx as i64 * 1000;
+                let is_from_source = seg_idx == 0;
+
+                // Create audio data based on format
+                let audio_data = if audio_format == "opus" {
+                    create_test_opus_segment(sample_rate)
+                } else {
+                    create_test_aac_segment()
+                };
+
+                let sql = segments::insert(timestamp_ms, is_from_source, section_id, &audio_data, 0);
+                sqlx::query(&sql).execute(&pool).await.unwrap();
+            }
         }
-    }
 
-    conn
+        pool
+    })
 }
 
 /// Create a test Opus segment (encoded packets with length prefixes)
@@ -152,7 +137,7 @@ fn test_export_opus_section() {
     let db_path = temp_dir.path().join("test_opus.sqlite");
 
     // Create test database with Opus data
-    let _conn = create_test_database_with_sections(
+    let _pool = create_test_database_with_sections(
         &db_path,
         "test_show",
         "opus",
@@ -165,46 +150,41 @@ fn test_export_opus_section() {
     let section_id = 1700000000000000i64;
 
     // Verify the database structure
-    let conn = save_audio_stream::db::open_readonly_connection(&db_path).unwrap();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let pool = save_audio_stream::db::open_readonly_connection(&db_path).await.unwrap();
 
-    // Import the necessary function - we'll call it via a wrapper
-    // Since export_opus_section is private, we'll test the public API instead
-    // For now, let's verify the database has the right data
+        let row = sqlx::query("SELECT MIN(id), MAX(id) FROM segments WHERE section_id = ?")
+            .bind(section_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let (min_id, max_id): (i64, i64) = conn
-        .query_row(
-            "SELECT MIN(id), MAX(id) FROM segments WHERE section_id = ?1",
-            [section_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
+        let min_id: i64 = row.get(0);
+        let max_id: i64 = row.get(1);
 
-    assert!(min_id > 0, "Should have segments");
-    assert!(max_id >= min_id, "Max ID should be >= min ID");
+        assert!(min_id > 0, "Should have segments");
+        assert!(max_id >= min_id, "Max ID should be >= min ID");
 
-    let segment_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM segments WHERE section_id = ?1",
-            [section_id],
-            |row| row.get(0),
-        )
-        .unwrap();
+        let segment_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments WHERE section_id = ?")
+            .bind(section_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    assert_eq!(segment_count, 10, "Should have 10 segments in section");
+        assert_eq!(segment_count, 10, "Should have 10 segments in section");
 
-    // Verify sections exist
-    let section_exists: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sections WHERE id = ?1",
-            [section_id],
-            |row| row.get(0),
-        )
-        .unwrap();
+        // Verify sections exist
+        let section_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sections WHERE id = ?")
+            .bind(section_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    assert_eq!(section_exists, 1, "Section should exist");
+        assert_eq!(section_exists, 1, "Section should exist");
+    });
 
     // Clean up
-    drop(conn);
     fs::remove_dir_all(temp_dir.path()).ok();
 }
 
@@ -214,7 +194,7 @@ fn test_export_aac_section() {
     let db_path = temp_dir.path().join("test_aac.sqlite");
 
     // Create test database with AAC data
-    let _conn = create_test_database_with_sections(
+    let _pool = create_test_database_with_sections(
         &db_path,
         "test_show_aac",
         "aac",
@@ -226,30 +206,27 @@ fn test_export_aac_section() {
     let section_id = 1700000000000000i64;
 
     // Verify database setup
-    let conn = save_audio_stream::db::open_readonly_connection(&db_path).unwrap();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let pool = save_audio_stream::db::open_readonly_connection(&db_path).await.unwrap();
 
-    let audio_format: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'audio_format'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+        let audio_format: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'audio_format'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    assert_eq!(audio_format, "aac", "Should be AAC format");
+        assert_eq!(audio_format, "aac", "Should be AAC format");
 
-    let segment_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM segments WHERE section_id = ?1",
-            [section_id],
-            |row| row.get(0),
-        )
-        .unwrap();
+        let segment_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments WHERE section_id = ?")
+            .bind(section_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    assert_eq!(segment_count, 5, "Should have 5 segments");
+        assert_eq!(segment_count, 5, "Should have 5 segments");
+    });
 
     // Clean up
-    drop(conn);
     fs::remove_dir_all(temp_dir.path()).ok();
 }
 
@@ -376,7 +353,7 @@ fn test_export_section_not_found() {
     let db_path = temp_dir.path().join("test_not_found.sqlite");
 
     // Create test database
-    let _conn = create_test_database_with_sections(
+    let _pool = create_test_database_with_sections(
         &db_path,
         "test_show",
         "opus",
@@ -386,25 +363,27 @@ fn test_export_section_not_found() {
     );
 
     // Try to query a non-existent section
-    let conn = save_audio_stream::db::open_readonly_connection(&db_path).unwrap();
-    let non_existent_section_id = 9999999999999999i64;
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let pool = save_audio_stream::db::open_readonly_connection(&db_path).await.unwrap();
+        let non_existent_section_id = 9999999999999999i64;
 
-    let result: Result<(i64, i64), _> = conn.query_row(
-        "SELECT id, start_timestamp_ms FROM sections WHERE id = ?1",
-        [non_existent_section_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    );
+        let result: Result<(i64, i64), _> = sqlx::query_as("SELECT id, start_timestamp_ms FROM sections WHERE id = ?")
+            .bind(non_existent_section_id)
+            .fetch_one(&pool)
+            .await;
 
-    assert!(
-        result.is_err(),
-        "Should return error for non-existent section"
-    );
-    assert!(
-        matches!(result, Err(rusqlite::Error::QueryReturnedNoRows)),
-        "Should be QueryReturnedNoRows error"
-    );
+        assert!(
+            result.is_err(),
+            "Should return error for non-existent section"
+        );
+        // sqlx returns RowNotFound error
+        assert!(
+            matches!(result, Err(sqlx::Error::RowNotFound)),
+            "Should be RowNotFound error"
+        );
+    });
 
     // Clean up
-    drop(conn);
     fs::remove_dir_all(temp_dir.path()).ok();
 }

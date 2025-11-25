@@ -31,7 +31,7 @@ pub fn get_credentials_path() -> PathBuf {
 
 /// Load credentials from the default location
 /// Returns None if the file doesn't exist
-pub fn load_credentials() -> Result<Option<Credentials>, Box<dyn std::error::Error>> {
+pub fn load_credentials() -> Result<Option<Credentials>, Box<dyn std::error::Error + Send + Sync>> {
     let creds_path = get_credentials_path();
 
     if !creds_path.exists() {
