@@ -77,8 +77,8 @@ async fn create_source_database(
     unique_id: &str,
     num_sections: usize,
     segments_per_section: usize,
-) -> SqlitePool {
-    let pool = save_audio_stream::db::create_test_connection_in_memory().await.unwrap();
+) -> (SqlitePool, tempfile::TempDir) {
+    let (pool, guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
 
     // Create schema using common helper
     save_audio_stream::db::init_database_schema(&pool).await.unwrap();
@@ -127,7 +127,7 @@ async fn create_source_database(
         }
     }
 
-    pool
+    (pool, guard)
 }
 
 /// API handler: List shows
@@ -389,7 +389,7 @@ async fn test_sync_new_show() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Create source database with 3 sections, 5 segments each
-    let source_db = create_source_database("test_show", "source_unique_123", 3, 5).await;
+    let (source_db, _db_guard) = create_source_database("test_show", "source_unique_123", 3, 5).await;
 
     // Start test server
     let mut databases = HashMap::new();
@@ -429,7 +429,7 @@ async fn test_sync_incremental() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Create initial source database with 2 segments
-    let source_db = create_source_database("test_show", "source_unique_456", 2, 5).await;
+    let (source_db, _db_guard) = create_source_database("test_show", "source_unique_456", 2, 5).await;
 
     // Start test server
     let mut databases = HashMap::new();
@@ -470,9 +470,9 @@ async fn test_sync_with_whitelist() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Create multiple source databases
-    let source_db1 = create_source_database("show1", "unique_1", 2, 3).await;
-    let source_db2 = create_source_database("show2", "unique_2", 2, 3).await;
-    let source_db3 = create_source_database("show3", "unique_3", 2, 3).await;
+    let (source_db1, _guard1) = create_source_database("show1", "unique_1", 2, 3).await;
+    let (source_db2, _guard2) = create_source_database("show2", "unique_2", 2, 3).await;
+    let (source_db3, _guard3) = create_source_database("show3", "unique_3", 2, 3).await;
 
     // Start test server
     let mut databases = HashMap::new();
@@ -514,7 +514,7 @@ async fn test_sync_metadata_validation() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Create source database
-    let source_db = create_source_database("test_show", "source_unique_789", 2, 5).await;
+    let (source_db, _db_guard) = create_source_database("test_show", "source_unique_789", 2, 5).await;
 
     // Start test server
     let mut databases = HashMap::new();
@@ -557,7 +557,7 @@ async fn test_sync_rejects_old_version() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Create source database with old version (version "2" instead of "3")
-    let pool = save_audio_stream::db::create_test_connection_in_memory().await.unwrap();
+    let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
 
     // Create old schema (version 2)
     sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -659,7 +659,7 @@ async fn test_sync_rejects_recipient_database() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Create source database marked as recipient (sync target)
-    let pool = save_audio_stream::db::create_test_connection_in_memory().await.unwrap();
+    let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
 
     // Create schema
     sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")

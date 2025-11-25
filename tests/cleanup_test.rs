@@ -10,12 +10,13 @@ use save_audio_stream::record::{
 use save_audio_stream::queries::{metadata, sections, segments};
 
 /// Helper function to create a test database with segments
-fn create_test_database() -> SqlitePool {
+/// Returns (pool, _guard) - keep _guard alive to prevent temp file deletion
+fn create_test_database() -> (SqlitePool, tempfile::TempDir) {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let pool = save_audio_stream::db::create_test_connection_in_memory().await.unwrap();
+        let (pool, guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
         save_audio_stream::db::init_database_schema(&pool).await.unwrap();
-        pool
+        (pool, guard)
     })
 }
 
@@ -194,7 +195,7 @@ fn insert_section(pool: &SqlitePool, section_id: i64, timestamp_ms: i64) {
 
 #[test]
 fn test_cleanup_deletes_old_segments_before_boundary() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Use a fixed reference time for deterministic testing
@@ -236,7 +237,7 @@ fn test_cleanup_deletes_old_segments_before_boundary() {
 
 #[test]
 fn test_cleanup_preserves_all_recent_data() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // All segments within retention period (< 168 hours ago)
@@ -258,7 +259,7 @@ fn test_cleanup_preserves_all_recent_data() {
 
 #[test]
 fn test_cleanup_with_no_old_data() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // All segments very recent
@@ -277,7 +278,7 @@ fn test_cleanup_with_no_old_data() {
 
 #[test]
 fn test_cleanup_with_no_boundaries() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Old segments but NO boundaries
@@ -297,7 +298,7 @@ fn test_cleanup_with_no_boundaries() {
 
 #[test]
 fn test_cleanup_keeps_at_least_one_week_of_data() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Create data spanning multiple weeks
@@ -333,7 +334,7 @@ fn test_cleanup_keeps_at_least_one_week_of_data() {
 
 #[test]
 fn test_cleanup_with_multiple_old_boundaries() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Use a fixed reference time for deterministic testing
@@ -377,7 +378,7 @@ fn test_cleanup_with_multiple_old_boundaries() {
 
 #[test]
 fn test_cleanup_boundary_exactly_at_cutoff() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Boundary exactly at the cutoff point
@@ -401,7 +402,7 @@ fn test_cleanup_boundary_exactly_at_cutoff() {
 
 #[test]
 fn test_cleanup_empty_database() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
 
     // No segments at all
     assert_eq!(count_segments(&pool), 0);
@@ -415,7 +416,7 @@ fn test_cleanup_empty_database() {
 
 #[test]
 fn test_cleanup_verifies_sequential_deletion() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Create segments with IDs 1-10
@@ -451,7 +452,7 @@ fn test_cleanup_verifies_sequential_deletion() {
 
 #[test]
 fn test_cleanup_uses_pending_section_id_as_keeper() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     // Use a fixed reference time for deterministic testing
@@ -506,7 +507,7 @@ fn test_cleanup_uses_pending_section_id_as_keeper() {
 
 #[test]
 fn test_cleanup_falls_back_when_no_pending_section_id() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     let now = Utc::now();
@@ -540,7 +541,7 @@ fn test_cleanup_falls_back_when_no_pending_section_id() {
 
 #[test]
 fn test_cleanup_falls_back_when_pending_section_has_no_segments() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     let now = Utc::now();
@@ -576,7 +577,7 @@ fn test_cleanup_falls_back_when_pending_section_has_no_segments() {
 
 #[test]
 fn test_cleanup_preserves_pending_section_even_when_very_old() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     let now = Utc::now();
@@ -622,7 +623,7 @@ fn test_cleanup_preserves_pending_section_even_when_very_old() {
 
 #[test]
 fn test_cleanup_with_pending_section_id_and_multiple_sections_before_cutoff() {
-    let pool = create_test_database();
+    let (pool, _guard) = create_test_database();
     let dummy_data = b"audio_data";
 
     let now = Utc::now();

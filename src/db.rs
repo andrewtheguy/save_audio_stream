@@ -87,13 +87,13 @@ pub async fn open_readonly_connection_immutable(
     Ok(pool)
 }
 
-/// Create an in-memory database connection pool for testing
+/// Create a temporary file-backed database connection pool for testing
 /// Enables foreign keys for CASCADE delete testing.
-/// Uses a temporary file-backed database to avoid lifetime issues with pooled
-/// in-memory connections across dropped runtimes.
+/// Returns (pool, guard) - the guard must be kept alive to prevent the temp file from being deleted.
 #[allow(dead_code)]
-pub async fn create_test_connection_in_memory() -> Result<SqlitePool, DynError> {
-    let db_path = std::env::temp_dir().join(format!("save_audio_stream_test_{}.sqlite", uuid::Uuid::new_v4()));
+pub async fn create_test_connection_in_temporary_file() -> Result<(SqlitePool, tempfile::TempDir), DynError> {
+    let temp_dir = tempfile::tempdir()?;
+    let db_path = temp_dir.path().join("test.sqlite");
     let dsn = format!("sqlite://{}", db_path.display());
 
     let options = SqliteConnectOptions::from_str(&dsn)?
@@ -106,7 +106,7 @@ pub async fn create_test_connection_in_memory() -> Result<SqlitePool, DynError> 
         .connect_with(options)
         .await?;
 
-    Ok(pool)
+    Ok((pool, temp_dir))
 }
 
 /// Update or insert a metadata key-value pair
