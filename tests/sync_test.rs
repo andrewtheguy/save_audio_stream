@@ -13,9 +13,45 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+use save_audio_stream::config::{ConfigType, SyncConfig};
 use save_audio_stream::queries::{metadata, sections, segments};
 use save_audio_stream::sync::sync_shows;
 use save_audio_stream::EXPECTED_DB_VERSION;
+
+// Note: These tests require a PostgreSQL database to be available.
+// Set the following environment variables to run these tests:
+//   TEST_POSTGRES_URL=postgres://user@localhost:5432
+//   TEST_POSTGRES_PASSWORD=your_password
+//
+// The tests will create databases with prefix "test_save_audio_" and clean them up after.
+//
+// To run: cargo test --test sync_test -- --ignored
+
+/// Helper to create a SyncConfig for testing
+fn create_test_sync_config(
+    remote_url: String,
+    postgres_url: String,
+    shows: Option<Vec<String>>,
+    chunk_size: u64,
+) -> SyncConfig {
+    SyncConfig {
+        config_type: ConfigType::Receiver,
+        remote_url,
+        postgres_url,
+        credential_profile: "test".to_string(),
+        shows,
+        chunk_size: Some(chunk_size),
+        port: 8080,
+        sync_interval_seconds: 60,
+    }
+}
+
+/// Get PostgreSQL test configuration from environment
+fn get_test_postgres_config() -> Option<(String, String)> {
+    let postgres_url = std::env::var("TEST_POSTGRES_URL").ok()?;
+    let password = std::env::var("TEST_POSTGRES_PASSWORD").ok()?;
+    Some((postgres_url, password))
+}
 
 /// Test metadata structure
 #[derive(Debug, Serialize)]
@@ -340,15 +376,19 @@ async fn start_test_server(
     (url, handle)
 }
 
-/// Helper to verify destination database
-async fn verify_destination_db(
-    db_path: &std::path::Path,
-    expected_show_name: &str,
+/// Helper to verify destination database in PostgreSQL
+async fn verify_destination_db_pg(
+    postgres_url: &str,
+    password: &str,
+    show_name: &str,
     expected_source_unique_id: &str,
     expected_num_segments: usize,
     expected_num_sections: usize,
 ) {
-    let pool = save_audio_stream::db::open_readonly_connection(db_path).await.unwrap();
+    let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
+    let pool = save_audio_stream::db_postgres::open_postgres_connection(postgres_url, password, &database_name)
+        .await
+        .unwrap();
 
     // Verify metadata
     let source_unique_id: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'source_unique_id'")
@@ -361,7 +401,7 @@ async fn verify_destination_db(
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(name, expected_show_name);
+    assert_eq!(name, show_name);
 
     let is_recipient: String = sqlx::query_scalar("SELECT value FROM metadata WHERE key = 'is_recipient'")
         .fetch_one(&pool)
@@ -384,9 +424,25 @@ async fn verify_destination_db(
     assert_eq!(section_count, expected_num_sections as i64);
 }
 
+/// Helper to drop a test database
+async fn drop_test_database(postgres_url: &str, password: &str, show_name: &str) {
+    let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
+    // Connect to postgres database to drop the test database
+    if let Ok(pool) = save_audio_stream::db_postgres::open_postgres_connection(postgres_url, password, "postgres").await {
+        let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\"", database_name))
+            .execute(&pool)
+            .await;
+    }
+}
+
 #[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
 async fn test_sync_new_show() {
-    let temp_dir = tempfile::tempdir().unwrap();
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+
+    // Clean up any existing test database
+    drop_test_database(&postgres_url, &password, "test_show").await;
 
     // Create source database with 3 sections, 5 segments each
     let (source_db, _db_guard) = create_source_database("test_show", "source_unique_123", 3, 5).await;
@@ -397,38 +453,41 @@ async fn test_sync_new_show() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Sync to destination (spawn blocking since sync_shows uses blocking reqwest client)
-    let local_dir = temp_dir.path().to_path_buf();
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(
-            server_url, local_dir, None, // Sync all shows
-            100,  // chunk_size
-        )
-        .map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
 
     assert!(result.is_ok(), "Sync failed: {:?}", result.err());
 
-    // Verify destination database
-    let dest_db_path = temp_dir.path().join("test_show.sqlite");
-    assert!(dest_db_path.exists());
-
-    verify_destination_db(
-        &dest_db_path,
+    // Verify destination database in PostgreSQL
+    verify_destination_db_pg(
+        &postgres_url,
+        &password,
         "test_show",
         "source_unique_123",
-        15, // 3 segments * 5 chunks
-        3,  // 3 segments
+        15, // 3 sections * 5 segments
+        3,  // 3 sections
     )
     .await;
+
+    // Cleanup
+    drop_test_database(&postgres_url, &password, "test_show").await;
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
 async fn test_sync_incremental() {
-    let temp_dir = tempfile::tempdir().unwrap();
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
 
-    // Create initial source database with 2 segments
+    // Clean up any existing test database
+    drop_test_database(&postgres_url, &password, "test_show").await;
+
+    // Create initial source database with 2 sections
     let (source_db, _db_guard) = create_source_database("test_show", "source_unique_456", 2, 5).await;
 
     // Start test server
@@ -437,37 +496,47 @@ async fn test_sync_incremental() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Initial sync
-    let local_dir = temp_dir.path().to_path_buf();
-    let server_url_clone = server_url.clone();
-    let local_dir_clone = local_dir.clone();
+    let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100);
+    let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url_clone, local_dir_clone, None, 100).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
     assert!(result.is_ok());
 
     // Verify initial sync
-    let dest_db_path = temp_dir.path().join("test_show.sqlite");
-    verify_destination_db(&dest_db_path, "test_show", "source_unique_456", 10, 2).await;
+    verify_destination_db_pg(&postgres_url, &password, "test_show", "source_unique_456", 10, 2).await;
 
     // Now add more data to source and sync again
     // (In a real scenario, we'd update the source DB and restart server)
     // For this test, we verify that re-syncing doesn't break anything
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
     assert!(result.is_ok());
 
     // Should still have same data
-    verify_destination_db(&dest_db_path, "test_show", "source_unique_456", 10, 2).await;
+    verify_destination_db_pg(&postgres_url, &password, "test_show", "source_unique_456", 10, 2).await;
+
+    // Cleanup
+    drop_test_database(&postgres_url, &password, "test_show").await;
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
 async fn test_sync_with_whitelist() {
-    let temp_dir = tempfile::tempdir().unwrap();
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+
+    // Clean up any existing test databases
+    drop_test_database(&postgres_url, &password, "show1").await;
+    drop_test_database(&postgres_url, &password, "show2").await;
+    drop_test_database(&postgres_url, &password, "show3").await;
 
     // Create multiple source databases
     let (source_db1, _guard1) = create_source_database("show1", "unique_1", 2, 3).await;
@@ -482,36 +551,44 @@ async fn test_sync_with_whitelist() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Sync only show1 and show3
-    let local_dir = temp_dir.path().to_path_buf();
+    let config = create_test_sync_config(
+        server_url,
+        postgres_url.clone(),
+        Some(vec!["show1".to_string(), "show3".to_string()]),
+        100,
+    );
+    let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(
-            server_url,
-            local_dir,
-            Some(vec!["show1".to_string(), "show3".to_string()]),
-            100,
-        )
-        .map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
     assert!(result.is_ok());
 
-    // Verify show1 exists
-    let show1_path = temp_dir.path().join("show1.sqlite");
-    assert!(show1_path.exists());
+    // Verify show1 exists in PostgreSQL
+    verify_destination_db_pg(&postgres_url, &password, "show1", "unique_1", 6, 2).await;
 
-    // Verify show2 does NOT exist
-    let show2_path = temp_dir.path().join("show2.sqlite");
-    assert!(!show2_path.exists());
+    // Verify show2 does NOT exist (connection should fail)
+    let show2_db_name = save_audio_stream::sync::get_pg_database_name("show2");
+    let show2_result = save_audio_stream::db_postgres::open_postgres_connection(&postgres_url, &password, &show2_db_name).await;
+    assert!(show2_result.is_err(), "show2 database should not exist");
 
-    // Verify show3 exists
-    let show3_path = temp_dir.path().join("show3.sqlite");
-    assert!(show3_path.exists());
+    // Verify show3 exists in PostgreSQL
+    verify_destination_db_pg(&postgres_url, &password, "show3", "unique_3", 6, 2).await;
+
+    // Cleanup
+    drop_test_database(&postgres_url, &password, "show1").await;
+    drop_test_database(&postgres_url, &password, "show3").await;
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
 async fn test_sync_metadata_validation() {
-    let temp_dir = tempfile::tempdir().unwrap();
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+
+    // Clean up any existing test database
+    drop_test_database(&postgres_url, &password, "test_show").await;
 
     // Create source database
     let (source_db, _db_guard) = create_source_database("test_show", "source_unique_789", 2, 5).await;
@@ -522,19 +599,20 @@ async fn test_sync_metadata_validation() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Initial sync
-    let local_dir = temp_dir.path().to_path_buf();
-    let server_url_clone = server_url.clone();
-    let local_dir_clone = local_dir.clone();
+    let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100);
+    let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url_clone, local_dir_clone, None, 100).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
     assert!(result.is_ok());
 
-    // Manually tamper with destination metadata to cause validation failure
-    let dest_db_path = temp_dir.path().join("test_show.sqlite");
-    let pool = save_audio_stream::db::open_database_connection(&dest_db_path).await.unwrap();
+    // Manually tamper with destination metadata in PostgreSQL to cause validation failure
+    let database_name = save_audio_stream::sync::get_pg_database_name("test_show");
+    let pool = save_audio_stream::db_postgres::open_postgres_connection(&postgres_url, &password, &database_name)
+        .await
+        .unwrap();
     sqlx::query("UPDATE metadata SET value = 'aac' WHERE key = 'audio_format'")
         .execute(&pool)
         .await
@@ -542,19 +620,29 @@ async fn test_sync_metadata_validation() {
     drop(pool);
 
     // Try to sync again - should fail due to metadata mismatch
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
     assert!(result.is_err());
     let err_msg = result.err().unwrap();
     assert!(err_msg.contains("Audio format mismatch") || err_msg.contains("mismatch"));
+
+    // Cleanup
+    drop_test_database(&postgres_url, &password, "test_show").await;
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
 async fn test_sync_rejects_old_version() {
-    let temp_dir = tempfile::tempdir().unwrap();
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+
+    // Clean up any existing test database
+    drop_test_database(&postgres_url, &password, "old_show").await;
 
     // Create source database with old version (version "2" instead of "3")
     let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
@@ -638,9 +726,10 @@ async fn test_sync_rejects_old_version() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Try to sync - should fail due to version mismatch
-    let local_dir = temp_dir.path().to_path_buf();
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -652,11 +741,19 @@ async fn test_sync_rejects_old_version() {
         "Expected version error but got: {}",
         err_msg
     );
+
+    // Cleanup (database may not have been created due to version rejection)
+    drop_test_database(&postgres_url, &password, "old_show").await;
 }
 
 #[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
 async fn test_sync_rejects_recipient_database() {
-    let temp_dir = tempfile::tempdir().unwrap();
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+
+    // Clean up any existing test database
+    drop_test_database(&postgres_url, &password, "test_show").await;
 
     // Create source database marked as recipient (sync target)
     let (pool, _db_guard) = save_audio_stream::db::create_test_connection_in_temporary_file().await.unwrap();
@@ -743,9 +840,10 @@ async fn test_sync_rejects_recipient_database() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Try to sync - should fail with forbidden error
-    let local_dir = temp_dir.path().to_path_buf();
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(server_url, local_dir, None, 100).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -762,4 +860,7 @@ async fn test_sync_rejects_recipient_database() {
         "Expected error when syncing from recipient database but got: {}",
         err_msg
     );
+
+    // Cleanup (database may not have been created due to recipient rejection)
+    drop_test_database(&postgres_url, &password, "test_show").await;
 }
