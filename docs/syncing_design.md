@@ -2,21 +2,39 @@
 
 **Status**: ✅ Implemented
 
-This document describes the design, rationale, and usage for the database synchronization feature.
+This document describes the synchronization system that enables the relay architecture.
 
 ## Overview
 
-The application supports one-way synchronization from a remote recording server to local databases. This allows you to replicate audio recordings from a sender to multiple receivers.
+The sync system enables a **distributed recording architecture**:
 
-## Requirements
+```
+                                    ┌─────────────────────┐
+                         pull sync  │   Receiver Server   │
+                        ◄────────── │ (Less Stable/Local) │
+┌─────────────────────┐   (HTTP)    ├─────────────────────┤
+│   Recording Server  │             │  Web Playback UI    │
+│   (Stable Network)  │             │  Syncs when online  │
+├─────────────────────┤             └─────────────────────┘
+│  Radio Stream ────► │
+│  SQLite Database    │             ┌─────────────────────┐
+│                     │   push      │   SFTP Storage      │
+│  Scheduled daily    │ ──────────► │   (Optional)        │
+│  Serves sync API    │   archive   │  Long-term backup   │
+└─────────────────────┘             └─────────────────────┘
+```
 
-- For recording mode, on the main thread it should enable a rest endpoint for syncing mode, in which it provides an endpoint to fetch all metadata from a particular show's sqlite database together with the min and max id at the time, and another api endpoint to fetch database records with ranges. Recording mode should reject database flagged with is_recipient = true.
-- Add another command line option for syncing mode, in which it creates a new database per show with is_recipient = true or opens a separate sqlite database. If database already exists, check if database is recipient mode metadata matches from api endpoint including metadata session id, and get the last synced database id from metadata instead of max(id) because I might trim the data which makes max(id) less reliable.
-- For syncing, it will keep on pulling data until it reaches the max id from the recording mode at the time of starting sync. It should pull data in chunks, and after each chunk it should update the last synced id in metadata table. After finish syncing, the program should exit.
+**Key Design Goals:**
+- **Recording server** runs on stable infrastructure with scheduled daily recording windows (required break prevents drift)
+- **Receiver pulls** from recording server - can have intermittent connectivity, catches up automatically
+- **SFTP push** (optional) - recording server archives completed sessions to remote storage
+- **Resumable transfers** - interrupted syncs resume from last successful segment
 
-## Rationale
+## Use Case
 
-Ideally the sender in recording mode should submit the recording data to a central server or database such as postgres, but currently the remote recording server I have with stable connection doesn't have enough space for database, so I need to record locally to sqlite and sync asynchronously.
+Record radio streams on a cloud server (stable connection, limited storage), then:
+- **Receivers** (home server, NAS) pull recordings whenever they're online
+- **SFTP storage** receives archived sessions pushed from recording server (optional long-term backup)
 
 ## Architecture
 

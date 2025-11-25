@@ -1,22 +1,49 @@
 # save_audio_stream
 
-A Rust CLI tool for downloading and re-encoding Shoutcast/Icecast audio streams to AAC, Opus, or WAV format with SQLite storage.
+A live audio stream relay service that records Shoutcast/Icecast streams and syncs them to remote servers for playback.
 
-## Purpose
+## Architecture Overview
 
-This tool connects to internet radio streams, decodes the audio in real-time, and re-encodes it to a compressed format optimized for voice/speech. All audio is stored in SQLite databases for reliability and easy syncing. Useful for recording radio broadcasts, podcasts, or any Shoutcast/Icecast compatible stream.
+This tool is designed for scenarios where you need to:
+1. **Record** audio streams on a server with stable internet connection
+2. **Relay** recordings to another server that may have intermittent connectivity
+3. **Play back** the synced audio via web browser
+
+```
+                                    ┌─────────────────────┐
+                         pull sync  │   Receiver Server   │
+                        ◄────────── │ (Less Stable/Local) │
+┌─────────────────────┐             ├─────────────────────┤
+│   Recording Server  │             │  Web Playback UI    │
+│   (Stable Network)  │             │  - Can be offline   │
+├─────────────────────┤             │  - Pulls on demand  │
+│                     │             └─────────────────────┘
+│  Internet Radio ──► │
+│  Stream Recording   │             ┌─────────────────────┐
+│                     │  push       │   SFTP Storage      │
+│  - Scheduled daily  │ ──────────► │   (Optional)        │
+│  - Serves sync API  │  archive    │  - Long-term backup │
+└─────────────────────┘             └─────────────────────┘
+```
+
+**Note:** Recording runs on a daily schedule (e.g., 9am-5pm) with a required break each day to prevent timestamp drift.
+
+**Data Flow:**
+- **Receiver pulls** from recording server via HTTP (sync API)
+- **Recording server pushes** to SFTP for archival (optional)
+
+**Use Case**: Record radio streams on a cloud server with reliable connectivity. Receivers (home server, NAS) pull recordings whenever they're online. Optionally archive completed sessions to SFTP storage for long-term backup.
 
 ## Features
 
-- Downloads audio from Shoutcast/Icecast streams
-- Supports MP3 and AAC input formats
-- Re-encodes to AAC-LC (16kHz mono), Opus (48kHz mono), or WAV (lossless)
-- **SQLite storage** for reliability and incremental syncing
-- **Automatic segment splitting** at configurable intervals with gapless playback
-- Configurable recording duration and bitrate
-- Configuration file support (TOML format)
-- Customizable output directory (defaults to `tmp/`)
-- Database synchronization for remote backup
+- **Recording Mode**: Capture Shoutcast/Icecast streams with automatic reconnection
+- **Receiver Mode**: Sync recordings from remote server with resumable transfers
+- **Web UI**: Browse and play back synced audio in browser (HLS streaming)
+- **Gapless Playback**: Seamless audio across split segments
+- SQLite storage for reliability and incremental syncing
+- Supports MP3 and AAC input, re-encodes to Opus (recommended), AAC, or WAV
+- Scheduled recording windows (e.g., 9am-5pm daily)
+- Automatic cleanup of old recordings
 
 ## Installation
 
@@ -78,9 +105,53 @@ When built without the web frontend:
 - Web UI routes (`/`, `/assets/*`) return 404 with message "Web frontend not available in this build"
 - The server can still serve audio and handle sync operations
 
+## Quick Start
+
+**On your recording server (stable connection):**
+```bash
+# Create recording config
+cat > record.toml << 'EOF'
+config_type = 'record'
+api_port = 17000
+
+[[sessions]]
+url = 'https://stream.example.com/radio'
+name = 'myradio'
+audio_format = 'opus'
+
+[sessions.schedule]
+record_start = '09:00'
+record_end = '17:00'
+EOF
+
+# Start recording
+./save_audio_stream record -c record.toml
+```
+
+**On your receiver server (can be offline, syncs when available):**
+```bash
+# Create receiver config
+cat > receiver.toml << 'EOF'
+config_type = 'receiver'
+remote_url = 'http://recording-server:17000'
+local_dir = './synced'
+port = 18000
+sync_interval_seconds = 300
+EOF
+
+# Start receiver (syncs automatically, serves web UI)
+./save_audio_stream receiver --config receiver.toml
+```
+
+Open `http://localhost:18000` to browse and play synced recordings.
+
 ## Usage
 
-### Record Command
+### Recording Mode
+
+Runs on a server with stable internet to capture audio streams continuously.
+
+#### Record Command
 
 ```bash
 save_audio_stream record -c <CONFIG_FILE> [-p <PORT>]
@@ -93,11 +164,9 @@ save_audio_stream record -c <CONFIG_FILE> [-p <PORT>]
 | `-c, --config` | Path to multi-session config file (required) |
 | `-p, --port` | Override global API server port (optional) |
 
-### Config File Format
-
-The config file uses TOML format. All config files must specify a `config_type` to indicate whether they're for recording or syncing.
-
 #### Recording Config
+
+Config files use TOML format with `config_type = 'record'`:
 
 ```toml
 # Required
@@ -134,10 +203,28 @@ record_start = '18:00'
 record_end = '20:00'
 ```
 
-#### Receiver/Sync Config
+### Receiver Mode
+
+Runs on a server that may have intermittent connectivity. Syncs recordings from the recording server and provides web playback. The receiver doesn't need to be online 24/7 - it catches up automatically whenever it connects.
+
+#### Receiver Command
+
+```bash
+save_audio_stream receiver --config <CONFIG_FILE> [--sync-only]
+```
+
+**CLI Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--config` | Path to receiver config file (required) |
+| `--sync-only` | Sync once and exit (don't start web server) |
+
+#### Receiver Config
+
+Config files use TOML format with `config_type = 'receiver'`:
 
 ```toml
-# Required
 config_type = 'receiver'
 remote_url = 'http://remote:17000'  # URL of remote recording server
 local_dir = './synced'              # Local directory for synced databases
@@ -146,8 +233,10 @@ local_dir = './synced'              # Local directory for synced databases
 shows = ['show1', 'show2']  # Show names to sync (omit to sync all shows from remote)
 chunk_size = 100            # default: 100 (batch size for fetching chunks)
 port = 18000                # default: 18000 (HTTP server port for web UI)
-sync_interval_seconds = 60  # default: 60 (polling interval for background sync)
+sync_interval_seconds = 60  # default: 60 (seconds between automatic syncs)
 ```
+
+**Note:** Periodic sync runs automatically in the backend at `sync_interval_seconds` intervals. The web UI displays sync status but does not control the sync schedule.
 
 ### Config Options
 
