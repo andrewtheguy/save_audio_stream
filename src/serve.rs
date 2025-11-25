@@ -31,6 +31,12 @@ use crate::queries::{metadata, segments};
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 const INDEX_HTML: &[u8] = include_bytes!("../app/dist/index.html");
 
+#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+const STYLE_CSS: &[u8] = include_bytes!("../app/dist/assets/style.css");
+
+#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+const MAIN_JS: &[u8] = include_bytes!("../app/dist/assets/main.js");
+
 /// Parse Opus packets from audio data for fMP4 generation
 /// Opus packets are stored as 2-byte little-endian length followed by packet data
 fn parse_opus_packets(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
@@ -56,12 +62,6 @@ fn parse_opus_packets(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
 
     Ok(packets)
 }
-
-#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
-const STYLE_CSS: &[u8] = include_bytes!("../app/dist/assets/style.css");
-
-#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
-const MAIN_JS: &[u8] = include_bytes!("../app/dist/assets/main.js");
 
 // State for audio serving handlers
 pub struct AppState {
