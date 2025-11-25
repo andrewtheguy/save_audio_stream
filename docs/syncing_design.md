@@ -8,14 +8,14 @@ This document describes the synchronization system that enables the relay archit
 
 **Key Design Goals:**
 - **Recording server** runs on stable infrastructure with scheduled daily recording windows (required break prevents drift)
-- **Receiver pulls SQLite data** from recording server - for live playback, can have intermittent connectivity
+- **Receiver pulls data** from recording server via HTTP and stores in PostgreSQL - for live playback, can have intermittent connectivity
 - **SFTP push** (optional) - recording server exports and pushes audio files for long-term archive
 - **Resumable transfers** - interrupted syncs resume from last successful segment
 
 ## Use Case
 
 Record radio streams on a cloud server (stable connection, limited storage), then:
-- **Receivers** (home server, NAS) pull recordings whenever they're online
+- **Receivers** (home server, NAS) pull recordings to PostgreSQL whenever they're online
 - **SFTP storage** receives archived sessions pushed from recording server (optional long-term backup)
 
 ## Architecture
@@ -26,61 +26,14 @@ Record radio streams on a cloud server (stable connection, limited storage), the
 - Each database has `is_recipient = false` in metadata (allows recording)
 
 ### Receiver (Sync Client)
-- Syncs show databases from remote sender to local storage
-- Creates local databases with `is_recipient = true` in metadata
+- Syncs show data from remote sender to local PostgreSQL databases
+- Creates PostgreSQL databases named `save_audio_{show_name}` with `is_recipient = true` in metadata
 - Prevents accidental recording to sync target databases
+- Requires PostgreSQL server with CREATE DATABASE privileges
 
-## Usage
+## Receiver Mode
 
-### Command Syntax
-
-```bash
-save_audio_stream sync \
-  --remote-url <URL> \
-  --local-dir <DIR> \
-  --show <NAME> [--show <NAME>...] \
-  [--chunk-size <SIZE>]
-```
-
-### Options
-
-| Option | Short | Description | Default |
-|--------|-------|-------------|---------|
-| `--remote-url` | `-r` | URL of remote recording server (e.g., http://remote:17000) | Required |
-| `--local-dir` | `-l` | Local base directory for synced databases | Required |
-| `--show` | `-n` | Show name(s) to sync (can specify multiple) | Required |
-| `--chunk-size` | `-s` | Batch size for segment fetching | 100 |
-
-### Examples
-
-**Sync a single show:**
-```bash
-save_audio_stream sync \
-  -r http://remote:17000 \
-  -l ./synced \
-  -n myradio
-```
-
-**Sync multiple shows:**
-```bash
-save_audio_stream sync \
-  -r http://remote:17000 \
-  -l ./synced \
-  -n show1 -n show2 -n show3
-```
-
-**Sync with custom chunk size:**
-```bash
-save_audio_stream sync \
-  -r http://remote:17000 \
-  -l ./synced \
-  -n myradio \
-  -s 500
-```
-
-## Receiver Mode (Continuous Sync Server)
-
-For long-running deployments, use the `receiver` command instead of `sync`. This starts an HTTP server with:
+Use the `receiver` command to sync shows from a remote recording server to PostgreSQL. This starts an HTTP server with:
 - **Background periodic sync**: Runs automatically at configurable intervals (default: 60 seconds)
 - **Web UI**: Browse and play synced audio
 - **Manual sync trigger**: Optional button to trigger immediate sync
@@ -101,11 +54,21 @@ save_audio_stream receiver --config <CONFIG_FILE> --sync-only
 ```toml
 config_type = "receiver"
 remote_url = "http://remote:17000"
-local_dir = "./synced"
+postgres_url = "postgres://user@localhost:5432"
+credential_profile = "receiver"
 shows = ["show1", "show2"]  # Optional filter
 port = 18000
 sync_interval_seconds = 60
 chunk_size = 100
+```
+
+### Credentials File
+
+Store PostgreSQL passwords in `~/.config/save_audio_stream/credentials`:
+
+```ini
+[receiver]
+password = "your_postgres_password"
 ```
 
 ### Sync Architecture
@@ -140,18 +103,21 @@ chunk_size = 100
 | Option | Description | Default |
 |--------|-------------|---------|
 | `remote_url` | URL of remote recording server | Required |
-| `local_dir` | Local directory for synced databases | Required |
+| `postgres_url` | PostgreSQL connection URL (without password) | Required |
+| `credential_profile` | Profile name in credentials file | Required |
 | `shows` | Show name filter (omit for all) | All shows |
 | `port` | HTTP server port | 18000 |
 | `sync_interval_seconds` | Seconds between automatic syncs | 60 |
 | `chunk_size` | Batch size for segment fetching | 100 |
 
-## One-Shot Sync Behavior
+## Sync Behavior
+
+Each sync operation (whether periodic or via `--sync-only`):
 
 - **Sequential Processing**: Shows are synced one at a time in the order specified
 - **Resumable**: Automatically resumes from last synced segment if interrupted
 - **Fail-Fast**: Exits immediately on any network error or metadata mismatch
-- **No Retry**: Network errors are not retried - run the command again to resume
+- **No Retry**: Network errors are not retried - next sync cycle will resume
 - **Validation**: Validates metadata compatibility (format, bitrate, split_interval) on resume
 - **Chunked Transfer**: Fetches chunks in batches to handle large datasets efficiently
 - **Progress Tracking**: Uses `last_synced_id` metadata instead of `max(id)` for reliable resume
@@ -239,6 +205,7 @@ The sender (recording server) exposes these endpoints for synchronization and au
 ### Key Components
 
 - **src/sync.rs**: Main sync logic with `sync_shows()` and `sync_single_show()` functions
+- **src/db_postgres.rs**: PostgreSQL database management for receiver mode (connection, schema, queries)
 - **src/serve.rs**: API endpoints for listing shows, metadata, and segment fetching
 - **src/record.rs**: Database protection to reject recording to recipient databases
 

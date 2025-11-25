@@ -13,14 +13,14 @@ This tool is designed for scenarios where you need to:
 
 ```
                                     ┌─────────────────────┐
-                       pull SQLite  │   Receiver Server   │
+                       pull data    │   Receiver Server   │
                         ◄────────── │ (Less Stable/Local) │
-┌─────────────────────┐    data     ├─────────────────────┤
-│   Recording Server  │             │  Web Playback UI    │
-│   (Stable Network)  │             │  - Can be offline   │
-├─────────────────────┤             │  - Pulls on demand  │
-│                     │             └─────────────────────┘
-│  Internet Radio ──► │
+┌─────────────────────┐   via HTTP  ├─────────────────────┤
+│   Recording Server  │             │  PostgreSQL DB      │
+│   (Stable Network)  │             │  Web Playback UI    │
+├─────────────────────┤             │  - Can be offline   │
+│                     │             │  - Pulls on demand  │
+│  Internet Radio ──► │             └─────────────────────┘
 │  Stream Recording   │             ┌─────────────────────┐
 │                     │    push     │   SFTP Storage      │
 │  - Scheduled daily  │ ──────────► │   (Optional)        │
@@ -31,7 +31,7 @@ This tool is designed for scenarios where you need to:
 **Note:** Recording runs on a daily schedule (e.g., 9am-5pm) with a required break each day to prevent timestamp drift.
 
 **Data Flow:**
-- **Receiver pulls SQLite data** from recording server via HTTP (sync API) - for live playback
+- **Receiver pulls data** from recording server via HTTP (sync API) and stores in PostgreSQL - for live playback
 - **SFTP receives exported audio files** pushed from recording server (optional) - for long-term archive
 
 **Use Case**: Record radio streams on a cloud server with reliable connectivity. Receivers (home server, NAS) pull recordings whenever they're online. Optionally archive completed sessions to SFTP storage for long-term backup.
@@ -39,10 +39,10 @@ This tool is designed for scenarios where you need to:
 ## Features
 
 - **Recording Mode**: Capture Shoutcast/Icecast streams with automatic reconnection
-- **Receiver Mode**: Sync recordings from remote server with resumable transfers
+- **Receiver Mode**: Sync recordings from remote server with resumable transfers (PostgreSQL backend)
 - **Web UI**: Browse and play back synced audio in browser (HLS streaming)
 - **Gapless Playback**: Seamless audio across split segments
-- SQLite storage for reliability and incremental syncing
+- SQLite storage for recording, PostgreSQL for receiver/sync
 - Supports MP3 and AAC input, re-encodes to Opus (recommended), AAC, or WAV
 - Scheduled recording windows (e.g., 9am-5pm daily)
 - Automatic cleanup of old recordings
@@ -131,12 +131,23 @@ EOF
 ```
 
 **On your receiver server (can be offline, syncs when available):**
+
+Prerequisites: PostgreSQL server running locally or accessible remotely.
+
 ```bash
+# Create credentials file for PostgreSQL password
+mkdir -p ~/.config/save_audio_stream
+cat > ~/.config/save_audio_stream/credentials << 'EOF'
+[my-postgres]
+password = "your_postgres_password"
+EOF
+
 # Create receiver config
 cat > receiver.toml << 'EOF'
 config_type = 'receiver'
 remote_url = 'http://recording-server:17000'
-local_dir = './synced'
+postgres_url = 'postgres://your_user@localhost:5432'
+credential_profile = 'my-postgres'
 port = 18000
 sync_interval_seconds = 300
 EOF
@@ -144,6 +155,8 @@ EOF
 # Start receiver (syncs automatically, serves web UI)
 ./save_audio_stream receiver --config receiver.toml
 ```
+
+The receiver creates PostgreSQL databases named `save_audio_{show_name}` for each synced show.
 
 Open `http://localhost:18000` to browse and play synced recordings.
 
@@ -207,7 +220,9 @@ record_end = '20:00'
 
 ### Receiver Mode
 
-Runs on a server that may have intermittent connectivity. Syncs recordings from the recording server and provides web playback. The receiver doesn't need to be online 24/7 - it catches up automatically whenever it connects.
+Runs on a server that may have intermittent connectivity. Syncs recordings from the recording server to PostgreSQL and provides web playback. The receiver doesn't need to be online 24/7 - it catches up automatically whenever it connects.
+
+**Prerequisites:** PostgreSQL server with a user that has CREATE DATABASE privileges.
 
 #### Receiver Command
 
@@ -228,8 +243,9 @@ Config files use TOML format with `config_type = 'receiver'`:
 
 ```toml
 config_type = 'receiver'
-remote_url = 'http://remote:17000'  # URL of remote recording server
-local_dir = './synced'              # Local directory for synced databases
+remote_url = 'http://remote:17000'           # URL of remote recording server
+postgres_url = 'postgres://user@host:5432'   # PostgreSQL URL (without password)
+credential_profile = 'my-postgres'           # Profile name in credentials file
 
 # Optional
 shows = ['show1', 'show2']  # Show names to sync (omit to sync all shows from remote)
@@ -237,6 +253,15 @@ chunk_size = 100            # default: 100 (batch size for fetching chunks)
 port = 18000                # default: 18000 (HTTP server port for web UI)
 sync_interval_seconds = 60  # default: 60 (seconds between automatic syncs)
 ```
+
+**Credentials file** (`~/.config/save_audio_stream/credentials`):
+
+```toml
+[my-postgres]
+password = "your_postgres_password"
+```
+
+**Database naming:** Each show is stored in a separate PostgreSQL database named `save_audio_{show_name}`. The databases are created automatically if they don't exist.
 
 **Note:** Periodic sync runs automatically in the backend at `sync_interval_seconds` intervals. The web UI displays sync status but does not control the sync schedule.
 
@@ -286,8 +311,9 @@ sync_interval_seconds = 60  # default: 60 (seconds between automatic syncs)
 | Option | Description |
 |--------|-------------|
 | `config_type` | Must be `'receiver'` for receiver/sync configurations |
-| `remote_url` | URL of remote recording server (e.g., http://remote:17000) |
-| `local_dir` | Local directory for synced databases |
+| `remote_url` | URL of remote recording server (e.g., `http://remote:17000`) |
+| `postgres_url` | PostgreSQL connection URL without password (e.g., `postgres://user@localhost:5432`) |
+| `credential_profile` | Profile name to look up password from `~/.config/save_audio_stream/credentials` |
 
 **Optional:**
 
@@ -490,17 +516,28 @@ The application uses `is_timestamp_from_source` flag in the database to track re
 
 ## Database Synchronization
 
-The application supports one-way synchronization from a remote recording server to local databases for asynchronous replication.
+The application supports one-way synchronization from a remote recording server (SQLite) to a local PostgreSQL database for asynchronous replication.
 
 ### Quick Start
 
-Create a sync config file (e.g., `config/sync.toml`):
+**1. Set up PostgreSQL credentials:**
+
+```bash
+mkdir -p ~/.config/save_audio_stream
+cat > ~/.config/save_audio_stream/credentials << 'EOF'
+[my-postgres]
+password = "your_postgres_password"
+EOF
+```
+
+**2. Create a sync config file** (e.g., `config/sync.toml`):
 
 **Sync all shows from remote (recommended):**
 ```toml
 config_type = 'receiver'
 remote_url = 'http://remote:17000'
-local_dir = './synced'
+postgres_url = 'postgres://user@localhost:5432'
+credential_profile = 'my-postgres'
 # shows parameter is omitted - will sync all available shows
 ```
 
@@ -508,20 +545,24 @@ local_dir = './synced'
 ```toml
 config_type = 'receiver'
 remote_url = 'http://remote:17000'
-local_dir = './synced'
+postgres_url = 'postgres://user@localhost:5432'
+credential_profile = 'my-postgres'
 shows = ['myradio']  # or ['show1', 'show2'] for multiple shows
 ```
 
-Run the receiver command:
+**3. Run the receiver command:**
 
 ```bash
 save_audio_stream receiver -c config/sync.toml
 ```
 
+Each show is stored in a separate PostgreSQL database named `save_audio_{show_name}` (e.g., `save_audio_myradio`). Databases are created automatically if they don't exist.
+
 **Key Features:**
 - **Web UI with show selection**: Browse and play synced shows through a web interface
 - **Background continuous sync**: Automatic polling at configurable intervals
 - **Manual sync trigger**: "Sync Now" button in UI for on-demand syncing
+- **PostgreSQL storage**: Each show in its own database for isolation and scalability
 - Resumable sync with automatic checkpoint tracking
 - Database protection with `is_recipient` flag prevents recording to sync targets
 - Sequential processing with fail-fast error handling
