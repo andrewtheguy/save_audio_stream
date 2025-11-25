@@ -118,7 +118,7 @@ Each sync operation (whether periodic or via `--sync-only`):
 - **Resumable**: Automatically resumes from last synced segment if interrupted
 - **Fail-Fast**: Exits immediately on any network error or metadata mismatch
 - **No Retry**: Network errors are not retried - next sync cycle will resume
-- **Validation**: Validates metadata compatibility (format, bitrate, split_interval) on resume
+- **Validation**: Validates metadata compatibility (format, bitrate) on resume
 - **Chunked Transfer**: Fetches chunks in batches to handle large datasets efficiently
 - **Progress Tracking**: Uses `last_synced_id` metadata instead of `max(id)` for reliable resume
 
@@ -158,7 +158,6 @@ The sender (recording server) exposes these endpoints for synchronization and au
   "unique_id": "db_a1b2c3d4e5f6",
   "name": "myradio",
   "audio_format": "opus",
-  "split_interval": "300",
   "bitrate": "16",
   "sample_rate": "48000",
   "version": "1",
@@ -214,7 +213,6 @@ The sender (recording server) exposes these endpoints for synchronization and au
 When resuming a sync, the following metadata fields are validated to ensure compatibility:
 - `source_unique_id`: Must match remote `unique_id`
 - `audio_format`: Must match (e.g., "opus")
-- `split_interval`: Must match (e.g., "300")
 - `bitrate`: Must match (e.g., "16")
 
 ### Error Handling
