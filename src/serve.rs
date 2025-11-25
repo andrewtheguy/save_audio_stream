@@ -1146,7 +1146,6 @@ async fn assets_handler_release(Path(_path): Path<String>) -> Response {
 // Receiver Mode - Multi-show frontend with background sync
 // ============================================================================
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use axum::routing::post;
 use serde::Deserialize;
 
@@ -1154,13 +1153,13 @@ use serde::Deserialize;
 pub struct ReceiverAppState {
     pub config: crate::config::SyncConfig,
     pub password: String,
-    pub sync_in_progress: StdArc<AtomicBool>,
+    /// Connection pool to the global database (save_audio_global) for lease operations
+    pub global_pool: PgPool,
 }
 
 /// Receiver mode: serve frontend with show selection and background sync (PostgreSQL)
 pub fn receiver_audio(config: crate::config::SyncConfig, password: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port = config.port;
-    let sync_in_progress = StdArc::new(AtomicBool::new(false));
 
     println!("Starting receiver server (PostgreSQL mode)...");
     println!("PostgreSQL URL: {}", config.postgres_url);
@@ -1168,24 +1167,40 @@ pub fn receiver_audio(config: crate::config::SyncConfig, password: String) -> Re
     println!("Sync interval: {} seconds", config.sync_interval_seconds);
     println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
 
+    // Create tokio runtime for global pool initialization
+    let init_rt = tokio::runtime::Runtime::new()?;
+
+    // Create global database and leases table
+    let global_pool = init_rt.block_on(async {
+        let pool = crate::db_postgres::open_postgres_connection_create_if_needed(
+            &config.postgres_url,
+            &password,
+            crate::db_postgres::GLOBAL_DATABASE_NAME,
+        ).await?;
+        crate::db_postgres::create_leases_table_pg(&pool).await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(pool)
+    })?;
+
     // Clone values for background sync thread
     let sync_config = config.clone();
     let sync_password = password.clone();
     let sync_interval = config.sync_interval_seconds;
-    let sync_flag = sync_in_progress.clone();
+    let bg_global_pool = global_pool.clone();
 
-    // Spawn background sync thread with continuous polling
+    // Spawn background sync thread (lease handling is inside sync_shows)
     std::thread::spawn(move || {
         loop {
-            if !sync_flag.swap(true, Ordering::SeqCst) {
-                println!("[Sync] Starting background sync...");
-                match crate::sync::sync_shows(&sync_config, &sync_password) {
-                    Ok(_) => println!("[Sync] Background sync completed successfully"),
-                    Err(e) => eprintln!("[Sync] Background sync error: {}", e),
+            println!("[Sync] Starting background sync...");
+            match crate::sync::sync_shows(&sync_config, &sync_password, &bg_global_pool) {
+                Ok(crate::sync::SyncResult::Completed) => {
+                    println!("[Sync] Background sync completed successfully");
                 }
-                sync_flag.store(false, Ordering::SeqCst);
-            } else {
-                println!("[Sync] Sync already in progress, skipping this interval");
+                Ok(crate::sync::SyncResult::Skipped) => {
+                    println!("[Sync] Background sync skipped (another instance is syncing)");
+                }
+                Err(e) => {
+                    eprintln!("[Sync] Background sync error: {}", e);
+                }
             }
             std::thread::sleep(std::time::Duration::from_secs(sync_interval));
         }
@@ -1197,7 +1212,7 @@ pub fn receiver_audio(config: crate::config::SyncConfig, password: String) -> Re
         let app_state = StdArc::new(ReceiverAppState {
             config: config.clone(),
             password: password.clone(),
-            sync_in_progress,
+            global_pool,
         });
 
         let cors = CorsLayer::new()
@@ -1852,13 +1867,17 @@ struct SyncStatusResponse {
 async fn receiver_sync_status_handler(
     State(state): State<StdArc<ReceiverAppState>>,
 ) -> impl IntoResponse {
+    let in_progress = crate::db_postgres::is_lease_held_pg(
+        &state.global_pool,
+        crate::sync::SYNC_LEASE_NAME,
+    )
+    .await
+    .unwrap_or(false);
+
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&SyncStatusResponse {
-            in_progress: state.sync_in_progress.load(Ordering::SeqCst),
-        })
-        .unwrap(),
+        serde_json::to_string(&SyncStatusResponse { in_progress }).unwrap(),
     )
 }
 
@@ -1871,7 +1890,15 @@ struct SyncTriggerResponse {
 async fn receiver_trigger_sync_handler(
     State(state): State<StdArc<ReceiverAppState>>,
 ) -> impl IntoResponse {
-    if state.sync_in_progress.load(Ordering::SeqCst) {
+    // Check if sync is already in progress
+    let in_progress = crate::db_postgres::is_lease_held_pg(
+        &state.global_pool,
+        crate::sync::SYNC_LEASE_NAME,
+    )
+    .await
+    .unwrap_or(false);
+
+    if in_progress {
         return (
             StatusCode::CONFLICT,
             [(header::CONTENT_TYPE, "application/json")],
@@ -1884,19 +1911,24 @@ async fn receiver_trigger_sync_handler(
             .into_response();
     }
 
-    // Spawn a new sync in a separate thread
+    // Spawn a new sync in a separate thread (lease handling is inside sync_shows)
     let sync_config = state.config.clone();
     let sync_password = state.password.clone();
-    let sync_flag = state.sync_in_progress.clone();
+    let global_pool = state.global_pool.clone();
 
     std::thread::spawn(move || {
-        sync_flag.store(true, Ordering::SeqCst);
         println!("[Sync] Manual sync triggered...");
-        match crate::sync::sync_shows(&sync_config, &sync_password) {
-            Ok(_) => println!("[Sync] Manual sync completed successfully"),
-            Err(e) => eprintln!("[Sync] Manual sync error: {}", e),
+        match crate::sync::sync_shows(&sync_config, &sync_password, &global_pool) {
+            Ok(crate::sync::SyncResult::Completed) => {
+                println!("[Sync] Manual sync completed successfully");
+            }
+            Ok(crate::sync::SyncResult::Skipped) => {
+                println!("[Sync] Manual sync skipped (another instance started syncing)");
+            }
+            Err(e) => {
+                eprintln!("[Sync] Manual sync error: {}", e);
+            }
         }
-        sync_flag.store(false, Ordering::SeqCst);
     });
 
     (

@@ -467,3 +467,120 @@ pub fn metadata_exists_pg_sync(db: &SyncDbPg, key: &str) -> Result<bool, DynErro
 pub fn get_latest_section_before_cutoff_pg_sync(db: &SyncDbPg, cutoff_ms: i64) -> Result<Option<i64>, DynError> {
     db.block_on(get_latest_section_before_cutoff_pg(db.pool(), cutoff_ms))
 }
+
+// ============================================================================
+// Lease-Based Locking Functions
+// Distributed locks using database table with expiration for crash recovery
+// ============================================================================
+
+/// Global database name for storing lease information
+pub const GLOBAL_DATABASE_NAME: &str = "save_audio_global";
+
+/// Default lease duration in milliseconds (30 seconds)
+pub const DEFAULT_LEASE_DURATION_MS: i64 = 30_000;
+
+/// Create the sync_leases table for lease-based locking
+/// Uses TIMESTAMP (without time zone) storing UTC values (Rails convention)
+pub async fn create_leases_table_pg(pool: &PgPool) -> Result<(), DynError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS sync_leases (
+            name TEXT PRIMARY KEY,
+            holder_id TEXT NOT NULL,
+            acquired_at TIMESTAMP NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            renewed_at TIMESTAMP NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Try to acquire a lease. Returns true if acquired, false if held by another.
+/// Will take over expired leases automatically.
+/// All timestamps are stored as UTC.
+pub async fn try_acquire_lease_pg(
+    pool: &PgPool,
+    name: &str,
+    holder_id: &str,
+    duration_ms: i64,
+) -> Result<bool, DynError> {
+    // Try to insert new lease or update if expired or held by same holder
+    // Use (NOW() AT TIME ZONE 'UTC') to get UTC timestamp
+    let result = sqlx::query(
+        r#"
+        INSERT INTO sync_leases (name, holder_id, acquired_at, expires_at, renewed_at)
+        VALUES ($1, $2, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond', (NOW() AT TIME ZONE 'UTC'))
+        ON CONFLICT (name) DO UPDATE SET
+            holder_id = $2,
+            acquired_at = (NOW() AT TIME ZONE 'UTC'),
+            expires_at = (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond',
+            renewed_at = (NOW() AT TIME ZONE 'UTC')
+        WHERE sync_leases.expires_at < (NOW() AT TIME ZONE 'UTC') OR sync_leases.holder_id = $2
+        "#,
+    )
+    .bind(name)
+    .bind(holder_id)
+    .bind(duration_ms)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// Renew an existing lease. Returns true if renewed, false if lease was lost.
+/// All timestamps are stored as UTC.
+pub async fn renew_lease_pg(
+    pool: &PgPool,
+    name: &str,
+    holder_id: &str,
+    duration_ms: i64,
+) -> Result<bool, DynError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE sync_leases
+        SET expires_at = (NOW() AT TIME ZONE 'UTC') + $1 * INTERVAL '1 millisecond', renewed_at = (NOW() AT TIME ZONE 'UTC')
+        WHERE name = $2 AND holder_id = $3
+        "#,
+    )
+    .bind(duration_ms)
+    .bind(name)
+    .bind(holder_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// Release a lease. Only releases if held by the specified holder.
+pub async fn release_lease_pg(pool: &PgPool, name: &str, holder_id: &str) -> Result<bool, DynError> {
+    let result = sqlx::query(
+        r#"
+        DELETE FROM sync_leases
+        WHERE name = $1 AND holder_id = $2
+        "#,
+    )
+    .bind(name)
+    .bind(holder_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// Check if a lease is currently held (not expired)
+/// Compares against current UTC time.
+pub async fn is_lease_held_pg(pool: &PgPool, name: &str) -> Result<bool, DynError> {
+    let result: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(SELECT 1 FROM sync_leases WHERE name = $1 AND expires_at > (NOW() AT TIME ZONE 'UTC'))
+        "#,
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(result)
+}

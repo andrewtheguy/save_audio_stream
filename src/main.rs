@@ -138,8 +138,29 @@ fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box
         .map_err(|e| format!("Failed to get password for profile '{}': {}", sync_config.credential_profile, e))?;
 
     if sync_only {
-        // Sync once and exit
-        save_audio_stream::sync::sync_shows(&sync_config, &password)
+        // Sync once and exit - create global pool for lease management
+        let rt = tokio::runtime::Runtime::new()?;
+        let global_pool = rt.block_on(async {
+            let pool = save_audio_stream::db_postgres::open_postgres_connection_create_if_needed(
+                &sync_config.postgres_url,
+                &password,
+                save_audio_stream::db_postgres::GLOBAL_DATABASE_NAME,
+            ).await?;
+            save_audio_stream::db_postgres::create_leases_table_pg(&pool).await?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(pool)
+        })?;
+
+        match save_audio_stream::sync::sync_shows(&sync_config, &password, &global_pool) {
+            Ok(save_audio_stream::sync::SyncResult::Completed) => {
+                println!("Sync completed successfully");
+                Ok(())
+            }
+            Ok(save_audio_stream::sync::SyncResult::Skipped) => {
+                println!("Sync skipped (another instance is syncing)");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     } else {
         // Call receiver function which starts the server and background sync
         serve::receiver_audio(sync_config, password)
