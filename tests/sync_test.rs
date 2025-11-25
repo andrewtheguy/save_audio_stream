@@ -1,3 +1,62 @@
+//! # Sync Integration Tests
+//!
+//! These tests verify the sync functionality that transfers audio data from a remote
+//! SQLite-based recording server to a local PostgreSQL database (receiver mode).
+//!
+//! ## Prerequisites
+//!
+//! 1. **PostgreSQL Server**: A running PostgreSQL instance accessible locally
+//! 2. **Database User**: A PostgreSQL user with CREATE DATABASE privileges
+//!
+//! ## Setup
+//!
+//! ### macOS (Homebrew)
+//! ```bash
+//! brew install postgresql@15
+//! brew services start postgresql@15
+//! createuser -s $(whoami)  # Create superuser with your username
+//! ```
+//!
+//! ### Linux (Ubuntu/Debian)
+//! ```bash
+//! sudo apt install postgresql postgresql-contrib
+//! sudo systemctl start postgresql
+//! sudo -u postgres createuser -s $(whoami)
+//! ```
+//!
+//! ## Running the Tests
+//!
+//! Set the required environment variables and run with `--ignored` flag:
+//!
+//! ```bash
+//! TEST_POSTGRES_URL=postgres://your_user@localhost:5432 \
+//! TEST_POSTGRES_PASSWORD=your_password \
+//! cargo test --test sync_test -- --ignored
+//! ```
+//!
+//! ### Environment Variables
+//!
+//! | Variable | Description | Example |
+//! |----------|-------------|---------|
+//! | `TEST_POSTGRES_URL` | PostgreSQL connection URL (without database name) | `postgres://it3@localhost:5432` |
+//! | `TEST_POSTGRES_PASSWORD` | Password for the PostgreSQL user | `mypassword` |
+//!
+//! ## Test Databases
+//!
+//! The tests automatically create and drop PostgreSQL databases with the naming pattern:
+//! `save_audio_{show_name}` (e.g., `save_audio_test_new_show`, `save_audio_test_incremental`)
+//!
+//! Each test uses a unique show name to allow parallel test execution without conflicts.
+//!
+//! ## What the Tests Cover
+//!
+//! - `test_sync_new_show`: Syncing a new show from scratch
+//! - `test_sync_incremental`: Re-syncing an already synced show (idempotent)
+//! - `test_sync_with_whitelist`: Syncing only specific shows from a multi-show server
+//! - `test_sync_metadata_validation`: Detecting metadata mismatches between source and target
+//! - `test_sync_rejects_old_version`: Rejecting sync from incompatible schema versions
+//! - `test_sync_rejects_recipient_database`: Preventing sync from a recipient (already synced) database
+
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -17,15 +76,6 @@ use save_audio_stream::config::{ConfigType, SyncConfig};
 use save_audio_stream::queries::{metadata, sections, segments};
 use save_audio_stream::sync::sync_shows;
 use save_audio_stream::EXPECTED_DB_VERSION;
-
-// Note: These tests require a PostgreSQL database to be available.
-// Set the following environment variables to run these tests:
-//   TEST_POSTGRES_URL=postgres://user@localhost:5432
-//   TEST_POSTGRES_PASSWORD=your_password
-//
-// The tests will create databases with prefix "test_save_audio_" and clean them up after.
-//
-// To run: cargo test --test sync_test -- --ignored
 
 /// Helper to create a SyncConfig for testing
 fn create_test_sync_config(
