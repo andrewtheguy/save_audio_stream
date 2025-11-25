@@ -1,12 +1,14 @@
 use fs2::FileExt;
 use reqwest::blocking::Client;
-use rusqlite::Connection;
 use serde::Deserialize;
+use sqlx::sqlite::SqlitePool;
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
+use tokio::runtime::Runtime;
 
 use crate::constants::EXPECTED_DB_VERSION;
+use crate::queries::{metadata, segments};
 
 #[derive(Debug, Deserialize)]
 struct ShowInfo {
@@ -54,7 +56,7 @@ pub fn sync_shows(
     local_dir: PathBuf,
     show_names_filter: Option<Vec<String>>,
     chunk_size: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create local directory if it doesn't exist
     std::fs::create_dir_all(&local_dir)?;
 
@@ -161,7 +163,7 @@ fn sync_single_show(
     local_dir: &PathBuf,
     show_name: &str,
     chunk_size: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
 
     // Fetch remote metadata (no retry on network error)
@@ -199,16 +201,12 @@ fn sync_single_show(
 
     // Open or create local database
     let local_db_path = local_dir.join(format!("{}.sqlite", show_name));
-    let mut conn = crate::db::open_database_connection(&local_db_path)?;
+    let pool = crate::db::open_database_connection_sync(&local_db_path)?;
+    // Ensure schema exists before querying metadata (idempotent for existing DBs)
+    crate::db::init_database_schema_sync(&pool)?;
 
     // Check if database exists (has metadata)
-    let existing_unique_id: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'unique_id'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
+    let existing_unique_id: Option<String> = crate::db::query_metadata_sync(&pool, "unique_id")?;
 
     let start_id = if let Some(existing_unique_id) = existing_unique_id {
         // Existing database - validate and resume
@@ -216,13 +214,8 @@ fn sync_single_show(
         println!("[{}]   Existing target unique_id: {}", show_name, existing_unique_id);
 
         // Validate local version matches expected version
-        let local_version: String = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'version'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("Failed to read version from local database: {}", e))?;
+        let local_version: String = crate::db::query_metadata_sync(&pool, "version")?
+            .ok_or_else(|| "Failed to read version from local database: key not found")?;
 
         if local_version != EXPECTED_DB_VERSION {
             return Err(format!(
@@ -234,13 +227,8 @@ fn sync_single_show(
         }
 
         // Validate source_unique_id matches remote unique_id
-        let source_unique_id: String = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'source_unique_id'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("Failed to read source_unique_id from local database: {}", e))?;
+        let source_unique_id: String = crate::db::query_metadata_sync(&pool, "source_unique_id")?
+            .ok_or_else(|| "Failed to read source_unique_id from local database: key not found")?;
 
         if source_unique_id != metadata.unique_id {
             return Err(format!(
@@ -252,39 +240,18 @@ fn sync_single_show(
 
         // Validate metadata matches (audio_format, split_interval, bitrate)
         // Version is already validated above
-        validate_metadata(&conn, &metadata)?;
+        validate_metadata(&pool, &metadata)?;
 
         // Get last synced ID
-        let last_synced_id: i64 = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'last_synced_id'",
-                [],
-                |row| {
-                    let val: String = row.get(0)?;
-                    Ok(val.parse().unwrap_or(0))
-                },
-            )
+        let last_synced_id: i64 = crate::db::query_metadata_sync(&pool, "last_synced_id")?
+            .map(|v| v.parse().unwrap_or(0))
             .unwrap_or(0);
 
         // Ensure last_boundary_end_id exists (for older databases that don't have it)
-        let has_boundary_end: bool = match conn.query_row(
-            "SELECT 1 FROM metadata WHERE key = 'last_boundary_end_id'",
-            [],
-            |_| Ok(true),
-        ) {
-            Ok(v) => v,
-            Err(rusqlite::Error::QueryReturnedNoRows) => false, // Expected - key doesn't exist
-            Err(e) => {
-                // Propagate actual errors (corruption, locking, table missing, etc.)
-                return Err(format!("Failed to check for last_boundary_end_id metadata: {}", e).into());
-            }
-        };
+        let has_boundary_end = crate::db::metadata_exists_sync(&pool, "last_boundary_end_id")?;
 
         if !has_boundary_end {
-            conn.execute(
-                "INSERT INTO metadata (key, value) VALUES ('last_boundary_end_id', '0')",
-                [],
-            )?;
+            crate::db::insert_metadata_sync(&pool, "last_boundary_end_id", "0")?;
         }
 
         println!("[{}]   Resuming from segment {}", show_name, last_synced_id + 1);
@@ -297,54 +264,21 @@ fn sync_single_show(
         println!("[{}]   Initialized with target unique_id: {}", show_name, target_unique_id);
 
         // Initialize schema using common helper
-        crate::db::init_database_schema(&conn)?;
+        crate::db::init_database_schema_sync(&pool)?;
 
         // Insert metadata from remote
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
-            [&metadata.version],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('unique_id', ?1)",
-            [&target_unique_id],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
-            [&metadata.name],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)",
-            [&metadata.audio_format],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)",
-            [&metadata.split_interval],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)",
-            [&metadata.bitrate],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
-            [&metadata.sample_rate],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'true')",
-            [],
-        )?;
+        crate::db::insert_metadata_sync(&pool, "version", &metadata.version)?;
+        crate::db::insert_metadata_sync(&pool, "unique_id", &target_unique_id)?;
+        crate::db::insert_metadata_sync(&pool, "name", &metadata.name)?;
+        crate::db::insert_metadata_sync(&pool, "audio_format", &metadata.audio_format)?;
+        crate::db::insert_metadata_sync(&pool, "split_interval", &metadata.split_interval)?;
+        crate::db::insert_metadata_sync(&pool, "bitrate", &metadata.bitrate)?;
+        crate::db::insert_metadata_sync(&pool, "sample_rate", &metadata.sample_rate)?;
+        crate::db::insert_metadata_sync(&pool, "is_recipient", "true")?;
         // Store the source database's unique_id for validation on future syncs
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('source_unique_id', ?1)",
-            [&metadata.unique_id],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('last_synced_id', '0')",
-            [],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('last_boundary_end_id', '0')",
-            [],
-        )?;
+        crate::db::insert_metadata_sync(&pool, "source_unique_id", &metadata.unique_id)?;
+        crate::db::insert_metadata_sync(&pool, "last_synced_id", "0")?;
+        crate::db::insert_metadata_sync(&pool, "last_boundary_end_id", "0")?;
 
         metadata.min_id
     };
@@ -352,7 +286,7 @@ fn sync_single_show(
     // Sync sections table first
     println!("[{}]   Syncing sections metadata...", show_name);
     let sections_url = format!("{}/api/sync/shows/{}/sections", remote_url, show_name);
-    let sections: Vec<SectionData> = client
+    let remote_sections: Vec<SectionData> = client
         .get(&sections_url)
         .send()
         .map_err(|e| format!("Network error fetching sections: {}", e))?
@@ -362,12 +296,9 @@ fn sync_single_show(
     // Insert sections into local database
     // Use INSERT OR IGNORE to avoid replacing existing sections
     // (REPLACE would trigger CASCADE delete of associated segments)
-    let sections_count = sections.len();
-    for section in sections {
-        conn.execute(
-            "INSERT OR IGNORE INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
-            rusqlite::params![section.id, section.start_timestamp_ms],
-        )?;
+    let sections_count = remote_sections.len();
+    for section in remote_sections {
+        crate::db::insert_section_or_ignore_sync(&pool, section.id, section.start_timestamp_ms)?;
     }
     println!("[{}]   Synced {} sections", show_name, sections_count);
 
@@ -410,50 +341,57 @@ fn sync_single_show(
         }
 
         // Insert segments into local database (all operations in one transaction)
-        let tx = conn.transaction()?;
+        let rt = Runtime::new().map_err(|e| format!("Failed to create runtime: {}", e))?;
         let mut last_boundary_end_id: Option<i64> = None;
-        {
-            let mut prev_section_id: Option<i64> = None;
-            let mut prev_id: Option<i64> = None;
 
-            for segment in &segments {
-                // Check if we're starting a new section
-                // If so, the previous segment is the end of a complete section
-                if let Some(prev_sec_id) = prev_section_id {
-                    if segment.section_id != prev_sec_id {
-                        if let Some(prev) = prev_id {
-                            last_boundary_end_id = Some(prev);
-                        }
+        // Track section boundaries
+        let mut prev_section_id: Option<i64> = None;
+        let mut prev_id: Option<i64> = None;
+        for segment in &segments {
+            if let Some(prev_sec_id) = prev_section_id {
+                if segment.section_id != prev_sec_id {
+                    if let Some(prev) = prev_id {
+                        last_boundary_end_id = Some(prev);
                     }
                 }
+            }
+            prev_section_id = Some(segment.section_id);
+            prev_id = Some(segment.id);
+        }
 
-                tx.execute(
-                    "INSERT INTO segments (id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![segment.id, segment.timestamp_ms, segment.is_timestamp_from_source, &segment.audio_data, segment.section_id, segment.duration_samples],
-                )?;
+        let last_id = segments.last().unwrap().id;
+        let segments_ref = &segments;
+        let pool_ref = &pool;
+        let boundary_end = last_boundary_end_id;
 
-                prev_section_id = Some(segment.section_id);
-                prev_id = Some(segment.id);
+        rt.block_on(async {
+            let mut tx = pool_ref.begin().await?;
+
+            for segment in segments_ref {
+                let sql = segments::insert_with_id(
+                    segment.id,
+                    segment.timestamp_ms,
+                    segment.is_timestamp_from_source,
+                    &segment.audio_data,
+                    segment.section_id,
+                    segment.duration_samples,
+                );
+                sqlx::query(&sql).execute(&mut *tx).await?;
             }
 
             // Update last_synced_id (in same transaction)
-            let last_id = segments.last().unwrap().id;
-            tx.execute(
-                "UPDATE metadata SET value = ?1 WHERE key = 'last_synced_id'",
-                [last_id.to_string()],
-            )?;
+            let sql = metadata::update("last_synced_id", &last_id.to_string());
+            sqlx::query(&sql).execute(&mut *tx).await?;
 
-            // Update last_boundary_end_id if we found a new boundary in this batch (in same transaction)
-            if let Some(boundary_end) = last_boundary_end_id {
-                tx.execute(
-                    "UPDATE metadata SET value = ?1 WHERE key = 'last_boundary_end_id'",
-                    [boundary_end.to_string()],
-                )?;
+            // Update last_boundary_end_id if we found a new boundary in this batch
+            if let Some(boundary) = boundary_end {
+                let sql = metadata::update("last_boundary_end_id", &boundary.to_string());
+                sqlx::query(&sql).execute(&mut *tx).await?;
             }
-        }
-        tx.commit()?;
 
-        let last_id = segments.last().unwrap().id;
+            tx.commit().await?;
+            Ok::<(), sqlx::Error>(())
+        }).map_err(|e| format!("Database transaction error: {}", e))?;
 
         println!(
             "[{}]   Synced segments {} to {} ({}/{} segments, {:.1}% complete)",
@@ -476,17 +414,12 @@ fn sync_single_show(
 
 /// Validate that local metadata matches remote metadata
 fn validate_metadata(
-    conn: &Connection,
+    pool: &SqlitePool,
     remote: &ShowMetadata,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Validate version
-    let local_version: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'version'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to read version from local database: {}", e))?;
+    let local_version: String = crate::db::query_metadata_sync(pool, "version")?
+        .ok_or_else(|| "Failed to read version from local database: key not found")?;
     if local_version != remote.version {
         return Err(format!(
             "Version mismatch: local='{}', remote='{}'. Cannot sync between different schema versions.",
@@ -496,13 +429,8 @@ fn validate_metadata(
     }
 
     // Validate audio_format
-    let local_format: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'audio_format'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to read audio_format from local database: {}", e))?;
+    let local_format: String = crate::db::query_metadata_sync(pool, "audio_format")?
+        .ok_or_else(|| "Failed to read audio_format from local database: key not found")?;
     if local_format != remote.audio_format {
         return Err(format!(
             "Audio format mismatch: local='{}', remote='{}'",
@@ -512,13 +440,8 @@ fn validate_metadata(
     }
 
     // Validate split_interval
-    let local_interval: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'split_interval'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to read split_interval from local database: {}", e))?;
+    let local_interval: String = crate::db::query_metadata_sync(pool, "split_interval")?
+        .ok_or_else(|| "Failed to read split_interval from local database: key not found")?;
     if local_interval != remote.split_interval {
         return Err(format!(
             "Split interval mismatch: local='{}', remote='{}'",
@@ -528,13 +451,8 @@ fn validate_metadata(
     }
 
     // Validate bitrate
-    let local_bitrate: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'bitrate'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to read bitrate from local database: {}", e))?;
+    let local_bitrate: String = crate::db::query_metadata_sync(pool, "bitrate")?
+        .ok_or_else(|| "Failed to read bitrate from local database: key not found")?;
     if local_bitrate != remote.bitrate {
         return Err(format!(
             "Bitrate mismatch: local='{}', remote='{}'",

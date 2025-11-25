@@ -6,7 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
-use log::{error};
+use log::{error, warn};
 
 #[cfg(not(debug_assertions))]
 use axum::response::Response;
@@ -14,6 +14,8 @@ use axum::response::Response;
 #[cfg(debug_assertions)]
 use axum::response::Response;
 use serde::Serialize;
+use sqlx::sqlite::SqlitePool;
+use sqlx::Row;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc as StdArc;
@@ -21,6 +23,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::constants::EXPECTED_DB_VERSION;
 use crate::fmp4::{generate_init_segment, generate_media_segment};
+use crate::queries::{metadata, segments};
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
 const INDEX_HTML: &[u8] = include_bytes!("../app/dist/index.html");
@@ -61,24 +64,13 @@ const MAIN_JS: &[u8] = include_bytes!("../app/dist/assets/main.js");
 pub struct AppState {
     pub db_path: PathBuf,
     pub audio_format: String,
-    pub immutable: bool,
-}
-
-impl AppState {
-    /// Open a readonly connection using the appropriate mode based on the immutable flag
-    fn open_readonly(&self, path: impl AsRef<std::path::Path>) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
-        if self.immutable {
-            crate::db::open_readonly_connection_immutable(path)
-        } else {
-            crate::db::open_readonly_connection(path)
-        }
-    }
+    pub pool: SqlitePool,
 }
 
 // serve_for_sync moved to serve_record.rs
 
 /// Inspect a single database file via HTTP server
-pub fn inspect_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn inspect_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Verify database exists and is Opus format
     if !sqlite_file.exists() {
         return Err(format!("Database file not found: {}", sqlite_file.display()).into());
@@ -92,73 +84,65 @@ pub fn inspect_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result
         eprintln!("WARNING: See: https://www.sqlite.org/uri.html#uriimmutable");
     }
 
-    let conn = if immutable {
-        crate::db::open_readonly_connection_immutable(&sqlite_file)?
-    } else {
-        crate::db::open_readonly_connection(&sqlite_file)?
-    };
-
-    // Check version first
-    let db_version: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'version'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| {
-            // Preserve the actual error - this could be locking issues, corruption, etc.
-            format!("Failed to read version from metadata: {}", e)
-        })?;
-
-    if db_version != EXPECTED_DB_VERSION {
-        return Err(format!(
-            "Unsupported database version: '{}'. This application only supports version '{}'",
-            db_version, EXPECTED_DB_VERSION
-        )
-        .into());
-    }
-
-    // Check audio format
-    let audio_format: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'audio_format'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| {
-            format!("Failed to read audio_format from metadata: {}", e)
-        })?;
-
-    if audio_format != "opus" && audio_format != "aac" {
-        return Err(format!(
-            "Only Opus and AAC formats are supported for serving, found: {}",
-            audio_format
-        )
-        .into());
-    }
-
-    println!("Starting server for: {}", sqlite_file.display());
-    println!("Audio format: {}", audio_format);
-    println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
-    println!("Endpoints:");
-    if audio_format == "opus" {
-        println!("  GET /opus-playlist.m3u8?start_id=<N>&end_id=<N>  - HLS/fMP4 playlist");
-        println!("  GET /opus-segment/:id.m4s  - fMP4 audio segment");
-    } else if audio_format == "aac" {
-        println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
-        println!("  GET /aac-segment/:id.aac  - AAC audio segment");
-    } else {
-        return Err("Unsupported audio format in database".into());
-    }
-    println!("  GET /api/sync/shows  - List available shows for syncing");
-
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
+        // Open the database pool
+        let pool = if immutable {
+            crate::db::open_readonly_connection_immutable(&sqlite_file).await?
+        } else {
+            crate::db::open_readonly_connection(&sqlite_file).await?
+        };
+
+        // Check version first
+        let sql = metadata::select_by_key("version");
+        let db_version: String = sqlx::query_scalar(&sql)
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| format!("Failed to read version from metadata: {}", e))?;
+
+        if db_version != EXPECTED_DB_VERSION {
+            return Err(format!(
+                "Unsupported database version: '{}'. This application only supports version '{}'",
+                db_version, EXPECTED_DB_VERSION
+            )
+            .into());
+        }
+
+        // Check audio format
+        let sql = metadata::select_by_key("audio_format");
+        let audio_format: String = sqlx::query_scalar(&sql)
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| format!("Failed to read audio_format from metadata: {}", e))?;
+
+        if audio_format != "opus" && audio_format != "aac" {
+            return Err(format!(
+                "Only Opus and AAC formats are supported for serving, found: {}",
+                audio_format
+            )
+            .into());
+        }
+
+        println!("Starting server for: {}", sqlite_file.display());
+        println!("Audio format: {}", audio_format);
+        println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
+        println!("Endpoints:");
+        if audio_format == "opus" {
+            println!("  GET /opus-playlist.m3u8?start_id=<N>&end_id=<N>  - HLS/fMP4 playlist");
+            println!("  GET /opus-segment/:id.m4s  - fMP4 audio segment");
+        } else if audio_format == "aac" {
+            println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
+            println!("  GET /aac-segment/:id.aac  - AAC audio segment");
+        } else {
+            return Err("Unsupported audio format in database".into());
+        }
+        println!("  GET /api/sync/shows  - List available shows for syncing");
+
         let app_state = StdArc::new(AppState {
             db_path: sqlite_file.clone(),
             audio_format: audio_format.clone(),
-            immutable,
+            pool,
         });
 
         let cors = CorsLayer::new()
@@ -210,7 +194,7 @@ pub fn inspect_audio(sqlite_file: PathBuf, port: u16, immutable: bool) -> Result
             .await
             .map_err(|e| format!("Server error: {}", e))?;
 
-        Ok::<(), Box<dyn std::error::Error>>(())
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })
 }
 // Export-related functions moved to serve_record.rs
@@ -258,24 +242,14 @@ async fn hls_playlist_handler(
     State(state): State<StdArc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
-        }
-    };
+    let pool = &state.pool;
 
     // Get metadata
-    let sample_rate: u32 = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'sample_rate'",
-        [],
-        |row| row.get::<_, String>(0),
-    ) {
+    let sql = metadata::select_by_key("sample_rate");
+    let sample_rate: u32 = match sqlx::query_scalar::<_, String>(&sql)
+        .fetch_one(pool)
+        .await
+    {
         Ok(sr) => sr.parse().unwrap_or(16000),
         Err(e) => {
             error!("Failed to query sample_rate metadata: {}", e);
@@ -292,7 +266,8 @@ async fn hls_playlist_handler(
     let end_id: i64 = if let Some(end_str) = params.get("end_id") {
         end_str.parse().unwrap_or(i64::MAX)
     } else {
-        match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+        let sql = segments::select_max_id();
+        match sqlx::query_scalar::<_, i64>(&sql).fetch_one(pool).await {
             Ok(id) => id,
             Err(e) => {
                 error!("Failed to query max segment ID: {}", e);
@@ -305,24 +280,10 @@ async fn hls_playlist_handler(
         }
     };
 
-    // Query segments using duration_samples (no need to parse audio_data)
-    let mut stmt = match conn
-        .prepare("SELECT id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
-    {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Query error: {}", e),
-            )
-                .into_response()
-        }
-    };
-
-    let segments_iter = match stmt.query_map([start_id, end_id], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-    }) {
-        Ok(iter) => iter,
+    // Query segments using duration_samples
+    let sql = segments::select_range_for_playlist(start_id, end_id);
+    let rows = match sqlx::query(&sql).fetch_all(pool).await {
+        Ok(r) => r,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -336,14 +297,9 @@ async fn hls_playlist_handler(
     let mut max_duration = 0.0f64;
     let mut segment_durations = Vec::new();
 
-    for segment_result in segments_iter {
-        let (seg_id, duration_samples): (i64, i64) = match segment_result {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Warning: Failed to fetch segment from database: {}", e);
-                continue;
-            },
-        };
+    for row in rows {
+        let seg_id: i64 = row.get(0);
+        let duration_samples: i64 = row.get(1);
 
         let duration = duration_samples as f64 / sample_rate as f64;
         if duration > max_duration {
@@ -387,23 +343,13 @@ async fn aac_segment_handler(
         }
     };
 
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
-        }
-    };
+    let pool = &state.pool;
 
-    let audio_data: Vec<u8> = match conn.query_row(
-        "SELECT audio_data FROM segments WHERE id = ?1",
-        [seg_id],
-        |row| row.get(0),
-    ) {
+    let sql = segments::select_audio_by_id(seg_id);
+    let audio_data: Vec<u8> = match sqlx::query_scalar(&sql)
+        .fetch_one(pool)
+        .await
+    {
         Ok(data) => data,
         Err(e) => {
             error!("Failed to query segment {}: {}", seg_id, e);
@@ -475,24 +421,14 @@ async fn opus_hls_playlist_handler(
     State(state): State<StdArc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
-        }
-    };
+    let pool = &state.pool;
 
     // Get sample rate (Opus is 48kHz)
-    let sample_rate: u32 = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'sample_rate'",
-        [],
-        |row| row.get::<_, String>(0),
-    ) {
+    let sql = metadata::select_by_key("sample_rate");
+    let sample_rate: u32 = match sqlx::query_scalar::<_, String>(&sql)
+        .fetch_one(pool)
+        .await
+    {
         Ok(sr) => sr.parse().unwrap_or(48000),
         Err(e) => {
             error!("Failed to query sample_rate metadata: {}", e);
@@ -509,7 +445,8 @@ async fn opus_hls_playlist_handler(
     let end_id: i64 = if let Some(end_str) = params.get("end_id") {
         end_str.parse().unwrap_or(i64::MAX)
     } else {
-        match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+        let sql = segments::select_max_id();
+        match sqlx::query_scalar::<_, i64>(&sql).fetch_one(pool).await {
             Ok(id) => id,
             Err(e) => {
                 error!("Failed to query max segment ID: {}", e);
@@ -522,24 +459,10 @@ async fn opus_hls_playlist_handler(
         }
     };
 
-    // Query segments using duration_samples (no need to parse audio_data)
-    let mut stmt = match conn
-        .prepare("SELECT id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
-    {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Query error: {}", e),
-            )
-                .into_response()
-        }
-    };
-
-    let segments_iter = match stmt.query_map([start_id, end_id], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-    }) {
-        Ok(iter) => iter,
+    // Query segments using duration_samples
+    let sql = segments::select_range_for_playlist(start_id, end_id);
+    let rows = match sqlx::query(&sql).fetch_all(pool).await {
+        Ok(r) => r,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -553,14 +476,9 @@ async fn opus_hls_playlist_handler(
     let mut max_duration = 0.0f64;
     let mut segment_durations = Vec::new();
 
-    for segment_result in segments_iter {
-        let (seg_id, duration_samples): (i64, i64) = match segment_result {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Warning: Failed to fetch segment from database: {}", e);
-                continue;
-            },
-        };
+    for row in rows {
+        let seg_id: i64 = row.get(0);
+        let duration_samples: i64 = row.get(1);
 
         let duration = duration_samples as f64 / sample_rate as f64;
         if duration > max_duration {
@@ -640,23 +558,13 @@ async fn opus_segment_handler(
         }
     };
 
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
-        }
-    };
+    let pool = &state.pool;
 
-    let audio_data: Vec<u8> = match conn.query_row(
-        "SELECT audio_data FROM segments WHERE id = ?1",
-        [seg_id],
-        |row| row.get(0),
-    ) {
+    let sql = segments::select_audio_by_id(seg_id);
+    let audio_data: Vec<u8> = match sqlx::query_scalar(&sql)
+        .fetch_one(pool)
+        .await
+    {
         Ok(data) => data,
         Err(e) => {
             error!("Failed to query segment {}: {}", seg_id, e);
@@ -779,60 +687,50 @@ async fn format_handler(State(state): State<StdArc<AppState>>) -> impl IntoRespo
 }
 
 async fn segments_range_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
+    let pool = &state.pool;
+
+    let sql = segments::select_min_max_id();
+    let result = sqlx::query(&sql).fetch_optional(pool).await;
+
+    match result {
+        Ok(Some(row)) => {
+            let min_id: Option<i64> = row.get(0);
+            let max_id: Option<i64> = row.get(1);
+            match (min_id, max_id) {
+                (Some(min), Some(max)) => {
+                    let range = SegmentRange {
+                        start_id: min,
+                        end_id: max,
+                    };
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        serde_json::to_string(&range).unwrap(),
+                    )
+                        .into_response()
+                }
+                _ => (StatusCode::NOT_FOUND, "No segments found in database").into_response(),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, "No segments found in database").into_response(),
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
+            error!("Failed to query segment range: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response()
         }
-    };
-
-    let min_id: Result<i64, _> =
-        conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0));
-    let max_id: Result<i64, _> =
-        conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0));
-
-    match (min_id, max_id) {
-        (Ok(min), Ok(max)) => {
-            let range = SegmentRange {
-                start_id: min,
-                end_id: max,
-            };
-            (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&range).unwrap(),
-            )
-                .into_response()
-        }
-        _ => (StatusCode::NOT_FOUND, "No segments found in database").into_response(),
     }
 }
 
 async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
-            )
-                .into_response()
-        }
-    };
+    let pool = &state.pool;
+
+    // Helper to fetch metadata value
+    async fn get_meta(pool: &SqlitePool, key: &str) -> Result<String, sqlx::Error> {
+        let sql = metadata::select_by_key(key);
+        sqlx::query_scalar(&sql).fetch_one(pool).await
+    }
 
     // Query all metadata fields
-    let unique_id: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'unique_id'",
-        [],
-        |row| row.get(0),
-    ) {
+    let unique_id = match get_meta(pool, "unique_id").await {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query unique_id metadata: {}", e);
@@ -845,11 +743,7 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let name: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'name'",
-        [],
-        |row| row.get(0),
-    ) {
+    let name = match get_meta(pool, "name").await {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query name metadata: {}", e);
@@ -862,11 +756,7 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let audio_format: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'audio_format'",
-        [],
-        |row| row.get(0),
-    ) {
+    let audio_format = match get_meta(pool, "audio_format").await {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query audio_format metadata: {}", e);
@@ -879,11 +769,7 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let split_interval: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'split_interval'",
-        [],
-        |row| row.get(0),
-    ) {
+    let split_interval = match get_meta(pool, "split_interval").await {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query split_interval metadata: {}", e);
@@ -896,11 +782,7 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let bitrate: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'bitrate'",
-        [],
-        |row| row.get(0),
-    ) {
+    let bitrate = match get_meta(pool, "bitrate").await {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query bitrate metadata: {}", e);
@@ -913,11 +795,7 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let sample_rate: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'sample_rate'",
-        [],
-        |row| row.get(0),
-    ) {
+    let sample_rate = match get_meta(pool, "sample_rate").await {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query sample_rate metadata: {}", e);
@@ -930,11 +808,7 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let version: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'version'",
-        [],
-        |row| row.get(0),
-    ) {
+    let version = match get_meta(pool, "version").await {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query version metadata: {}", e);
@@ -948,12 +822,13 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
     };
 
     // Get min/max segment IDs
-    let (min_id, max_id): (i64, i64) = match conn.query_row(
-        "SELECT MIN(id), MAX(id) FROM segments",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ) {
-        Ok(v) => v,
+    let sql = segments::select_min_max_id();
+    let (min_id, max_id): (i64, i64) = match sqlx::query(&sql).fetch_one(pool).await {
+        Ok(row) => {
+            let min: Option<i64> = row.get(0);
+            let max: Option<i64> = row.get(1);
+            (min.unwrap_or(0), max.unwrap_or(0))
+        }
         Err(e) => {
             error!("Failed to query min/max segment IDs: {}", e);
             return (
@@ -965,7 +840,7 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let metadata = Metadata {
+    let metadata_resp = Metadata {
         unique_id,
         name,
         audio_format,
@@ -980,47 +855,30 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&metadata).unwrap(),
+        serde_json::to_string(&metadata_resp).unwrap(),
     )
         .into_response()
 }
 
 async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
+    let pool = &state.pool;
+
+    // Get show name from metadata
+    let sql = metadata::select_by_key("name");
+    let name: String = match sqlx::query_scalar(&sql).fetch_one(pool).await {
+        Ok(n) => n,
         Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
+            error!("Failed to query name metadata: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
         }
     };
 
-    // Get show name from metadata
-    let name: String =
-        match conn.query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
-            row.get(0)
-        }) {
-            Ok(n) => n,
-            Err(e) => {
-                error!("Failed to query name metadata: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
-            }
-        };
-
     // Get split interval
-    let split_interval: f64 = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'split_interval'",
-            [],
-            |row| {
-                let val: String = row.get(0)?;
-                Ok(val.parse().unwrap_or(10.0))
-            },
-        )
-        .unwrap_or(10.0);
+    let sql = metadata::select_by_key("split_interval");
+    let split_interval: f64 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(pool).await {
+        Ok(val) => val.parse().unwrap_or(10.0),
+        Err(_) => 10.0,
+    };
 
     // Session Boundary Detection using is_timestamp_from_source
     //
@@ -1033,14 +891,9 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
     // or schedule breaks.
 
     // Get all sections with their start id and timestamp from sections table
-    let mut stmt = match conn.prepare(
-        "SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id
-         FROM sections s
-         JOIN segments seg ON seg.section_id = s.id
-         GROUP BY s.id
-         ORDER BY s.id",
-    ) {
-        Ok(s) => s,
+    let sql = segments::select_sessions_with_join();
+    let rows = match sqlx::query(&sql).fetch_all(pool).await {
+        Ok(r) => r,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1050,24 +903,24 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         }
     };
 
-    let boundaries: Vec<(i64, i64, i64)> =
-        match stmt.query_map([], |row| Ok((row.get(0)?, row.get(2)?, row.get(1)?))) {
-            Ok(rows) => rows.filter_map(Result::ok).collect(),
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Query error: {}", e),
-                )
-                    .into_response()
-            }
-        };
+    // (section_id, start_segment_id, timestamp_ms)
+    let boundaries: Vec<(i64, i64, i64)> = rows
+        .iter()
+        .filter_map(|row| {
+            let section_id: i64 = row.get(0);
+            let timestamp_ms: i64 = row.get(1);
+            let start_segment_id: Option<i64> = row.get(2);
+            start_segment_id.map(|sid| (section_id, sid, timestamp_ms))
+        })
+        .collect();
 
     if boundaries.is_empty() {
         return (StatusCode::NOT_FOUND, "No recording sessions found").into_response();
     }
 
     // Get max segment ID to handle the last session
-    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+    let sql = segments::select_max_id();
+    let max_id: i64 = match sqlx::query_scalar(&sql).fetch_one(pool).await {
         Ok(id) => id,
         Err(e) => {
             error!("Failed to query max segment ID: {}", e);
@@ -1122,31 +975,19 @@ async fn session_latest_handler(
     State(state): State<StdArc<AppState>>,
     Path(section_id): Path<i64>,
 ) -> impl IntoResponse {
-    let conn = match state.open_readonly(&state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to open readonly database connection at '{}': {}", state.db_path.display(), e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&serde_json::json!({"error": format!("Database error: {}", e)})).unwrap(),
-            )
-                .into_response();
-        }
-    };
+    let pool = &state.pool;
 
-    // Get the max segment ID for this section
-    let result: Result<(i64, i64), _> = conn.query_row(
-        "SELECT MAX(id), COUNT(id) FROM segments WHERE section_id = ?1",
-        [section_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    );
+    // Get the max segment ID and count for this section
+    let sql = segments::select_max_and_count_for_section(section_id);
+    let result = sqlx::query(&sql).fetch_one(pool).await;
 
     match result {
-        Ok((max_id, count)) => {
+        Ok(row) => {
+            let max_id: Option<i64> = row.get(0);
+            let count: i64 = row.get(1);
             let response = SessionLatestResponse {
                 section_id,
-                current_end_id: max_id,
+                current_end_id: max_id.unwrap_or(0),
                 segment_count: count,
             };
             (
@@ -1317,7 +1158,7 @@ pub struct ReceiverAppState {
 }
 
 /// Receiver mode: serve frontend with show selection and background sync
-pub fn receiver_audio(config: crate::config::SyncConfig) -> Result<(), Box<dyn std::error::Error>> {
+pub fn receiver_audio(config: crate::config::SyncConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create local_dir if it doesn't exist
     if !config.local_dir.exists() {
         std::fs::create_dir_all(&config.local_dir)?;
@@ -1424,7 +1265,7 @@ pub fn receiver_audio(config: crate::config::SyncConfig) -> Result<(), Box<dyn s
             .await
             .map_err(|e| format!("Server error: {}", e))?;
 
-        Ok::<(), Box<dyn std::error::Error>>(())
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })
 }
 
@@ -1494,13 +1335,9 @@ async fn receiver_shows_handler(
             }
 
             // Try to get audio format from database
-            let audio_format = if let Ok(conn) = crate::db::open_readonly_connection(&path) {
-                conn.query_row(
-                    "SELECT value FROM metadata WHERE key = 'audio_format'",
-                    [],
-                    |row| row.get(0),
-                )
-                .ok()
+            let audio_format = if let Ok(pool) = crate::db::open_readonly_connection(&path).await {
+                let sql = metadata::select_by_key("audio_format");
+                sqlx::query_scalar::<_, String>(&sql).fetch_one(&pool).await.ok()
             } else {
                 None
             };
@@ -1537,7 +1374,7 @@ async fn receiver_show_format_handler(
         return (StatusCode::NOT_FOUND, "Show not found").into_response();
     }
 
-    let conn = match crate::db::open_readonly_connection(&db_path) {
+    let pool = match crate::db::open_readonly_connection(&db_path).await {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
@@ -1545,11 +1382,8 @@ async fn receiver_show_format_handler(
         }
     };
 
-    let audio_format: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'audio_format'",
-        [],
-        |row| row.get(0),
-    ) {
+    let sql = metadata::select_by_key("audio_format");
+    let audio_format: String = match sqlx::query_scalar(&sql).fetch_one(&pool).await {
         Ok(f) => f,
         Err(e) => {
             error!("Failed to query audio_format for show '{}': {}", show_name, e);
@@ -1575,7 +1409,7 @@ async fn receiver_show_sessions_handler(
         return (StatusCode::NOT_FOUND, "Show not found").into_response();
     }
 
-    let conn = match crate::db::open_readonly_connection(&db_path) {
+    let pool = match crate::db::open_readonly_connection(&db_path).await {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
@@ -1584,11 +1418,8 @@ async fn receiver_show_sessions_handler(
     };
 
     // Get show name from metadata
-    let name: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'name'",
-        [],
-        |row| row.get(0),
-    ) {
+    let sql = metadata::select_by_key("name");
+    let name: String = match sqlx::query_scalar(&sql).fetch_one(&pool).await {
         Ok(n) => n,
         Err(e) => {
             error!("Failed to query name metadata: {}", e);
@@ -1597,38 +1428,31 @@ async fn receiver_show_sessions_handler(
     };
 
     // Get split interval
-    let split_interval: f64 = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'split_interval'",
-            [],
-            |row| {
-                let val: String = row.get(0)?;
-                Ok(val.parse().unwrap_or(10.0))
-            },
-        )
-        .unwrap_or(10.0);
+    let sql = metadata::select_by_key("split_interval");
+    let split_interval: f64 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(&pool).await {
+        Ok(val) => val.parse().unwrap_or(10.0),
+        Err(_) => 10.0,
+    };
 
     // Get all sections with their start id and timestamp
-    let mut stmt = match conn.prepare(
-        "SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id
-         FROM sections s
-         JOIN segments seg ON seg.section_id = s.id
-         GROUP BY s.id
-         ORDER BY s.id",
-    ) {
-        Ok(s) => s,
+    let sql = segments::select_sessions_with_join();
+    let rows = match sqlx::query(&sql).fetch_all(&pool).await {
+        Ok(r) => r,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response();
         }
     };
 
-    let boundaries: Vec<(i64, i64, i64)> =
-        match stmt.query_map([], |row| Ok((row.get(0)?, row.get(2)?, row.get(1)?))) {
-            Ok(rows) => rows.filter_map(Result::ok).collect(),
-            Err(e) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response();
-            }
-        };
+    // (section_id, start_segment_id, timestamp_ms)
+    let boundaries: Vec<(i64, i64, i64)> = rows
+        .iter()
+        .filter_map(|row| {
+            let section_id: i64 = row.get(0);
+            let timestamp_ms: i64 = row.get(1);
+            let start_segment_id: Option<i64> = row.get(2);
+            start_segment_id.map(|sid| (section_id, sid, timestamp_ms))
+        })
+        .collect();
 
     if boundaries.is_empty() {
         return (
@@ -1638,7 +1462,8 @@ async fn receiver_show_sessions_handler(
         ).into_response();
     }
 
-    let max_id: i64 = match conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)) {
+    let sql = segments::select_max_id();
+    let max_id: i64 = match sqlx::query_scalar(&sql).fetch_one(&pool).await {
         Ok(id) => id,
         Err(e) => {
             error!("Failed to query max segment ID: {}", e);
@@ -1685,25 +1510,36 @@ async fn receiver_show_metadata_handler(
         return (StatusCode::NOT_FOUND, "Show not found").into_response();
     }
 
-    let conn = match crate::db::open_readonly_connection(&db_path) {
-        Ok(c) => c,
+    let pool = match crate::db::open_readonly_connection(&db_path).await {
+        Ok(p) => p,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
         }
     };
 
-    // Query all metadata fields
-    let unique_id: String = conn.query_row("SELECT value FROM metadata WHERE key = 'unique_id'", [], |row| row.get(0)).unwrap_or_default();
-    let name: String = conn.query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| row.get(0)).unwrap_or_default();
-    let audio_format: String = conn.query_row("SELECT value FROM metadata WHERE key = 'audio_format'", [], |row| row.get(0)).unwrap_or_default();
-    let split_interval: String = conn.query_row("SELECT value FROM metadata WHERE key = 'split_interval'", [], |row| row.get(0)).unwrap_or_default();
-    let bitrate: String = conn.query_row("SELECT value FROM metadata WHERE key = 'bitrate'", [], |row| row.get(0)).unwrap_or_default();
-    let sample_rate: String = conn.query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| row.get(0)).unwrap_or_default();
-    let version: String = conn.query_row("SELECT value FROM metadata WHERE key = 'version'", [], |row| row.get(0)).unwrap_or_default();
+    // Query all metadata fields using SeaQuery
+    let unique_id: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("unique_id"))
+        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+    let name: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("name"))
+        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+    let audio_format: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("audio_format"))
+        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+    let split_interval: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("split_interval"))
+        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+    let bitrate: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("bitrate"))
+        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+    let sample_rate: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("sample_rate"))
+        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
+    let version: String = sqlx::query_scalar::<_, String>(&metadata::select_by_key("version"))
+        .fetch_optional(&pool).await.ok().flatten().unwrap_or_default();
 
-    let (min_id, max_id): (i64, i64) = conn
-        .query_row("SELECT MIN(id), MAX(id) FROM segments", [], |row| Ok((row.get(0).unwrap_or(0), row.get(1).unwrap_or(0))))
+    let (min_id, max_id) = sqlx::query(&segments::select_min_max_id())
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|row| (row.get::<i64, _>(0), row.get::<i64, _>(1)))
         .unwrap_or((0, 0));
 
     let metadata = Metadata {
@@ -1736,19 +1572,21 @@ async fn receiver_show_segments_range_handler(
         return (StatusCode::NOT_FOUND, "Show not found").into_response();
     }
 
-    let conn = match crate::db::open_readonly_connection(&db_path) {
-        Ok(c) => c,
+    let pool = match crate::db::open_readonly_connection(&db_path).await {
+        Ok(p) => p,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
         }
     };
 
-    let min_id: Result<i64, _> = conn.query_row("SELECT MIN(id) FROM segments", [], |row| row.get(0));
-    let max_id: Result<i64, _> = conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0));
-
-    match (min_id, max_id) {
-        (Ok(min), Ok(max)) => {
+    match sqlx::query(&segments::select_min_max_id())
+        .fetch_optional(&pool)
+        .await
+    {
+        Ok(Some(row)) => {
+            let min: i64 = row.get(0);
+            let max: i64 = row.get(1);
             (
                 StatusCode::OK,
                 [(header::CONTENT_TYPE, "application/json")],
@@ -1779,43 +1617,55 @@ async fn receiver_opus_playlist_handler(
         return (StatusCode::NOT_FOUND, "Show not found").into_response();
     }
 
-    let conn = match crate::db::open_readonly_connection(&db_path) {
-        Ok(c) => c,
+    let pool = match crate::db::open_readonly_connection(&db_path).await {
+        Ok(p) => p,
         Err(e) => {
             error!("Failed to open database for show '{}': {}", show_name, e);
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response();
         }
     };
 
-    let sample_rate: u32 = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| row.get::<_, String>(0))
-        .map(|s| s.parse().unwrap_or(48000))
+    let sample_rate: u32 = sqlx::query_scalar::<_, String>(&metadata::select_by_key("sample_rate"))
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
         .unwrap_or(48000);
 
     let start_id = params.start_id.unwrap_or(1);
-    let end_id = params.end_id.unwrap_or_else(|| {
-        conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)).unwrap_or(i64::MAX)
-    });
+    let end_id = match params.end_id {
+        Some(id) => id,
+        None => sqlx::query_scalar::<_, i64>(&segments::select_max_id())
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(i64::MAX),
+    };
 
-    let mut stmt = match conn.prepare("SELECT id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
-        Ok(s) => s,
+    let segment_rows = match sqlx::query(&segments::select_range_for_playlist(start_id, end_id))
+        .fetch_all(&pool)
+        .await
+    {
+        Ok(rows) => rows,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
     };
 
-    let segments: Vec<(i64, i64)> = match stmt.query_map([start_id, end_id], |row| Ok((row.get(0)?, row.get(1)?))) {
-        Ok(iter) => iter.filter_map(Result::ok).collect(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
-    };
+    let segment_list: Vec<(i64, i64)> = segment_rows
+        .iter()
+        .map(|row| (row.get::<i64, _>(0), row.get::<i64, _>(1)))
+        .collect();
 
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:7\n");
-    let max_duration: f64 = segments.iter().map(|(_, d)| *d as f64 / sample_rate as f64).fold(0.0, f64::max);
+    let max_duration: f64 = segment_list.iter().map(|(_, d)| *d as f64 / sample_rate as f64).fold(0.0, f64::max);
 
     playlist.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", start_id));
     playlist.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
     playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
     playlist.push_str(&format!("#EXT-X-MAP:URI=\"/show/{}/opus-segment/init.mp4\"\n", show_name));
 
-    for (seg_id, duration_samples) in segments {
+    for (seg_id, duration_samples) in segment_list {
         let duration = duration_samples as f64 / sample_rate as f64;
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
         playlist.push_str(&format!("/show/{}/opus-segment/{}.m4s\n", show_name, seg_id));
@@ -1856,12 +1706,15 @@ async fn receiver_opus_segment_handler(
         None => return (StatusCode::BAD_REQUEST, "Invalid segment filename").into_response(),
     };
 
-    let conn = match crate::db::open_readonly_connection(&db_path) {
-        Ok(c) => c,
+    let pool = match crate::db::open_readonly_connection(&db_path).await {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
     };
 
-    let audio_data: Vec<u8> = match conn.query_row("SELECT audio_data FROM segments WHERE id = ?1", [seg_id], |row| row.get(0)) {
+    let audio_data: Vec<u8> = match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id(seg_id))
+        .fetch_one(&pool)
+        .await
+    {
         Ok(data) => data,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
     };
@@ -1916,37 +1769,49 @@ async fn receiver_aac_playlist_handler(
         return (StatusCode::NOT_FOUND, "Show not found").into_response();
     }
 
-    let conn = match crate::db::open_readonly_connection(&db_path) {
-        Ok(c) => c,
+    let pool = match crate::db::open_readonly_connection(&db_path).await {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
     };
 
-    let sample_rate: u32 = conn
-        .query_row("SELECT value FROM metadata WHERE key = 'sample_rate'", [], |row| row.get::<_, String>(0))
-        .map(|s| s.parse().unwrap_or(16000))
+    let sample_rate: u32 = sqlx::query_scalar::<_, String>(&metadata::select_by_key("sample_rate"))
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
         .unwrap_or(16000);
 
     let start_id = params.start_id.unwrap_or(1);
-    let end_id = params.end_id.unwrap_or_else(|| {
-        conn.query_row("SELECT MAX(id) FROM segments", [], |row| row.get(0)).unwrap_or(i64::MAX)
-    });
+    let end_id = match params.end_id {
+        Some(id) => id,
+        None => sqlx::query_scalar::<_, i64>(&segments::select_max_id())
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(i64::MAX),
+    };
 
-    let mut stmt = match conn.prepare("SELECT id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id") {
-        Ok(s) => s,
+    let segment_rows = match sqlx::query(&segments::select_range_for_playlist(start_id, end_id))
+        .fetch_all(&pool)
+        .await
+    {
+        Ok(rows) => rows,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
     };
 
-    let segments: Vec<(i64, i64)> = match stmt.query_map([start_id, end_id], |row| Ok((row.get(0)?, row.get(1)?))) {
-        Ok(iter) => iter.filter_map(Result::ok).collect(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Query error: {}", e)).into_response(),
-    };
+    let segment_list: Vec<(i64, i64)> = segment_rows
+        .iter()
+        .map(|row| (row.get::<i64, _>(0), row.get::<i64, _>(1)))
+        .collect();
 
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
-    let max_duration: f64 = segments.iter().map(|(_, d)| *d as f64 / sample_rate as f64).fold(0.0, f64::max);
+    let max_duration: f64 = segment_list.iter().map(|(_, d)| *d as f64 / sample_rate as f64).fold(0.0, f64::max);
 
     playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max_duration.ceil() as u64));
 
-    for (seg_id, duration_samples) in segments {
+    for (seg_id, duration_samples) in segment_list {
         let duration = duration_samples as f64 / sample_rate as f64;
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
         playlist.push_str(&format!("/show/{}/aac-segment/{}.aac\n", show_name, seg_id));
@@ -1973,12 +1838,15 @@ async fn receiver_aac_segment_handler(
         None => return (StatusCode::BAD_REQUEST, "Invalid segment filename").into_response(),
     };
 
-    let conn = match crate::db::open_readonly_connection(&db_path) {
-        Ok(c) => c,
+    let pool = match crate::db::open_readonly_connection(&db_path).await {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
     };
 
-    let audio_data: Vec<u8> = match conn.query_row("SELECT audio_data FROM segments WHERE id = ?1", [seg_id], |row| row.get(0)) {
+    let audio_data: Vec<u8> = match sqlx::query_scalar::<_, Vec<u8>>(&segments::select_audio_by_id(seg_id))
+        .fetch_one(&pool)
+        .await
+    {
         Ok(data) => data,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)).into_response(),
     };

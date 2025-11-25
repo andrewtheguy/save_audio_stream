@@ -20,7 +20,7 @@ use fs2::FileExt;
 use log::debug;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
 use reqwest::blocking::Client;
-use rusqlite::{Connection, Error as SqliteError};
+use sqlx::sqlite::SqlitePool;
 use std::fs::File;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -53,7 +53,7 @@ fn get_backoff_ms(elapsed_secs: u64) -> u64 {
 /// This connects to the stream, reads a small amount of data synchronously,
 /// and verifies it can be decoded. Runs fully synchronously without spawning threads.
 /// Returns Ok if the stream is decodable, Err otherwise
-fn test_url_decode(url: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn test_url_decode(url: &str, name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[{}] Testing stream URL: {}", name, url);
 
     // Create HTTP client with connection timeout
@@ -212,39 +212,32 @@ fn test_url_decode(url: &str, name: &str) -> Result<(), Box<dyn std::error::Erro
 }
 
 /// Helper to convert query Result to Option, preserving errors other than "no rows"
-/// - QueryReturnedNoRows -> Ok(None) (acceptable - key doesn't exist)
+/// - No row -> Ok(None) (acceptable - key doesn't exist)
 /// - Other errors -> Err (corruption, locking, table missing, etc.)
 fn query_optional_metadata(
-    conn: &Connection,
+    pool: &SqlitePool,
     key: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    match conn.query_row(
-        "SELECT value FROM metadata WHERE key = ?1",
-        [key],
-        |row| row.get(0),
-    ) {
-        Ok(value) => Ok(Some(value)),
-        Err(SqliteError::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(format!("Failed to query metadata key '{}': {}", key, e).into()),
-    }
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    db::query_metadata_sync(pool, key)
+        .map_err(|e| format!("Failed to query metadata key '{}': {}", key, e).into())
 }
 
 /// Clean up old sections from database, keeping data starting from a natural boundary
 ///
 /// For testing, pass a specific retention_hours value and optionally a fixed reference_time.
 pub fn cleanup_old_sections_with_retention(
-    conn: &Connection,
+    pool: &SqlitePool,
     retention_hours: i64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    cleanup_old_sections_with_params(conn, retention_hours, None)
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    cleanup_old_sections_with_params(pool, retention_hours, None)
 }
 
 /// Clean up old sections with explicit reference time need for testing
 pub fn cleanup_old_sections_with_params(
-    conn: &Connection,
+    pool: &SqlitePool,
     retention_hours: i64,
     reference_time: Option<DateTime<Utc>>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Calculate cutoff timestamp (reference_time or current time - retention_hours)
     let now = reference_time.unwrap_or_else(|| Utc::now());
     let cutoff = now - chrono::Duration::try_hours(retention_hours).expect("Valid hours");
@@ -258,40 +251,29 @@ pub fn cleanup_old_sections_with_params(
 
     // Try to use pending_section_id from metadata as keeper
     // This preserves the currently active recording session
-    let pending_keeper: Option<i64> = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'pending_section_id'",
-        [],
-        |row| {
-            let value: String = row.get(0)?;
-            value
-                .parse::<i64>()
-                .map_err(|_| rusqlite::Error::InvalidQuery)
-        },
-    ) {
-        Ok(pending_id) => {
-            // Verify that this section has segments (not empty)
-            match conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM segments WHERE section_id = ?1)",
-                [pending_id],
-                |row| row.get(0),
-            ) {
-                Ok(has_segments) => {
-                    if has_segments {
-                        Some(pending_id)
-                    } else {
-                        None
+    let pending_keeper: Option<i64> = match db::query_metadata_sync(pool, "pending_section_id") {
+        Ok(Some(value)) => {
+            match value.parse::<i64>() {
+                Ok(pending_id) => {
+                    // Verify that this section has segments (not empty)
+                    match db::segments_exist_for_section_sync(pool, pending_id) {
+                        Ok(has_segments) => {
+                            if has_segments {
+                                Some(pending_id)
+                            } else {
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            return Err(format!("Failed to check if section {} has segments: {}", pending_id, e).into());
+                        }
                     }
                 }
-                Err(SqliteError::QueryReturnedNoRows) => None, // Expected - no rows means false
-                Err(e) => {
-                    // Propagate actual errors (corruption, locking, table missing, etc.)
-                    return Err(format!("Failed to check if section {} has segments: {}", pending_id, e).into());
-                }
+                Err(_) => None,
             }
         }
-        Err(SqliteError::QueryReturnedNoRows) => None, // Expected - pending_section_id doesn't exist
+        Ok(None) => None, // Expected - pending_section_id doesn't exist
         Err(e) => {
-            // Propagate actual errors (corruption, locking, table missing, etc.)
             return Err(format!("Failed to query pending_section_id metadata: {}", e).into());
         }
     };
@@ -302,12 +284,7 @@ pub fn cleanup_old_sections_with_params(
     } else {
         // Fallback: Find the section with the latest start_timestamp_ms BEFORE the cutoff
         // This ensures we keep complete sessions and don't break playback continuity
-        conn.query_row(
-            "SELECT id FROM sections WHERE start_timestamp_ms < ?1 ORDER BY start_timestamp_ms DESC LIMIT 1",
-            [cutoff_ms],
-            |row| row.get(0),
-        )
-        .ok()
+        db::get_latest_section_before_cutoff_sync(pool, cutoff_ms).ok().flatten()
     };
 
     // If we found a section to keep, delete all older sections
@@ -316,10 +293,7 @@ pub fn cleanup_old_sections_with_params(
         // Delete sections timestamped before cutoff, except the keeper
         // This preserves the keeper section (whether from pending_section_id or fallback)
         // and all sections with start_timestamp_ms >= cutoff
-        let deleted_sections = conn.execute(
-            "DELETE FROM sections WHERE start_timestamp_ms < ?1 AND id != ?2",
-            rusqlite::params![cutoff_ms, keeper_section_id],
-        )?;
+        let deleted_sections = db::delete_old_sections_sync(pool, cutoff_ms, keeper_section_id)?;
 
         if deleted_sections > 0 {
             println!(
@@ -345,12 +319,12 @@ fn run_connection_loop(
     db_path: &Path,
     split_interval: u64,
     duration: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Initialize database once before the connection loop with WAL mode enabled
-    let mut conn = crate::db::open_database_connection(db_path)?;
+    let pool = db::open_database_connection_sync(db_path)?;
 
     // Initialize schema using common helper
-    crate::db::init_database_schema(&conn)?;
+    db::init_database_schema_sync(&pool)?;
 
     // Check if database already has metadata and validate it matches config
     let audio_format_str = match audio_format {
@@ -359,13 +333,13 @@ fn run_connection_loop(
         AudioFormat::Wav => "wav",
     };
 
-    let existing_unique_id: Option<String> = query_optional_metadata(&conn, "unique_id")?;
-    let existing_name: Option<String> = query_optional_metadata(&conn, "name")?;
-    let existing_format: Option<String> = query_optional_metadata(&conn, "audio_format")?;
-    let existing_interval: Option<String> = query_optional_metadata(&conn, "split_interval")?;
-    let existing_bitrate: Option<String> = query_optional_metadata(&conn, "bitrate")?;
-    let existing_version: Option<String> = query_optional_metadata(&conn, "version")?;
-    let existing_is_recipient: Option<String> = query_optional_metadata(&conn, "is_recipient")?;
+    let existing_unique_id: Option<String> = query_optional_metadata(&pool, "unique_id")?;
+    let existing_name: Option<String> = query_optional_metadata(&pool, "name")?;
+    let existing_format: Option<String> = query_optional_metadata(&pool, "audio_format")?;
+    let existing_interval: Option<String> = query_optional_metadata(&pool, "split_interval")?;
+    let existing_bitrate: Option<String> = query_optional_metadata(&pool, "bitrate")?;
+    let existing_version: Option<String> = query_optional_metadata(&pool, "version")?;
+    let existing_is_recipient: Option<String> = query_optional_metadata(&pool, "is_recipient")?;
 
     // Check if this is an existing database
     let is_existing_db =
@@ -444,20 +418,8 @@ fn run_connection_loop(
 
         // Validate AAC gapless metadata matches encoder
         if matches!(audio_format, AudioFormat::Aac) {
-            let db_encoder_delay: Option<String> = conn
-                .query_row(
-                    "SELECT value FROM metadata WHERE key = 'aac_encoder_delay'",
-                    [],
-                    |row| row.get(0),
-                )
-                .ok();
-            let db_frame_size: Option<String> = conn
-                .query_row(
-                    "SELECT value FROM metadata WHERE key = 'aac_frame_size'",
-                    [],
-                    |row| row.get(0),
-                )
-                .ok();
+            let db_encoder_delay: Option<String> = db::query_metadata_sync(&pool, "aac_encoder_delay").ok().flatten();
+            let db_frame_size: Option<String> = db::query_metadata_sync(&pool, "aac_frame_size").ok().flatten();
 
             let aac_bitrate = if db_bitrate_val == 0 {
                 32000
@@ -511,38 +473,14 @@ fn run_connection_loop(
 
         // New database - insert metadata with new unique_id
         let session_unique_id: String = crate::constants::generate_db_unique_id();
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('version', ?1)",
-            [EXPECTED_DB_VERSION],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('unique_id', ?1)",
-            [&session_unique_id],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('name', ?1)",
-            [name],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('audio_format', ?1)",
-            [audio_format_str],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('split_interval', ?1)",
-            [&split_interval.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('bitrate', ?1)",
-            [&bitrate_to_store.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('sample_rate', ?1)",
-            [&output_sample_rate.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES ('is_recipient', 'false')",
-            [],
-        )?;
+        db::insert_metadata_sync(&pool, "version", EXPECTED_DB_VERSION)?;
+        db::insert_metadata_sync(&pool, "unique_id", &session_unique_id)?;
+        db::insert_metadata_sync(&pool, "name", name)?;
+        db::insert_metadata_sync(&pool, "audio_format", audio_format_str)?;
+        db::insert_metadata_sync(&pool, "split_interval", &split_interval.to_string())?;
+        db::insert_metadata_sync(&pool, "bitrate", &bitrate_to_store.to_string())?;
+        db::insert_metadata_sync(&pool, "sample_rate", &output_sample_rate.to_string())?;
+        db::insert_metadata_sync(&pool, "is_recipient", "false")?;
 
         // Add AAC gapless metadata from encoder info
         if matches!(audio_format, AudioFormat::Aac) {
@@ -560,14 +498,8 @@ fn run_connection_loop(
             };
             if let Ok(encoder) = fdk_aac::enc::Encoder::new(params) {
                 if let Ok(info) = encoder.info() {
-                    conn.execute(
-                        "INSERT INTO metadata (key, value) VALUES ('aac_encoder_delay', ?1)",
-                        [&info.nDelay.to_string()],
-                    )?;
-                    conn.execute(
-                        "INSERT INTO metadata (key, value) VALUES ('aac_frame_size', ?1)",
-                        [&info.frameLength.to_string()],
-                    )?;
+                    db::insert_metadata_sync(&pool, "aac_encoder_delay", &info.nDelay.to_string())?;
+                    db::insert_metadata_sync(&pool, "aac_frame_size", &info.frameLength.to_string())?;
                 }
             }
         }
@@ -803,7 +735,7 @@ fn run_connection_loop(
 
         // Helper to create AAC encoder
         // opus is recommended instead of aac for voip use cases
-        let create_aac_encoder = || -> Result<AacEncoder, Box<dyn std::error::Error>> {
+        let create_aac_encoder = || -> Result<AacEncoder, Box<dyn std::error::Error + Send + Sync>> {
             let params = EncoderParams {
                 bit_rate: AacBitRate::Cbr(bitrate as u32),
                 sample_rate: 16000,
@@ -816,7 +748,7 @@ fn run_connection_loop(
         };
 
         // Helper to create Opus encoder
-        let create_opus_encoder = || -> Result<OpusEncoder, Box<dyn std::error::Error>> {
+        let create_opus_encoder = || -> Result<OpusEncoder, Box<dyn std::error::Error + Send + Sync>> {
             let mut encoder = OpusEncoder::new(48000, Channels::Mono, Application::Voip)
                 .map_err(|e| format!("Failed to create Opus encoder: {}", e))?;
             encoder
@@ -862,33 +794,23 @@ fn run_connection_loop(
             .unwrap()
             .as_micros() as i64;
 
-        // Insert new section and update pending_section_id metadata in a transaction
-        {
-            let tx = conn.transaction()?;
-            tx.execute(
-                "INSERT INTO sections (id, start_timestamp_ms) VALUES (?1, ?2)",
-                rusqlite::params![connection_section_id, base_timestamp_ms],
-            )?;
-            db::upsert_metadata(
-                &tx,
-                "pending_section_id",
-                &connection_section_id.to_string(),
-            )?;
-            tx.commit()?;
-        }
+        // Insert new section and update pending_section_id metadata
+        db::insert_section_sync(&pool, connection_section_id, base_timestamp_ms)?;
+        db::upsert_metadata_sync(
+            &pool,
+            "pending_section_id",
+            &connection_section_id.to_string(),
+        )?;
 
         // Helper to insert segment into SQLite
-        let insert_segment = |conn: &Connection,
+        let insert_segment = |pool: &SqlitePool,
                               timestamp_ms: i64,
                               is_from_source: bool,
                               section_id: i64,
                               data: &[u8],
                               duration_samples: u64|
-         -> Result<(), Box<dyn std::error::Error>> {
-            conn.execute(
-            "INSERT INTO segments (timestamp_ms, is_timestamp_from_source, section_id, audio_data, duration_samples) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![timestamp_ms, is_from_source as i32, section_id, data, duration_samples as i64],
-        )?;
+         -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            db::insert_segment_sync(pool, timestamp_ms, is_from_source, section_id, data, duration_samples as i64)?;
             Ok(())
         };
 
@@ -970,7 +892,7 @@ fn run_connection_loop(
                                                             + (segment_start_samples as i64 * 1000
                                                                 / output_sample_rate as i64);
                                                         insert_segment(
-                                                            &conn,
+                                                            &pool,
                                                             timestamp_ms,
                                                             segment_number == 0,
                                                             connection_section_id,
@@ -1015,7 +937,7 @@ fn run_connection_loop(
                                                             + (segment_start_samples as i64 * 1000
                                                                 / output_sample_rate as i64);
                                                         insert_segment(
-                                                            &conn,
+                                                            &pool,
                                                             timestamp_ms,
                                                             segment_number == 0,
                                                             connection_section_id,
@@ -1053,7 +975,7 @@ fn run_connection_loop(
                                                 + (segment_start_samples as i64 * 1000
                                                     / output_sample_rate as i64);
                                             insert_segment(
-                                                &conn,
+                                                &pool,
                                                 timestamp_ms,
                                                 segment_number == 0,
                                                 connection_section_id,
@@ -1142,7 +1064,7 @@ fn run_connection_loop(
             let timestamp_ms = base_timestamp_ms
                 + (segment_start_samples as i64 * 1000 / output_sample_rate as i64);
             insert_segment(
-                &conn,
+                &pool,
                 timestamp_ms,
                 segment_number == 0,
                 connection_section_id,
@@ -1212,7 +1134,7 @@ pub fn record(
     config: SessionConfig,
     show_locks: ShowLocks,
     db_path: PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Extract config values with defaults
     let url = config.url.clone();
     let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
@@ -1321,10 +1243,10 @@ pub fn record(
         println!("[{}] Cleanup lock acquired", name);
 
         // Run cleanup of old sections - recreate connection for cleanup
-        if let Ok(cleanup_conn) =
-            crate::db::open_database_connection(&db_path)
+        if let Ok(cleanup_pool) =
+            crate::db::open_database_connection_sync(&db_path)
         {
-            if let Err(e) = cleanup_old_sections_with_retention(&cleanup_conn, retention_hours) {
+            if let Err(e) = cleanup_old_sections_with_retention(&cleanup_pool, retention_hours) {
                 eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e);
             }
         }
@@ -1354,7 +1276,7 @@ pub fn record(
 pub fn run_multi_session(
     multi_config: crate::config::MultiSessionConfig,
     port_override: Option<u16>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use dashmap::DashMap;
     use reqwest::blocking::Client;
     use std::sync::Arc;
@@ -1468,10 +1390,10 @@ pub fn run_multi_session(
         let db_path = crate::db::get_db_path(&output_dir_path, &session_config.name);
         println!("Initializing database for session '{}' at {}", session_config.name, db_path.display());
 
-        let conn = crate::db::open_database_connection(&db_path)
+        let pool = crate::db::open_database_connection_sync(&db_path)
             .map_err(|e| format!("Failed to open database for session '{}': {}", session_config.name, e))?;
 
-        crate::db::init_database_schema(&conn)
+        crate::db::init_database_schema_sync(&pool)
             .map_err(|e| format!("Failed to initialize schema for session '{}': {}", session_config.name, e))?;
 
         db_paths.insert(session_config.name.clone(), db_path.clone());

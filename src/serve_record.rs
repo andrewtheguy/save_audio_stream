@@ -9,8 +9,9 @@ use crate::sftp::{SftpClient, SftpConfig, UploadOptions};
 use fs2::FileExt;
 use log::{error, warn};
 use ogg::writing::PacketWriter;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use sqlx::sqlite::SqlitePool;
+use sqlx::Row;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -18,6 +19,7 @@ use std::sync::Arc as StdArc;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
+use crate::queries::{metadata, sections, segments};
 
 // Import ShowLocks and get_show_lock from the crate root
 // (defined in both lib.rs and main.rs)
@@ -32,13 +34,6 @@ pub struct AppState {
     pub db_paths: std::collections::HashMap<String, PathBuf>,
 }
 
-impl AppState {
-    /// Open a readonly connection (always in mutable mode for active recording databases)
-    pub fn open_readonly(&self, path: impl AsRef<std::path::Path>) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
-        crate::db::open_readonly_connection(path)
-    }
-}
-
 /// Serve multiple databases from a directory (for sync endpoints during recording)
 pub fn serve_for_sync(
     output_dir: PathBuf,
@@ -49,7 +44,7 @@ pub fn serve_for_sync(
     credentials: Option<crate::credentials::Credentials>,
     show_locks: ShowLocks,
     db_paths: std::collections::HashMap<String, PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Starting multi-show API server");
     println!("Output directory: {}", output_dir.display());
     if sftp_config.is_some() {
@@ -243,8 +238,8 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
         }
 
         // Open database and check if it's a recording database (not recipient)
-        let conn = match state.open_readonly(&path) {
-            Ok(conn) => conn,
+        let pool = match crate::db::open_readonly_connection(&path).await {
+            Ok(p) => p,
             Err(e) => {
                 warn!("Failed to open database {:?} for show listing: {}", path, e);
                 continue;
@@ -252,13 +247,11 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
         };
 
         // Check is_recipient flag
-        let is_recipient: Option<String> = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'is_recipient'",
-                [],
-                |row| row.get(0),
-            )
-            .ok();
+        let is_recipient: Option<String> = sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
 
         if let Some(is_recipient) = is_recipient {
             if is_recipient == "true" {
@@ -267,11 +260,11 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
         }
 
         // Get name from metadata
-        let name: Option<String> = conn
-            .query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
-                row.get(0)
-            })
-            .ok();
+        let name: Option<String> = sqlx::query_scalar::<_, String>(&metadata::select_by_key("name"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
 
         let name = match name {
             Some(n) => n,
@@ -279,19 +272,23 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
         };
 
         // Get min/max segment IDs
-        let (min_id, max_id): (Option<i64>, Option<i64>) = conn
-            .query_row("SELECT MIN(id), MAX(id) FROM segments", [], |row| {
-                Ok((row.get(0).ok(), row.get(1).ok()))
-            })
-            .unwrap_or((None, None));
+        let min_max = sqlx::query(&segments::select_min_max_id())
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
 
-        if let (Some(min_id), Some(max_id)) = (min_id, max_id) {
-            shows.push(ShowInfo {
-                name,
-                database_file: path.file_name().unwrap().to_str().unwrap().to_string(),
-                min_id,
-                max_id,
-            });
+        if let Some(row) = min_max {
+            let min_id: Option<i64> = row.get(0);
+            let max_id: Option<i64> = row.get(1);
+            if let (Some(min_id), Some(max_id)) = (min_id, max_id) {
+                shows.push(ShowInfo {
+                    name,
+                    database_file: path.file_name().unwrap().to_str().unwrap().to_string(),
+                    min_id,
+                    max_id,
+                });
+            }
         }
     }
 
@@ -322,8 +319,8 @@ pub async fn sync_show_metadata_handler(
     }
 
     // Open database
-    let conn = match state.open_readonly(path) {
-        Ok(conn) => conn,
+    let pool = match crate::db::open_readonly_connection(path).await {
+        Ok(p) => p,
         Err(e) => {
             error!("Failed to open readonly database connection at '{}': {}", path.display(), e);
             return (
@@ -335,13 +332,11 @@ pub async fn sync_show_metadata_handler(
     };
 
     // Check is_recipient flag - reject if true
-    let is_recipient: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'is_recipient'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
+    let is_recipient: Option<String> = sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten();
 
     if let Some(is_recipient) = &is_recipient {
         if is_recipient == "true" {
@@ -354,11 +349,10 @@ pub async fn sync_show_metadata_handler(
     }
 
     // Fetch all required metadata
-    let unique_id: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'unique_id'",
-        [],
-        |row| row.get(0),
-    ) {
+    let unique_id: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("unique_id"))
+        .fetch_one(&pool)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query unique_id metadata: {}", e);
@@ -370,26 +364,25 @@ pub async fn sync_show_metadata_handler(
         }
     };
 
-    let name: String =
-        match conn.query_row("SELECT value FROM metadata WHERE key = 'name'", [], |row| {
-            row.get(0)
-        }) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Failed to query name metadata: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
-                )
-                    .into_response();
-            }
-        };
+    let name: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("name"))
+        .fetch_one(&pool)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to query name metadata: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+                .into_response();
+        }
+    };
 
-    let audio_format: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'audio_format'",
-        [],
-        |row| row.get(0),
-    ) {
+    let audio_format: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("audio_format"))
+        .fetch_one(&pool)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query audio_format metadata: {}", e);
@@ -401,11 +394,10 @@ pub async fn sync_show_metadata_handler(
         }
     };
 
-    let split_interval: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'split_interval'",
-        [],
-        |row| row.get(0),
-    ) {
+    let split_interval: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("split_interval"))
+        .fetch_one(&pool)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query split_interval metadata: {}", e);
@@ -417,11 +409,10 @@ pub async fn sync_show_metadata_handler(
         }
     };
 
-    let bitrate: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'bitrate'",
-        [],
-        |row| row.get(0),
-    ) {
+    let bitrate: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("bitrate"))
+        .fetch_one(&pool)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query bitrate metadata: {}", e);
@@ -433,11 +424,10 @@ pub async fn sync_show_metadata_handler(
         }
     };
 
-    let sample_rate: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'sample_rate'",
-        [],
-        |row| row.get(0),
-    ) {
+    let sample_rate: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("sample_rate"))
+        .fetch_one(&pool)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query sample_rate metadata: {}", e);
@@ -449,11 +439,10 @@ pub async fn sync_show_metadata_handler(
         }
     };
 
-    let version: String = match conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'version'",
-        [],
-        |row| row.get(0),
-    ) {
+    let version: String = match sqlx::query_scalar::<_, String>(&metadata::select_by_key("version"))
+        .fetch_one(&pool)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to query version metadata: {}", e);
@@ -466,22 +455,22 @@ pub async fn sync_show_metadata_handler(
     };
 
     // Get min/max segment IDs
-    let (min_id, max_id): (i64, i64) =
-        match conn.query_row("SELECT MIN(id), MAX(id) FROM segments", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        }) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Failed to query min/max segment IDs: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
-                )
-                    .into_response();
-            }
-        };
+    let (min_id, max_id): (i64, i64) = match sqlx::query(&segments::select_min_max_id())
+        .fetch_one(&pool)
+        .await
+    {
+        Ok(row) => (row.get(0), row.get(1)),
+        Err(e) => {
+            error!("Failed to query min/max segment IDs: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+                .into_response();
+        }
+    };
 
-    let metadata = ShowMetadata {
+    let metadata_response = ShowMetadata {
         unique_id,
         name,
         audio_format,
@@ -494,7 +483,7 @@ pub async fn sync_show_metadata_handler(
         max_id,
     };
 
-    (StatusCode::OK, axum::Json(metadata)).into_response()
+    (StatusCode::OK, axum::Json(metadata_response)).into_response()
 }
 
 pub async fn db_sections_handler(
@@ -521,8 +510,8 @@ pub async fn db_sections_handler(
     }
 
     // Open database
-    let conn = match state.open_readonly(path) {
-        Ok(conn) => conn,
+    let pool = match crate::db::open_readonly_connection(path).await {
+        Ok(p) => p,
         Err(e) => {
             error!("Failed to open readonly database connection at '{}': {}", path.display(), e);
             return (
@@ -534,34 +523,29 @@ pub async fn db_sections_handler(
     };
 
     // Fetch all sections
-    let mut stmt = match conn.prepare("SELECT id, start_timestamp_ms FROM sections ORDER BY id") {
-        Ok(stmt) => stmt,
+    let rows = match sqlx::query(&sections::select_all())
+        .fetch_all(&pool)
+        .await
+    {
+        Ok(rows) => rows,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to prepare query: {}", e)})),
+                axum::Json(serde_json::json!({"error": format!("Failed to fetch sections: {}", e)})),
             )
                 .into_response();
         }
     };
 
-    let sections: Result<Vec<SectionInfo>, _> = stmt
-        .query_map([], |row| {
-            Ok(SectionInfo {
-                id: row.get(0)?,
-                start_timestamp_ms: row.get(1)?,
-            })
+    let section_list: Vec<SectionInfo> = rows
+        .iter()
+        .map(|row| SectionInfo {
+            id: row.get(0),
+            start_timestamp_ms: row.get(1),
         })
-        .and_then(|rows| rows.collect());
+        .collect();
 
-    match sections {
-        Ok(sections) => axum::Json::<Vec<SectionInfo>>(sections).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({"error": format!("Failed to fetch sections: {}", e)})),
-        )
-            .into_response(),
-    }
+    axum::Json::<Vec<SectionInfo>>(section_list).into_response()
 }
 
 pub async fn sync_show_segments_handler(
@@ -590,8 +574,8 @@ pub async fn sync_show_segments_handler(
     }
 
     // Open database
-    let conn = match state.open_readonly(path) {
-        Ok(conn) => conn,
+    let pool = match crate::db::open_readonly_connection(path).await {
+        Ok(p) => p,
         Err(e) => {
             error!("Failed to open readonly database connection at '{}': {}", path.display(), e);
             return (
@@ -603,13 +587,11 @@ pub async fn sync_show_segments_handler(
     };
 
     // Check is_recipient flag - reject if true
-    let is_recipient: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'is_recipient'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
+    let is_recipient: Option<String> = sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten();
 
     if let Some(is_recipient) = is_recipient {
         if is_recipient == "true" {
@@ -623,61 +605,33 @@ pub async fn sync_show_segments_handler(
 
     // Fetch segments
     let limit = query.limit.unwrap_or(100);
-    let mut stmt = match conn.prepare(
-        "SELECT id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id LIMIT ?3"
-    ) {
-        Ok(stmt) => stmt,
+    let rows = match sqlx::query(&segments::select_range_with_limit(query.start_id, query.end_id, limit))
+        .fetch_all(&pool)
+        .await
+    {
+        Ok(rows) => rows,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": format!("Failed to prepare query: {}", e)})),
+                axum::Json(serde_json::json!({"error": format!("Failed to query segments: {}", e)})),
             )
                 .into_response();
         }
     };
 
-    let segments_iter = match stmt.query_map(
-        rusqlite::params![query.start_id, query.end_id, limit],
-        |row| {
-            Ok(SegmentData {
-                id: row.get(0)?,
-                timestamp_ms: row.get(1)?,
-                is_timestamp_from_source: row.get(2)?,
-                audio_data: row.get(3)?,
-                section_id: row.get(4)?,
-                duration_samples: row.get(5)?,
-            })
-        },
-    ) {
-        Ok(iter) => iter,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(
-                    serde_json::json!({"error": format!("Failed to query segments: {}", e)}),
-                ),
-            )
-                .into_response();
-        }
-    };
+    let segment_list: Vec<SegmentData> = rows
+        .iter()
+        .map(|row| SegmentData {
+            id: row.get(0),
+            timestamp_ms: row.get(1),
+            is_timestamp_from_source: row.get(2),
+            audio_data: row.get(3),
+            section_id: row.get(4),
+            duration_samples: row.get(5),
+        })
+        .collect();
 
-    let mut segments = Vec::new();
-    for segment in segments_iter {
-        match segment {
-            Ok(seg) => segments.push(seg),
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(
-                        serde_json::json!({"error": format!("Failed to fetch segment: {}", e)}),
-                    ),
-                )
-                    .into_response();
-            }
-        }
-    }
-
-    (StatusCode::OK, axum::Json(segments)).into_response()
+    (StatusCode::OK, axum::Json(segment_list)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -708,7 +662,7 @@ fn upload_to_sftp(
     filename: &str,
     config: &crate::config::SftpExportConfig,
     credentials: &Option<crate::credentials::Credentials>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     use std::io::Cursor;
 
     // Upload to SFTP
@@ -758,8 +712,8 @@ fn spawn_periodic_export_task(
                 let db_path = output_dir.join(format!("{}.sqlite", show_name));
 
                 // Open database to query for unexported sections
-                let conn = match crate::db::open_database_connection(&db_path) {
-                    Ok(conn) => conn,
+                let pool = match crate::db::open_database_connection_sync(&db_path) {
+                    Ok(p) => p,
                     Err(e) => {
                         error!("Failed to open database {}: {}", db_path.display(), e);
                         continue;
@@ -767,44 +721,28 @@ fn spawn_periodic_export_task(
                 };
 
                 // Get pending section ID (to exclude from export)
-                let pending_section_id: Option<i64> = conn
-                    .query_row(
-                        "SELECT value FROM metadata WHERE key = 'pending_section_id'",
-                        [],
-                        |row| row.get::<_, String>(0),
-                    )
+                let pending_section_id: Option<i64> = crate::db::query_metadata_sync(&pool, "pending_section_id")
                     .ok()
+                    .flatten()
                     .and_then(|s| s.parse().ok());
 
                 // Query for unexported sections
                 let unexported_sections: Vec<i64> = {
-                    let query = if let Some(_pending_id) = pending_section_id {
-                        "SELECT id FROM sections
-                         WHERE (is_exported_to_remote IS NULL OR is_exported_to_remote = 0)
-                           AND id != ?1"
+                    let sql = if let Some(pending_id) = pending_section_id {
+                        sections::select_unexported_excluding(pending_id)
                     } else {
-                        "SELECT id FROM sections
-                         WHERE (is_exported_to_remote IS NULL OR is_exported_to_remote = 0)"
+                        sections::select_unexported_ids()
                     };
 
-                    let mut stmt = match conn.prepare(query) {
-                        Ok(stmt) => stmt,
-                        Err(e) => {
-                            error!("Failed to prepare query for {}: {}", show_name, e);
-                            continue;
-                        }
-                    };
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    let rows_result = rt.block_on(async {
+                        sqlx::query(&sql)
+                            .fetch_all(&pool)
+                            .await
+                    });
 
-                    let sections_result: Result<Vec<i64>, _> = if let Some(pending_id) = pending_section_id {
-                        stmt.query_map([pending_id], |row| row.get(0))
-                            .and_then(|rows| rows.collect())
-                    } else {
-                        stmt.query_map([], |row| row.get(0))
-                            .and_then(|rows| rows.collect())
-                    };
-
-                    match sections_result {
-                        Ok(sections) => sections,
+                    match rows_result {
+                        Ok(rows) => rows.iter().map(|r| r.get::<i64, _>(0)).collect(),
                         Err(e) => {
                             error!("Failed to query unexported sections for {}: {}", show_name, e);
                             continue;
@@ -916,7 +854,7 @@ fn map_to_io_error<E: std::fmt::Display + Send + Sync + 'static>(err: E) -> std:
 }
 
 fn write_ogg_stream<W: Write>(
-    conn: &Connection,
+    pool: &SqlitePool,
     start_id: i64,
     end_id: i64,
     sample_rate: u32,
@@ -924,10 +862,14 @@ fn write_ogg_stream<W: Write>(
     samples_per_packet: u64,
     writer: W,
 ) -> Result<W, std::io::Error> {
-    let mut stmt = conn
-        .prepare("SELECT id, audio_data FROM segments WHERE id >= ?1 AND id <= ?2 ORDER BY id")
-        .map_err(map_to_io_error)?;
-    let mut rows = stmt.query([start_id, end_id]).map_err(map_to_io_error)?;
+    // Fetch segments synchronously
+    let rt = tokio::runtime::Runtime::new().map_err(map_to_io_error)?;
+    let sql = segments::select_by_id_range(start_id, end_id);
+    let rows = rt.block_on(async {
+        sqlx::query(&sql)
+            .fetch_all(pool)
+            .await
+    }).map_err(map_to_io_error)?;
 
     let mut writer = PacketWriter::new(writer);
 
@@ -953,9 +895,9 @@ fn write_ogg_stream<W: Write>(
     let mut packet_count: u32 = 0;
     const PACKETS_PER_PAGE: u32 = 50;
 
-    while let Some(row) = rows.next().map_err(map_to_io_error)? {
-        let id: i64 = row.get(0).map_err(map_to_io_error)?;
-        let segment: Vec<u8> = row.get(1).map_err(map_to_io_error)?;
+    for row in &rows {
+        let id: i64 = row.get(0);
+        let segment: Vec<u8> = row.get(1);
         let is_last_segment = id == end_id;
         let mut offset = 0;
 
@@ -993,26 +935,27 @@ fn write_ogg_stream<W: Write>(
 
 /// Export Opus audio for a section to an Ogg file
 fn export_opus_section(
-    conn: &Connection,
+    pool: &SqlitePool,
     section_id: i64,
     sample_rate: u32,
     duration_secs: f64,
 ) -> Result<Vec<u8>, std::io::Error> {
     // Get segment ID range for this section
-    let (start_id, end_id): (i64, i64) = conn
-        .query_row(
-            "SELECT MIN(id), MAX(id) FROM segments WHERE section_id = ?1",
-            [section_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(map_to_io_error)?;
+    let rt = tokio::runtime::Runtime::new().map_err(map_to_io_error)?;
+    let sql = segments::select_min_max_id_for_section(section_id);
+    let (start_id, end_id): (i64, i64) = rt.block_on(async {
+        sqlx::query(&sql)
+            .fetch_one(pool)
+            .await
+            .map(|row| (row.get(0), row.get(1)))
+    }).map_err(map_to_io_error)?;
 
     // Write Ogg stream to memory buffer
     let mut buffer = Vec::new();
     let samples_per_packet = 960; // 48kHz Opus, 20ms packets
 
     write_ogg_stream(
-        conn,
+        pool,
         start_id,
         end_id,
         sample_rate,
@@ -1079,41 +1022,57 @@ pub fn export_section(
     }
 
     // Open read/write database connection (needed for updating is_exported_to_remote)
-    let conn = crate::db::open_database_connection(&db_path)
+    let pool = crate::db::open_database_connection_sync(&db_path)
         .map_err(|e| {
             error!("Failed to open database connection at '{}': {}", db_path.display(), e);
             format!("Failed to open database: {}", e)
         })?;
 
-    // Get section info including is_exported_to_remote
-    let section_info: Result<(i64, i64, Option<i64>), _> = conn.query_row(
-        "SELECT id, start_timestamp_ms, is_exported_to_remote FROM sections WHERE id = ?1",
-        [section_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    );
+    // Create runtime for async operations
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("Failed to create runtime: {}", e))?;
 
-    let (section_id, start_timestamp_ms, is_exported_to_remote) = section_info
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => format!("Section {} not found", section_id),
-            _ => format!("Failed to fetch section: {}", e),
-        })?;
+    // Get section info including is_exported_to_remote
+    let sql = sections::select_by_id(section_id);
+    let section_row = rt.block_on(async {
+        sqlx::query(&sql)
+            .fetch_optional(&pool)
+            .await
+    }).map_err(|e| format!("Failed to fetch section: {}", e))?;
+
+    let (section_id, start_timestamp_ms, is_exported_to_remote) = match section_row {
+        Some(row) => {
+            let id: i64 = row.get(0);
+            let start_ts: i64 = row.get(1);
+            let exported: Option<i64> = row.get(2);
+            (id, start_ts, exported)
+        }
+        None => return Err(format!("Section {} not found", section_id)),
+    };
 
     // Get metadata
-    let audio_format: String = conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'audio_format'",
-        [],
-        |row| row.get(0),
-    )
-    .map_err(|e| format!("Failed to read audio_format: {}", e))?;
+    let audio_format: String = crate::db::query_metadata_sync(&pool, "audio_format")
+        .map_err(|e| format!("Failed to read audio_format: {}", e))?
+        .ok_or_else(|| "audio_format not found".to_string())?;
 
-    let sample_rate: u32 = conn.query_row(
-        "SELECT value FROM metadata WHERE key = 'sample_rate'",
-        [],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
-    .and_then(|rate| rate.parse().ok())
-    .unwrap_or(48000);
+    let sample_rate: u32 = crate::db::query_metadata_sync(&pool, "sample_rate")
+        .ok()
+        .flatten()
+        .and_then(|rate| rate.parse().ok())
+        .unwrap_or(48000);
+
+    // Helper function to fetch segments for a section
+    let fetch_segments = |pool: &SqlitePool, section_id: i64| -> Result<Vec<(i64, Vec<u8>)>, String> {
+        let sql = segments::select_by_section_id(section_id);
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("Failed to create runtime: {}", e))?;
+        let rows = rt.block_on(async {
+            sqlx::query(&sql)
+                .fetch_all(pool)
+                .await
+        }).map_err(|e| format!("Failed to fetch segments: {}", e))?;
+        Ok(rows.iter().map(|r| (r.get::<i64, _>(0), r.get::<Vec<u8>, _>(1))).collect())
+    };
 
     // If section has already been exported to remote and SFTP is configured, return the SFTP path directly
     if is_exported_to_remote == Some(1) && sftp_config.is_some() {
@@ -1125,21 +1084,9 @@ pub fn export_section(
         let remote_path_str = format!("{}/{}", sftp_cfg.remote_dir.trim_end_matches('/'), filename);
 
         // Query segments to calculate duration
-        let mut stmt = conn.prepare(
-            "SELECT id, audio_data FROM segments WHERE section_id = ?1 ORDER BY id",
-        )
-        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+        let segment_list = fetch_segments(&pool, section_id)?;
 
-        let segments: Result<Vec<(i64, Vec<u8>)>, _> = stmt
-            .query_map([section_id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .and_then(|rows| rows.collect());
-
-        let segments = segments
-            .map_err(|e| format!("Failed to fetch segments: {}", e))?;
-
-        if segments.is_empty() {
+        if segment_list.is_empty() {
             return Err(format!("No segments found for section {}", section_id));
         }
 
@@ -1147,7 +1094,7 @@ pub fn export_section(
         let total_samples = if audio_format == "opus" {
             let samples_per_packet = 960u64; // 48kHz Opus, 20ms packets
             let mut total_packets = 0u64;
-            for (_, segment) in &segments {
+            for (_, segment) in &segment_list {
                 let mut offset = 0;
                 while offset + 2 <= segment.len() {
                     let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
@@ -1164,7 +1111,7 @@ pub fn export_section(
             // AAC - approximate based on frame size
             let frame_samples = 1024u64; // AAC frame size
             let mut total_frames = 0u64;
-            for (_, segment) in &segments {
+            for (_, segment) in &segment_list {
                 // Count ADTS frames (rough estimate)
                 total_frames += segment.len() as u64 / 200; // Approximate
             }
@@ -1184,21 +1131,9 @@ pub fn export_section(
     }
 
     // Get all segments for this section
-    let mut stmt = conn.prepare(
-        "SELECT id, audio_data FROM segments WHERE section_id = ?1 ORDER BY id",
-    )
-    .map_err(|e| format!("Failed to prepare query: {}", e))?;
+    let segment_list = fetch_segments(&pool, section_id)?;
 
-    let segments: Result<Vec<(i64, Vec<u8>)>, _> = stmt
-        .query_map([section_id], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .and_then(|rows| rows.collect());
-
-    let segments = segments
-        .map_err(|e| format!("Failed to fetch segments: {}", e))?;
-
-    if segments.is_empty() {
+    if segment_list.is_empty() {
         return Err(format!("No segments found for section {}", section_id));
     }
 
@@ -1209,7 +1144,7 @@ pub fn export_section(
     let total_samples = if audio_format == "opus" {
         let samples_per_packet = 960u64; // 48kHz Opus, 20ms packets
         let mut total_packets = 0u64;
-        for (_, segment) in &segments {
+        for (_, segment) in &segment_list {
             let mut offset = 0;
             while offset + 2 <= segment.len() {
                 let len = u16::from_le_bytes([segment[offset], segment[offset + 1]]) as usize;
@@ -1226,7 +1161,7 @@ pub fn export_section(
         // AAC - approximate based on frame size
         let frame_samples = 1024u64; // AAC frame size
         let mut total_frames = 0u64;
-        for (_, segment) in &segments {
+        for (_, segment) in &segment_list {
             // Count ADTS frames (rough estimate)
             total_frames += segment.len() as u64 / 200; // Approximate
         }
@@ -1237,8 +1172,8 @@ pub fn export_section(
 
     // Export audio to memory buffer
     let audio_data = match audio_format.as_str() {
-        "opus" => export_opus_section(&conn, section_id, sample_rate, duration_secs),
-        "aac" => export_aac_section(&segments),
+        "opus" => export_opus_section(&pool, section_id, sample_rate, duration_secs),
+        "aac" => export_aac_section(&segment_list),
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "Unsupported format",
@@ -1253,10 +1188,8 @@ pub fn export_section(
             .map_err(|e| format!("SFTP upload failed: {}", e))?;
 
         // SFTP upload succeeded, update is_exported_to_remote column
-        if let Err(e) = conn.execute(
-            "UPDATE sections SET is_exported_to_remote = 1 WHERE id = ?1",
-            [section_id],
-        ) {
+        let update_sql = sections::mark_exported(section_id);
+        if let Err(e) = crate::db::execute_sync(&pool, &update_sql) {
             error!("Failed to update is_exported_to_remote for section {}: {}", section_id, e);
             // Don't fail the request, just log the error
         }

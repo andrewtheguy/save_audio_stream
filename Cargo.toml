@@ -20,7 +20,8 @@ fdk-aac = "0.8.0"
 opus = "0.3"
 ogg = "0.9"
 hound = "3.5"
-rusqlite = { version = "0.37", features = ["bundled"] }
+sea-query = { version = "0.32", features = ["backend-sqlite"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 axum = "0.8"

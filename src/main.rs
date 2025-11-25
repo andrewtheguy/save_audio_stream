@@ -55,7 +55,7 @@ enum Command {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
 
     let args = Args::parse();
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn record_multi_session(
     config_path: PathBuf,
     port_override: Option<u16>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load multi-session config file
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
@@ -105,7 +105,7 @@ fn record_multi_session(
     record::run_multi_session(multi_config, port_override)
 }
 
-fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn receiver_from_config(config_path: PathBuf, sync_only: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load receiver/sync config file
     let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
         format!(
