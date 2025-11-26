@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Calculate the .ts segment URL for a given target time using Akamai's X-Akamai-Live-Origin-QoS header.
+Calculate the .ts segment URL for a given target time using the Last-Modified header.
 
-This script fetches a reference .ts segment and extracts the Unix timestamp from the
-X-Akamai-Live-Origin-QoS header to calculate segment indices.
+This script fetches a reference .ts segment and extracts the timestamp from the
+Last-Modified header to calculate segment indices.
 
 Usage:
     python3 calc-ts-index-akamai.py "10:00"           # Today at 10:00 +0800
     python3 calc-ts-index-akamai.py "2025-11-26 10:00" # Specific date and time
 """
 
-import sys
 import re
+import sys
 import urllib.request
 from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 
 PLAYLIST_URL = "https://rthkradio2-live.akamaized.net/hls/live/2040078/radio2/index_64_a.m3u8"
 BASE_URL = "https://rthkradio2-live.akamaized.net/hls/live/2040078/radio2/"
@@ -41,28 +42,21 @@ def fetch_playlist():
     return index, segment_duration
 
 
-def fetch_akamai_timestamp(ts_index):
-    """Fetch the X-Akamai-Live-Origin-QoS header from a .ts segment."""
+def fetch_last_modified(ts_index):
+    """Fetch the Last-Modified header from a .ts segment."""
     url = f"{BASE_URL}index_64_a{ts_index}.ts"
 
     request = urllib.request.Request(url, method='HEAD')
     with urllib.request.urlopen(request) as response:
-        qos_header = response.headers.get('X-Akamai-Live-Origin-QoS')
+        last_modified = response.headers.get('Last-Modified')
 
-    if not qos_header:
-        raise ValueError(f"No X-Akamai-Live-Origin-QoS header in response for {url}")
+    if not last_modified:
+        raise ValueError(f"No Last-Modified header in response for {url}")
 
-    # Parse t=1764137375.472 from the header
-    match = re.search(r't=([\d.]+)', qos_header)
-    if not match:
-        raise ValueError(f"Could not parse timestamp from header: {qos_header}")
+    # Parse Last-Modified: Wed, 26 Nov 2025 06:09:35 GMT
+    ref_time = parsedate_to_datetime(last_modified)
 
-    # Also parse duration d=10000 (in milliseconds)
-    duration_match = re.search(r'd=(\d+)', qos_header)
-    duration_ms = int(duration_match.group(1)) if duration_match else 10000
-
-    timestamp = float(match.group(1))
-    return timestamp, duration_ms / 1000  # Convert duration to seconds
+    return ref_time
 
 
 def parse_target_time(time_str):
@@ -90,21 +84,17 @@ def parse_target_time(time_str):
 
 
 def calculate_ts_url(target_time):
-    """Calculate the .ts URL for the given target time using Akamai timestamp."""
+    """Calculate the .ts URL for the given target time using Last-Modified header."""
     # Get reference segment from playlist
-    ref_index, playlist_duration = fetch_playlist()
+    ref_index, segment_duration = fetch_playlist()
 
-    # Get Akamai timestamp for that segment
-    akamai_timestamp, akamai_duration = fetch_akamai_timestamp(ref_index)
-
-    # Convert Akamai timestamp to datetime (UTC)
-    ref_time = datetime.fromtimestamp(akamai_timestamp, tz=timezone.utc)
+    # Get Last-Modified timestamp for that segment
+    ref_time = fetch_last_modified(ref_index)
 
     # Calculate time difference in seconds
     diff_seconds = (ref_time - target_time).total_seconds()
 
     # Calculate index offset
-    segment_duration = akamai_duration  # Use duration from Akamai header
     index_offset = int(diff_seconds / segment_duration)
 
     target_index = ref_index - index_offset
@@ -115,7 +105,6 @@ def calculate_ts_url(target_time):
         ref_time,
         ref_index,
         segment_duration,
-        akamai_timestamp,
     )
 
 
@@ -130,10 +119,9 @@ def main():
     target_str = sys.argv[1]
     target_time = parse_target_time(target_str)
 
-    url, target_index, ref_time, ref_index, segment_duration, akamai_ts = calculate_ts_url(target_time)
+    url, target_index, ref_time, ref_index, segment_duration = calculate_ts_url(target_time)
 
     print(f"Segment duration: {segment_duration}s")
-    print(f"Akamai timestamp: {akamai_ts}")
     print(f"Reference: index {ref_index} at {ref_time.astimezone(TZ_HK).isoformat()}")
     print(f"Target:    index {target_index} at {target_time.isoformat()}")
     print(f"\n{url}")
