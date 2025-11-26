@@ -91,14 +91,19 @@ function ShowsList({
         </div>
       </div>
 
-      {syncStatus && (
-        <div className="sync-status">
-          Sync in progress...
-        </div>
-      )}
-
       <div className="shows-container">
         <h2>Available Shows</h2>
+        <div className="new-data-banner-container">
+          {syncStatus ? (
+            <div className="new-data-banner syncing">
+              Sync in progress...
+            </div>
+          ) : (
+            <div className="new-data-banner default">
+              Ready
+            </div>
+          )}
+        </div>
         {shows.length === 0 ? (
           <p>No shows available. Click "Sync Now" to fetch from remote server.</p>
         ) : (
@@ -341,16 +346,14 @@ function ShowDetail({
         </div>
       </div>
 
-      {syncStatus && (
-        <div className="sync-status">
-          Sync in progress...
-        </div>
-      )}
-
       <div className="sessions-container">
         <h2>Recording Sessions</h2>
         <div className="new-data-banner-container">
-          {newDataAvailable ? (
+          {syncStatus ? (
+            <div className="new-data-banner syncing">
+              Sync in progress...
+            </div>
+          ) : newDataAvailable ? (
             <div className="new-data-banner">
               New data available. Click "Reload Sessions" to refresh.
             </div>
