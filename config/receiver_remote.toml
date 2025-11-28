@@ -5,16 +5,16 @@
 config_type = 'receiver'
 
 # Required: URL of remote recording server
-remote_url = 'http://localhost:17000'
+remote_url = 'http://private.hpmp.net:17000'
 
 # Required: PostgreSQL connection URL (without password)
 # Format: postgres://user@host:port
-postgres_url = 'postgres://receiver@localhost:5432'
+postgres_url = 'postgres://postgres@localhost:5432'
 
 # Required: Credential profile name
 # Password is stored in ~/.config/save_audio_stream/credentials
 # Format: [profile_name]\npassword = "your_password"
-credential_profile = 'receiver'
+credential_profile = 'pg-nas'
 
 # Optional: whitelist show names to sync (array)
 #shows = ['am1430', 'knx_news']

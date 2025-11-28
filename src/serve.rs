@@ -1390,7 +1390,7 @@ async fn receiver_shows_handler(
     };
 
     for show_name in show_names {
-        let database_name = crate::sync::get_pg_database_name(&show_name);
+        let database_name = crate::sync::get_pg_database_name(&state.config.database_prefix, &show_name);
         // Try to connect and get audio format
         let audio_format = match crate::db_postgres::open_postgres_connection(
             &state.config.postgres_url,
@@ -1428,7 +1428,7 @@ async fn receiver_shows_handler(
 
 /// Open a PostgreSQL connection for a specific show
 async fn open_show_pg_pool(state: &ReceiverAppState, show_name: &str) -> Result<PgPool, String> {
-    let database_name = crate::sync::get_pg_database_name(show_name);
+    let database_name = crate::sync::get_pg_database_name(&state.config.database_prefix, show_name);
     crate::db_postgres::open_postgres_connection(
         &state.config.postgres_url,
         &state.password,

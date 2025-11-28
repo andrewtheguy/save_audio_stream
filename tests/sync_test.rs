@@ -44,7 +44,7 @@
 //! ## Test Databases
 //!
 //! The tests automatically create and drop PostgreSQL databases with the naming pattern:
-//! `save_audio_{show_name}` (e.g., `save_audio_test_new_show`, `save_audio_test_incremental`)
+//! `save_audio_test_{show_name}` (e.g., `save_audio_test_test_new_show`, `save_audio_test_test_incremental`)
 //!
 //! Each test uses a unique show name to allow parallel test execution without conflicts.
 //!
@@ -80,6 +80,9 @@ use save_audio_stream::sync::sync_shows;
 use save_audio_stream::EXPECTED_DB_VERSION;
 use sqlx::postgres::PgPool;
 
+/// Database prefix used for all test databases
+const TEST_DATABASE_PREFIX: &str = "test";
+
 /// Helper to create a SyncConfig for testing
 fn create_test_sync_config(
     remote_url: String,
@@ -98,6 +101,7 @@ fn create_test_sync_config(
         port: 8080,
         sync_interval_seconds: 60,
         lease_name: Some(lease_name.to_string()),
+        database_prefix: TEST_DATABASE_PREFIX.to_string(),
     }
 }
 
@@ -467,7 +471,7 @@ async fn verify_destination_db_pg(
     expected_num_segments: usize,
     expected_num_sections: usize,
 ) {
-    let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
+    let database_name = save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
     let pool = save_audio_stream::db_postgres::open_postgres_connection(
         postgres_url,
         password,
@@ -514,7 +518,7 @@ async fn verify_destination_db_pg(
 
 /// Helper to drop a test database
 async fn drop_test_database(postgres_url: &str, password: &str, show_name: &str) {
-    let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
+    let database_name = save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
     let _ = save_audio_stream::db_postgres::drop_database_if_exists(
         postgres_url,
         password,
@@ -688,7 +692,7 @@ async fn test_sync_with_whitelist() {
     verify_destination_db_pg(&postgres_url, &password, "show1", "unique_1", 6, 2).await;
 
     // Verify show2 does NOT exist (connection should fail)
-    let show2_db_name = save_audio_stream::sync::get_pg_database_name("show2");
+    let show2_db_name = save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, "show2");
     let show2_result = save_audio_stream::db_postgres::open_postgres_connection(
         &postgres_url,
         &password,
@@ -739,7 +743,7 @@ async fn test_sync_metadata_validation() {
     assert!(result.is_ok());
 
     // Manually tamper with destination metadata in PostgreSQL to cause validation failure
-    let database_name = save_audio_stream::sync::get_pg_database_name(show_name);
+    let database_name = save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
     let pool = save_audio_stream::db_postgres::open_postgres_connection(
         &postgres_url,
         &password,

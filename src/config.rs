@@ -88,6 +88,10 @@ fn default_sync_interval() -> u64 {
     60
 }
 
+fn default_database_prefix() -> String {
+    "show".to_string()
+}
+
 /// Sync configuration file structure (used by receiver command)
 #[derive(Debug, Deserialize, Clone)]
 pub struct SyncConfig {
@@ -114,6 +118,10 @@ pub struct SyncConfig {
     /// Useful for testing to allow parallel execution with unique lease names
     #[serde(default)]
     pub lease_name: Option<String>,
+    /// Database name prefix between "save_audio_" and the show name (default: "show")
+    /// For example, with prefix "show" and show name "am1430", the database name will be "save_audio_show_am1430"
+    #[serde(default = "default_database_prefix")]
+    pub database_prefix: String,
 }
 
 /// Single session configuration

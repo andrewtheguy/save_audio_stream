@@ -39,9 +39,10 @@ struct SectionData {
 }
 
 /// Get the PostgreSQL database name for a show
-/// Pattern: save_audio_show_{show_name}
-pub fn get_pg_database_name(show_name: &str) -> String {
-    format!("save_audio_show_{}", show_name)
+/// Pattern: save_audio_{prefix}_{show_name}
+/// Default prefix is "show", resulting in "save_audio_show_{show_name}"
+pub fn get_pg_database_name(prefix: &str, show_name: &str) -> String {
+    format!("save_audio_{}_{}", prefix, show_name)
 }
 
 /// Lease name for global sync coordination
@@ -234,6 +235,7 @@ fn sync_shows_internal(
             password,
             show_name,
             chunk_size,
+            &config.database_prefix,
         )?;
 
         println!(
@@ -255,6 +257,7 @@ fn sync_single_show(
     password: &str,
     show_name: &str,
     chunk_size: u64,
+    database_prefix: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
 
@@ -291,7 +294,7 @@ fn sync_single_show(
     }
 
     // Connect to PostgreSQL database
-    let database_name = get_pg_database_name(show_name);
+    let database_name = get_pg_database_name(database_prefix, show_name);
     println!(
         "[{}]   Connecting to PostgreSQL database '{}'...",
         show_name, database_name
