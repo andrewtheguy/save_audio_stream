@@ -3,14 +3,16 @@ output_dir = './tmp/recorded'  # Directory to save the output files
 api_port = 17000   # Port for the optional API server
 
 # SFTP export configuration (optional)
-# Uncomment the following lines to enable SFTP upload for exported sections
-# export_to_sftp = true
+# Uncomment the following sections to enable SFTP upload for exported sections
+# [export]
+# to_sftp = true
+# periodically = true
 
 # [sftp]
 # host = 'sftp.example.com'
 # port = 22
 # username = 'uploader'
-# credential_profile = 'my-sftp-server'  # Reference to ~/.config/save_audio_stream/credentials
+# credential_profile = 'my-sftp-server'  # Profile in credentials.toml [sftp.<profile>]
 # remote_dir = '/uploads/audio'
 
 [[sessions]]

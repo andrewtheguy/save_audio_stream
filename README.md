@@ -551,7 +551,7 @@ The export API allows you to export individual recording sections (sessions) as 
 
 When SFTP export is configured globally, audio sections are streamed directly to the remote SFTP server from memory without creating local temporary files.
 
-See [`config/record_sftp.example.toml`](config/record_sftp.example.toml) for a complete configuration example.
+See [`config/record_with_export.example.toml`](config/record_with_export.example.toml) for a complete configuration example.
 
 Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`config/credentials.example.toml`](config/credentials.example.toml) for the format.
 
@@ -599,7 +599,7 @@ mkdir -p /tmp/sftp-uploads
 rclone serve sftp /tmp/sftp-uploads --addr :2233 --user demo --pass demo
 ```
 
-Then configure using [`config/record_sftp.example.toml`](config/record_sftp.example.toml) as a template, setting `host = 'localhost'`, `port = 2233`, `username = 'demo'`, and add the credential to `~/.config/save_audio_stream/credentials.toml`:
+Then configure using [`config/record_with_export.example.toml`](config/record_with_export.example.toml) as a template, setting `host = 'localhost'`, `port = 2233`, `username = 'demo'`, and add the credential to `~/.config/save_audio_stream/credentials.toml`:
 
 ```toml
 [sftp.local-dev]

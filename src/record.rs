@@ -1282,7 +1282,7 @@ pub fn run_multi_session(
     }
 
     // Load credentials file if SFTP export is enabled
-    let credentials = if multi_config.export_to_sftp.unwrap_or(false) {
+    let credentials = if multi_config.export_to_sftp() {
         println!(
             "Loading credentials from {}...",
             crate::credentials::get_credentials_path().display()
@@ -1305,7 +1305,7 @@ pub fn run_multi_session(
     let api_port = port_override.unwrap_or(multi_config.api_port);
 
     // Extract SFTP config for API server
-    let sftp_config = if multi_config.export_to_sftp.unwrap_or(false) {
+    let sftp_config = if multi_config.export_to_sftp() {
         multi_config.sftp.clone()
     } else {
         None
@@ -1370,7 +1370,7 @@ pub fn run_multi_session(
     println!("All stream URLs tested successfully");
 
     // Extract periodic export flag
-    let export_to_remote_periodically = multi_config.export_to_remote_periodically.unwrap_or(false);
+    let export_to_remote_periodically = multi_config.export_periodically();
 
     // Extract session names for periodic export
     let session_names: Vec<String> = multi_config

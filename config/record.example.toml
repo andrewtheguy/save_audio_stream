@@ -7,8 +7,10 @@ config_type = 'record'
 output_dir = './recordings'  # Directory to save recordings
 api_port = 17000             # API server port (required for sync)
 
-# Optional: SFTP export (see record_sftp.example.toml for full SFTP config)
-# export_to_sftp = true
+# Optional: export config (see record_with_export.example.toml for full config)
+# [export]
+# to_sftp = false
+# periodically = true
 
 [[sessions]]
 url = 'https://stream.example.com/radio'
