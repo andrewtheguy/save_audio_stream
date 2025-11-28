@@ -369,6 +369,19 @@ h2 {
   cursor: not-allowed;
 }
 
+/* Hide slider thumb when playback is outside selected hour */
+.progress-bar.out-of-range::-webkit-slider-thumb {
+  opacity: 0;
+}
+
+.progress-bar.out-of-range::-moz-range-thumb {
+  opacity: 0;
+}
+
+.progress-bar.out-of-range::-ms-thumb {
+  opacity: 0;
+}
+
 .reset-hour-btn {
   background: transparent;
   border: 1px solid #dee2e6;

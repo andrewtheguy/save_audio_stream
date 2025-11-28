@@ -463,17 +463,21 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     setCurrentTime(clampedTime);
   };
 
-  // Auto-switch to next hour when playback reaches end of current hour view
+  // Auto-switch to next hour only when playback is within the selected hour view
+  const prevHourIndexRef = useRef(hourViewData.currentHourIndex);
   useEffect(() => {
     if (timeMode !== "hour") return;
     if (!isPlaying) return;
 
-    // If playback moves to a different hour, switch the view to follow it
-    if (hourViewData.currentHourIndex !== selectedHourIndex &&
+    // Only auto-switch if we were previously in range (thumb was visible)
+    // and playback just moved to a different hour
+    if (prevHourIndexRef.current === selectedHourIndex &&
+        hourViewData.currentHourIndex !== selectedHourIndex &&
         hourViewData.currentHourIndex >= 0 &&
         hourViewData.currentHourIndex < hourViewData.totalHours) {
       setSelectedHourIndex(hourViewData.currentHourIndex);
     }
+    prevHourIndexRef.current = hourViewData.currentHourIndex;
   }, [currentTime, timeMode, isPlaying, selectedHourIndex, hourViewData.currentHourIndex, hourViewData.totalHours]);
 
   return (
@@ -506,10 +510,12 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
             <div className="hour-slider-container">
               <input
                 type="range"
-                className="progress-bar"
+                className={`progress-bar ${!hourViewData.isPlaybackInSelectedHour ? 'out-of-range' : ''}`}
                 min={hourViewData.availableStartInHour}
                 max={hourViewData.availableEndInHour}
-                value={Math.max(hourViewData.availableStartInHour, Math.min(hourViewData.currentTimeInHour, hourViewData.availableEndInHour))}
+                value={hourViewData.isPlaybackInSelectedHour
+                  ? Math.max(hourViewData.availableStartInHour, Math.min(hourViewData.currentTimeInHour, hourViewData.availableEndInHour))
+                  : hourViewData.availableStartInHour}
                 onChange={handleHourSeek}
                 disabled={!duration || !!error || hourViewData.availableEndInHour <= hourViewData.availableStartInHour}
               />
