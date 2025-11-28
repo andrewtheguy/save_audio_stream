@@ -7,20 +7,6 @@ config_type = 'receiver'
 # Required: URL of remote recording server
 remote_url = 'http://private.hpmp.net:17000'
 
-# Required: PostgreSQL connection URL (without password)
-# Format: postgres://user@host:port
-postgres_url = 'postgres://postgres@localhost:5432'
-
-# Required: Credential profile name
-# Password is stored in ~/.config/save_audio_stream/credentials
-# Format: [profile_name]\npassword = "your_password"
-credential_profile = 'pg-local'
-
-# Optional: Database name prefix (default: 'show')
-# Database names follow the pattern: save_audio_{prefix}_{show_name}
-# Example with prefix='remote' and show='am1430' → database 'save_audio_remote_am1430'
-database_prefix = 'remote'
-
 # Optional: whitelist show names to sync (array)
 #shows = ['am1430', 'knx_news']
 
@@ -32,3 +18,19 @@ port = 18000
 
 # Optional: Seconds between automatic syncs (default: 60)
 sync_interval_seconds = 60
+
+# PostgreSQL database configuration
+[database]
+# Required: PostgreSQL connection URL (without password)
+# Format: postgres://user@host:port
+url = 'postgres://postgres@localhost:5432'
+
+# Required: Credential profile name
+# Password is stored in ~/.config/save_audio_stream/credentials.toml
+# under [postgres.<profile>] section
+credential_profile = 'pg-local'
+
+# Optional: Database name prefix (default: 'show')
+# Database names follow the pattern: save_audio_{prefix}_{show_name}
+# Example with prefix='remote' and show='am1430' → database 'save_audio_remote_am1430'
+prefix = 'remote'

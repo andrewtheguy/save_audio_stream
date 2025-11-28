@@ -6,13 +6,18 @@ use std::path::PathBuf;
 ///
 /// Format:
 /// ```toml
-/// [profile_name]
-/// password = "your_password_here"
+/// [sftp.profile_name]
+/// password = "your_sftp_password_here"
+///
+/// [postgres.profile_name]
+/// password = "your_postgres_password_here"
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct Credentials {
-    #[serde(flatten)]
-    pub profiles: HashMap<String, CredentialProfile>,
+    #[serde(default)]
+    pub sftp: HashMap<String, CredentialProfile>,
+    #[serde(default)]
+    pub postgres: HashMap<String, CredentialProfile>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -20,13 +25,20 @@ pub struct CredentialProfile {
     pub password: String,
 }
 
-/// Get the default credentials file path: ~/.config/save_audio_stream/credentials
+/// Credential type for looking up passwords
+#[derive(Debug, Clone, Copy)]
+pub enum CredentialType {
+    Sftp,
+    Postgres,
+}
+
+/// Get the default credentials file path: ~/.config/save_audio_stream/credentials.toml
 pub fn get_credentials_path() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME environment variable not set");
     PathBuf::from(home)
         .join(".config")
         .join("save_audio_stream")
-        .join("credentials")
+        .join("credentials.toml")
 }
 
 /// Load credentials from the default location
@@ -44,19 +56,33 @@ pub fn load_credentials() -> Result<Option<Credentials>, Box<dyn std::error::Err
     Ok(Some(credentials))
 }
 
-/// Get password for a specific profile
-pub fn get_password(credentials: &Option<Credentials>, profile: &str) -> Result<String, String> {
+/// Get password for a specific profile and credential type
+pub fn get_password(
+    credentials: &Option<Credentials>,
+    cred_type: CredentialType,
+    profile: &str,
+) -> Result<String, String> {
+    let section_name = match cred_type {
+        CredentialType::Sftp => "sftp",
+        CredentialType::Postgres => "postgres",
+    };
+
     match credentials {
-        Some(creds) => creds
-            .profiles
-            .get(profile)
-            .map(|p| p.password.clone())
-            .ok_or_else(|| {
-                format!(
-                    "Credential profile '{}' not found in credentials file",
-                    profile
-                )
-            }),
+        Some(creds) => {
+            let profiles = match cred_type {
+                CredentialType::Sftp => &creds.sftp,
+                CredentialType::Postgres => &creds.postgres,
+            };
+            profiles
+                .get(profile)
+                .map(|p| p.password.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "Credential profile '[{}.{}]' not found in credentials file",
+                        section_name, profile
+                    )
+                })
+        }
         None => Err(format!(
             "Credentials file not found. Expected at: {}",
             get_credentials_path().display()

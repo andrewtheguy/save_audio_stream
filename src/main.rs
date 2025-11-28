@@ -141,21 +141,24 @@ fn receiver_from_config(
 
     // Load credentials and get password for PostgreSQL
     let credentials = save_audio_stream::credentials::load_credentials()?;
-    let password =
-        save_audio_stream::credentials::get_password(&credentials, &sync_config.credential_profile)
-            .map_err(|e| {
-                format!(
-                    "Failed to get password for profile '{}': {}",
-                    sync_config.credential_profile, e
-                )
-            })?;
+    let password = save_audio_stream::credentials::get_password(
+        &credentials,
+        save_audio_stream::credentials::CredentialType::Postgres,
+        &sync_config.database.credential_profile,
+    )
+    .map_err(|e| {
+        format!(
+            "Failed to get password for profile '{}': {}",
+            sync_config.database.credential_profile, e
+        )
+    })?;
 
     if sync_only {
         // Sync once and exit - create global pool for lease management
         let rt = tokio::runtime::Runtime::new()?;
         let global_pool = rt.block_on(async {
             let pool = save_audio_stream::db_postgres::open_postgres_connection_create_if_needed(
-                &sync_config.postgres_url,
+                &sync_config.database.url,
                 &password,
                 save_audio_stream::db_postgres::GLOBAL_DATABASE_NAME,
             )

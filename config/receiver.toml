@@ -7,15 +7,6 @@ config_type = 'receiver'
 # Required: URL of remote recording server
 remote_url = 'http://localhost:17000'
 
-# Required: PostgreSQL connection URL (without password)
-# Format: postgres://user@host:port
-postgres_url = 'postgres://it3@localhost:5432'
-
-# Required: Credential profile name
-# Password is stored in ~/.config/save_audio_stream/credentials
-# Format: [profile_name]\npassword = "your_password"
-credential_profile = 'pg-local'
-
 # Optional: whitelist show names to sync (array)
 #shows = ['am1430', 'knx_news']
 
@@ -27,3 +18,18 @@ port = 18000
 
 # Optional: Seconds between automatic syncs (default: 60)
 sync_interval_seconds = 60
+
+# PostgreSQL database configuration
+[database]
+# Required: PostgreSQL connection URL (without password)
+# Format: postgres://user@host:port
+url = 'postgres://it3@localhost:5432'
+
+# Required: Credential profile name
+# Password is stored in ~/.config/save_audio_stream/credentials.toml
+# under [postgres.<profile>] section
+credential_profile = 'pg-local'
+
+# Optional: Database name prefix between "save_audio_" and the show name (default: "show")
+# For example, with prefix "show" and show name "am1430", the database name will be "save_audio_show_am1430"
+#prefix = 'show'

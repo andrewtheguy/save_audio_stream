@@ -54,21 +54,23 @@ save_audio_stream receiver --config <CONFIG_FILE> --sync-only
 ```toml
 config_type = "receiver"
 remote_url = "http://remote:17000"
-postgres_url = "postgres://user@localhost:5432"
-credential_profile = "receiver"
 shows = ["show1", "show2"]  # Optional filter
 port = 18000
 sync_interval_seconds = 60
 chunk_size = 100
-database_prefix = "show"    # Optional: database name prefix (default: "show")
+
+[database]
+url = "postgres://user@localhost:5432"
+credential_profile = "receiver"
+prefix = "show"  # Optional: database name prefix (default: "show")
 ```
 
 ### Credentials File
 
-Store PostgreSQL passwords in `~/.config/save_audio_stream/credentials`:
+Store PostgreSQL passwords in `~/.config/save_audio_stream/credentials.toml`:
 
-```ini
-[receiver]
+```toml
+[postgres.receiver]
 password = "your_postgres_password"
 ```
 
@@ -104,13 +106,13 @@ password = "your_postgres_password"
 | Option | Description | Default |
 |--------|-------------|---------|
 | `remote_url` | URL of remote recording server | Required |
-| `postgres_url` | PostgreSQL connection URL (without password) | Required |
-| `credential_profile` | Profile name in credentials file | Required |
 | `shows` | Show name filter (omit for all) | All shows |
 | `port` | HTTP server port | 18000 |
 | `sync_interval_seconds` | Seconds between automatic syncs | 60 |
 | `chunk_size` | Batch size for segment fetching | 100 |
-| `database_prefix` | Prefix in database name (`save_audio_{prefix}_{show}`) | `show` |
+| `database.url` | PostgreSQL connection URL (without password) | Required |
+| `database.credential_profile` | Profile name in credentials.toml `[postgres.<profile>]` | Required |
+| `database.prefix` | Prefix in database name (`save_audio_{prefix}_{show}`) | `show` |
 
 ## Sync Behavior
 

@@ -92,6 +92,20 @@ fn default_database_prefix() -> String {
     "show".to_string()
 }
 
+/// PostgreSQL database configuration
+#[derive(Debug, Deserialize, Clone)]
+pub struct DatabaseConfig {
+    /// PostgreSQL connection URL without password (e.g., postgres://user@host:5432)
+    pub url: String,
+    /// Credential profile name to look up password from ~/.config/save_audio_stream/credentials.toml
+    /// Password is retrieved from [postgres.<credential_profile>] section
+    pub credential_profile: String,
+    /// Database name prefix between "save_audio_" and the show name (default: "show")
+    /// For example, with prefix "show" and show name "am1430", the database name will be "save_audio_show_am1430"
+    #[serde(default = "default_database_prefix")]
+    pub prefix: String,
+}
+
 /// Sync configuration file structure (used by receiver command)
 #[derive(Debug, Deserialize, Clone)]
 pub struct SyncConfig {
@@ -99,11 +113,8 @@ pub struct SyncConfig {
     pub config_type: ConfigType,
     /// URL of remote recording server (e.g., http://remote:3000)
     pub remote_url: String,
-    /// PostgreSQL connection URL without password (e.g., postgres://user@host:5432)
-    /// The password will be retrieved from the credentials file using credential_profile
-    pub postgres_url: String,
-    /// Credential profile name to look up password from ~/.config/save_audio_stream/credentials
-    pub credential_profile: String,
+    /// PostgreSQL database configuration
+    pub database: DatabaseConfig,
     /// Show names to sync (optional - if not specified, sync all shows from remote)
     pub shows: Option<Vec<String>>,
     /// Chunk size for batch fetching (default: 100)
@@ -118,10 +129,6 @@ pub struct SyncConfig {
     /// Useful for testing to allow parallel execution with unique lease names
     #[serde(default)]
     pub lease_name: Option<String>,
-    /// Database name prefix between "save_audio_" and the show name (default: "show")
-    /// For example, with prefix "show" and show name "am1430", the database name will be "save_audio_show_am1430"
-    #[serde(default = "default_database_prefix")]
-    pub database_prefix: String,
 }
 
 /// Single session configuration

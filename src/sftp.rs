@@ -125,7 +125,11 @@ impl SftpConfig {
         config: &crate::config::SftpExportConfig,
         credentials: &Option<crate::credentials::Credentials>,
     ) -> std::result::Result<Self, String> {
-        let password = crate::credentials::get_password(credentials, &config.credential_profile)?;
+        let password = crate::credentials::get_password(
+            credentials,
+            crate::credentials::CredentialType::Sftp,
+            &config.credential_profile,
+        )?;
 
         Ok(Self::with_password(
             config.host.clone(),

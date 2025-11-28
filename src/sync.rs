@@ -231,11 +231,11 @@ fn sync_shows_internal(
         // Sync single show - exit immediately on any error
         sync_single_show(
             remote_url,
-            &config.postgres_url,
+            &config.database.url,
             password,
             show_name,
             chunk_size,
-            &config.database_prefix,
+            &config.database.prefix,
         )?;
 
         println!(

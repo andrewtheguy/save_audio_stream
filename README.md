@@ -137,8 +137,8 @@ Prerequisites: PostgreSQL server running locally or accessible remotely.
 ```bash
 # Create credentials file for PostgreSQL password
 mkdir -p ~/.config/save_audio_stream
-cat > ~/.config/save_audio_stream/credentials << 'EOF'
-[my-postgres]
+cat > ~/.config/save_audio_stream/credentials.toml << 'EOF'
+[postgres.my-postgres]
 password = "your_postgres_password"
 EOF
 
@@ -146,10 +146,12 @@ EOF
 cat > receiver.toml << 'EOF'
 config_type = 'receiver'
 remote_url = 'http://recording-server:17000'
-postgres_url = 'postgres://your_user@localhost:5432'
-credential_profile = 'my-postgres'
 port = 18000
 sync_interval_seconds = 300
+
+[database]
+url = 'postgres://your_user@localhost:5432'
+credential_profile = 'my-postgres'
 EOF
 
 # Start receiver (syncs automatically, serves web UI)
@@ -243,22 +245,24 @@ Config files use TOML format with `config_type = 'receiver'`:
 
 ```toml
 config_type = 'receiver'
-remote_url = 'http://remote:17000'           # URL of remote recording server
-postgres_url = 'postgres://user@host:5432'   # PostgreSQL URL (without password)
-credential_profile = 'my-postgres'           # Profile name in credentials file
+remote_url = 'http://remote:17000'  # URL of remote recording server
 
 # Optional
 shows = ['show1', 'show2']  # Show names to sync (omit to sync all shows from remote)
 chunk_size = 100            # default: 100 (batch size for fetching chunks)
 port = 18000                # default: 18000 (HTTP server port for web UI)
 sync_interval_seconds = 60  # default: 60 (seconds between automatic syncs)
-database_prefix = 'show'    # default: 'show' (database name: save_audio_{prefix}_{show_name})
+
+[database]
+url = 'postgres://user@host:5432'   # PostgreSQL URL (without password)
+credential_profile = 'my-postgres'  # Profile name in credentials.toml [postgres.<profile>]
+prefix = 'show'                     # default: 'show' (database name: save_audio_{prefix}_{show_name})
 ```
 
-**Credentials file** (`~/.config/save_audio_stream/credentials`):
+**Credentials file** (`~/.config/save_audio_stream/credentials.toml`):
 
 ```toml
-[my-postgres]
+[postgres.my-postgres]
 password = "your_postgres_password"
 ```
 
@@ -674,7 +678,7 @@ export_to_remote_periodically = true  # Optional: periodic auto-export
 host = 'sftp.example.com'
 port = 22
 username = 'uploader'
-credential_profile = 'my-sftp-server'  # Reference to ~/.config/save_audio_stream/credentials
+credential_profile = 'my-sftp-server'  # Reference to credentials.toml [sftp.<profile>]
 remote_dir = '/uploads/radio'
 
 [[sessions]]
@@ -686,14 +690,17 @@ record_start = '14:00'
 record_end = '16:00'
 ```
 
-**Credential file format** (`~/.config/save_audio_stream/credentials`):
+**Credential file format** (`~/.config/save_audio_stream/credentials.toml`):
 
 ```toml
-[my-sftp-server]
+[sftp.my-sftp-server]
 password = 'secret123'
 
-[another-server]
+[sftp.another-server]
 password = 'another_password'
+
+[postgres.my-postgres]
+password = 'postgres_password'
 ```
 
 **SFTP Export Features:**
