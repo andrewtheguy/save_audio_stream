@@ -330,6 +330,80 @@ h2 {
   cursor: not-allowed;
 }
 
+/* Hour view mode styles */
+.hour-slider-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.hour-slider-container {
+  flex: 1;
+}
+
+.hour-slider-container .progress-bar {
+  width: 100%;
+}
+
+.hour-nav-btn {
+  background: transparent;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #495057;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.hour-nav-btn:hover:not(:disabled) {
+  background: #f8f9fa;
+  border-color: #0066cc;
+  color: #0066cc;
+}
+
+.hour-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Hide slider thumb when playback is outside selected hour */
+.progress-bar.out-of-range::-webkit-slider-thumb {
+  opacity: 0;
+}
+
+.progress-bar.out-of-range::-moz-range-thumb {
+  opacity: 0;
+}
+
+.progress-bar.out-of-range::-ms-thumb {
+  opacity: 0;
+}
+
+.reset-hour-btn {
+  background: transparent;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #495057;
+}
+
+.reset-hour-btn:hover:not(:disabled) {
+  background: #f8f9fa;
+  border-color: #0066cc;
+  color: #0066cc;
+}
+
+.reset-hour-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .player-controls {
   display: flex;
   align-items: center;

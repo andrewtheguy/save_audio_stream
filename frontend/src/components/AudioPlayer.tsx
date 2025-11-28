@@ -1,5 +1,5 @@
 import { React, Hls } from "../../deps.ts";
-const { useEffect, useRef, useState } = React;
+const { useEffect, useRef, useState, useMemo } = React;
 
 interface AudioPlayerProps {
   format: string;
@@ -11,6 +11,9 @@ interface AudioPlayerProps {
   initialTime?: number;
   showName?: string | null;
 }
+
+// Time mode enum
+type TimeMode = "relative" | "absolute" | "hour";
 
 function formatTime(seconds: number): string {
   if (!isFinite(seconds)) return "--:--";
@@ -47,6 +50,21 @@ function formatAbsoluteTimeOnly(timestampMs: number, offsetSeconds: number): str
   return absoluteTime.toLocaleTimeString();
 }
 
+// Format seconds within an hour as MM:SS.ss
+function formatHourTime(secondsInHour: number): string {
+  if (!isFinite(secondsInHour)) return "--:--.--";
+  const minutes = Math.floor(secondsInHour / 60);
+  const secs = secondsInHour % 60;
+  return `${minutes.toString().padStart(2, "0")}:${secs.toFixed(2).padStart(5, "0")}`;
+}
+
+// Format timestamp as date + time for hour view markers
+function formatTimestampWithDate(timestampMs: number): string {
+  if (!isFinite(timestampMs)) return "--:--:--";
+  const date = new Date(timestampMs);
+  return `${date.toLocaleDateString()}, ${date.toLocaleTimeString()}`;
+}
+
 export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime, showName }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -60,7 +78,81 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const [volume, setVolume] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showAbsoluteTime, setShowAbsoluteTime] = useState(true);
+  const [timeMode, setTimeMode] = useState<TimeMode>("absolute");
+  const [selectedHourIndex, setSelectedHourIndex] = useState(0);
+
+  // Hour view computed values
+  const hourViewData = useMemo(() => {
+    const HOUR_SECONDS = 3600;
+
+    // Calculate session start position within its starting hour (based on absolute time)
+    const sessionStartDate = new Date(sessionTimestamp);
+    const sessionStartMinutes = sessionStartDate.getMinutes();
+    const sessionStartSeconds = sessionStartDate.getSeconds();
+    const sessionStartInHour = sessionStartMinutes * 60 + sessionStartSeconds; // seconds into the hour when session started
+
+    // Session end position within its ending hour
+    const sessionEndDate = new Date(sessionTimestamp + duration * 1000);
+    const sessionEndMinutes = sessionEndDate.getMinutes();
+    const sessionEndSeconds = sessionEndDate.getSeconds();
+    const sessionEndInHour = sessionEndMinutes * 60 + sessionEndSeconds;
+
+    // Calculate which absolute hours the session spans
+    const startHour = Math.floor(sessionTimestamp / (HOUR_SECONDS * 1000));
+    const endHour = Math.floor((sessionTimestamp + duration * 1000) / (HOUR_SECONDS * 1000));
+    const totalHours = endHour - startHour + 1;
+
+    // Which hour the current playback position is in (0-indexed relative to session)
+    const currentAbsoluteTime = sessionTimestamp + currentTime * 1000;
+    const currentAbsoluteHour = Math.floor(currentAbsoluteTime / (HOUR_SECONDS * 1000));
+    const currentHourIndex = currentAbsoluteHour - startHour;
+
+    // Calculate available time within the selected hour
+    // selectedHourIndex is relative to the session (0 = first hour of session)
+    const selectedAbsoluteHour = startHour + selectedHourIndex;
+    const isFirstHour = selectedHourIndex === 0;
+    const isLastHour = selectedHourIndex === totalHours - 1;
+
+    // Start of available time in this hour (0-3599)
+    const availableStartInHour = isFirstHour ? sessionStartInHour : 0;
+
+    // End of available time in this hour (0-3600)
+    const availableEndInHour = isLastHour ? sessionEndInHour : HOUR_SECONDS;
+
+    // Current position within the clock hour (0-3599)
+    const currentDate = new Date(sessionTimestamp + currentTime * 1000);
+    const currentMinutesInHour = currentDate.getMinutes();
+    const currentSecondsInHour = currentDate.getSeconds() + currentDate.getMilliseconds() / 1000;
+    const currentTimeInHour = currentMinutesInHour * 60 + currentSecondsInHour;
+
+    // Is current playback position within the selected hour view?
+    const isPlaybackInSelectedHour = currentHourIndex === selectedHourIndex;
+
+    // For seeking: convert hour position to audio currentTime
+    // hourStartOffset = seconds from audio start to the beginning of this hour window
+    const hourStartOffset = isFirstHour
+      ? 0
+      : (selectedAbsoluteHour * HOUR_SECONDS * 1000 - sessionTimestamp) / 1000;
+
+    // Calculate absolute timestamps for markers
+    const hourBoundaryMs = selectedAbsoluteHour * HOUR_SECONDS * 1000;
+    const availableStartTimestamp = hourBoundaryMs + availableStartInHour * 1000;
+    const availableEndTimestamp = hourBoundaryMs + availableEndInHour * 1000;
+
+    return {
+      totalHours: Math.max(1, totalHours),
+      currentHourIndex,
+      hourStartOffset,
+      availableStartInHour,
+      availableEndInHour,
+      currentTimeInHour: isPlaybackInSelectedHour ? currentTimeInHour : (selectedHourIndex < currentHourIndex ? availableEndInHour : availableStartInHour),
+      isPlaybackInSelectedHour,
+      HOUR_SECONDS,
+      sessionStartInHour,
+      availableStartTimestamp,
+      availableEndTimestamp,
+    };
+  }, [duration, currentTime, selectedHourIndex, sessionTimestamp]);
 
   // Save playback position to localStorage (per-session)
   const savePlaybackPosition = (position: number) => {
@@ -328,6 +420,66 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 30);
   };
 
+  // Cycle through time modes: absolute -> relative -> hour -> absolute
+  const cycleTimeMode = () => {
+    setTimeMode((prev) => {
+      // When entering hour mode, set to current hour
+      if (prev === "relative") {
+        setSelectedHourIndex(hourViewData.currentHourIndex);
+      }
+      if (prev === "absolute") return "relative";
+      if (prev === "relative") return "hour";
+      return "absolute";
+    });
+  };
+
+  // Hour navigation
+  const goToPrevHour = () => {
+    if (selectedHourIndex > 0) {
+      setSelectedHourIndex(selectedHourIndex - 1);
+    }
+  };
+
+  const goToNextHour = () => {
+    if (selectedHourIndex < hourViewData.totalHours - 1) {
+      setSelectedHourIndex(selectedHourIndex + 1);
+    }
+  };
+
+  const resetToCurrentHour = () => {
+    setSelectedHourIndex(hourViewData.currentHourIndex);
+  };
+
+  // Handle seek in hour mode
+  const handleHourSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!audioRef.current) return;
+    const timeInHour = parseFloat(e.target.value);
+    // Convert hour position to audio currentTime
+    // For first hour: audioTime = timeInHour - sessionStartInHour
+    // For other hours: audioTime = hourStartOffset + timeInHour
+    const audioTime = hourViewData.hourStartOffset + (timeInHour - (hourViewData.hourStartOffset === 0 ? hourViewData.sessionStartInHour : 0));
+    const clampedTime = Math.max(0, Math.min(audioTime, duration));
+    audioRef.current.currentTime = clampedTime;
+    setCurrentTime(clampedTime);
+  };
+
+  // Auto-switch to next hour only when playback is within the selected hour view
+  const prevHourIndexRef = useRef(hourViewData.currentHourIndex);
+  useEffect(() => {
+    if (timeMode !== "hour") return;
+    if (!isPlaying) return;
+
+    // Only auto-switch if we were previously in range (thumb was visible)
+    // and playback just moved to a different hour
+    if (prevHourIndexRef.current === selectedHourIndex &&
+        hourViewData.currentHourIndex !== selectedHourIndex &&
+        hourViewData.currentHourIndex >= 0 &&
+        hourViewData.currentHourIndex < hourViewData.totalHours) {
+      setSelectedHourIndex(hourViewData.currentHourIndex);
+    }
+    prevHourIndexRef.current = hourViewData.currentHourIndex;
+  }, [currentTime, timeMode, isPlaying, selectedHourIndex, hourViewData.currentHourIndex, hourViewData.totalHours]);
+
   return (
     <div className="audio-player-container">
       <audio ref={audioRef} />
@@ -337,72 +489,139 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
       {/* Progress section at top */}
       <div className="progress-section">
         <div className="current-time-display">
-          {showAbsoluteTime
+          {timeMode === "absolute"
             ? formatAbsoluteTime(sessionTimestamp, currentTime)
-            : formatTime(currentTime)}
+            : timeMode === "relative"
+            ? formatTime(currentTime)
+            : formatAbsoluteTimeOnly(sessionTimestamp, currentTime)}
         </div>
-        <input
-          type="range"
-          className="progress-bar"
-          min="0"
-          max={duration || 0}
-          value={currentTime}
-          onChange={handleSeek}
-          disabled={!duration || !!error}
-        />
-        <div className={`slider-ticks ${duration >= 120 ? 'with-quarters' : ''}`}>
-          <span className="tick"></span>
-          {duration >= 120 && (
-            <>
+
+        {timeMode === "hour" ? (
+          <div className="hour-slider-row">
+            <button
+              className="hour-nav-btn"
+              onClick={goToPrevHour}
+              disabled={selectedHourIndex === 0}
+              aria-label="Previous hour"
+              title="Previous hour"
+            >
+              ◀
+            </button>
+            <div className="hour-slider-container">
+              <input
+                type="range"
+                className={`progress-bar ${!hourViewData.isPlaybackInSelectedHour ? 'out-of-range' : ''}`}
+                min={hourViewData.availableStartInHour}
+                max={hourViewData.availableEndInHour}
+                value={hourViewData.isPlaybackInSelectedHour
+                  ? Math.max(hourViewData.availableStartInHour, Math.min(hourViewData.currentTimeInHour, hourViewData.availableEndInHour))
+                  : hourViewData.availableStartInHour}
+                onChange={handleHourSeek}
+                disabled={!duration || !!error || hourViewData.availableEndInHour <= hourViewData.availableStartInHour}
+              />
+              <div className="slider-ticks">
+                <span className="tick"></span>
+                <span className="tick"></span>
+              </div>
+              <div className="time-markers">
+                <span className="time-marker">{formatTimestampWithDate(hourViewData.availableStartTimestamp)}</span>
+                <span className="time-marker">{formatTimestampWithDate(hourViewData.availableEndTimestamp)}</span>
+              </div>
+            </div>
+            <button
+              className="hour-nav-btn"
+              onClick={goToNextHour}
+              disabled={selectedHourIndex >= hourViewData.totalHours - 1}
+              aria-label="Next hour"
+              title="Next hour"
+            >
+              ▶
+            </button>
+          </div>
+        ) : (
+          <>
+            <input
+              type="range"
+              className="progress-bar"
+              min="0"
+              max={duration || 0}
+              value={currentTime}
+              onChange={handleSeek}
+              disabled={!duration || !!error}
+            />
+            <div className={`slider-ticks ${duration >= 120 ? 'with-quarters' : ''}`}>
               <span className="tick"></span>
+              {duration >= 120 && (
+                <>
+                  <span className="tick"></span>
+                  <span className="tick"></span>
+                  <span className="tick"></span>
+                </>
+              )}
               <span className="tick"></span>
-              <span className="tick"></span>
-            </>
-          )}
-          <span className="tick"></span>
-        </div>
-        <div className="time-markers">
-          <span className="time-marker">
-            {showAbsoluteTime
-              ? formatAbsoluteTimeOnly(sessionTimestamp, 0)
-              : formatTime(0)}
-          </span>
-          {duration >= 120 && (
-            <>
+            </div>
+            <div className="time-markers">
               <span className="time-marker">
-                {showAbsoluteTime
-                  ? formatAbsoluteTimeOnly(sessionTimestamp, duration * 0.25)
-                  : formatTime(duration * 0.25)}
+                {timeMode === "absolute"
+                  ? formatAbsoluteTimeOnly(sessionTimestamp, 0)
+                  : formatTime(0)}
               </span>
+              {duration >= 120 && (
+                <>
+                  <span className="time-marker">
+                    {timeMode === "absolute"
+                      ? formatAbsoluteTimeOnly(sessionTimestamp, duration * 0.25)
+                      : formatTime(duration * 0.25)}
+                  </span>
+                  <span className="time-marker">
+                    {timeMode === "absolute"
+                      ? formatAbsoluteTimeOnly(sessionTimestamp, duration * 0.5)
+                      : formatTime(duration * 0.5)}
+                  </span>
+                  <span className="time-marker">
+                    {timeMode === "absolute"
+                      ? formatAbsoluteTimeOnly(sessionTimestamp, duration * 0.75)
+                      : formatTime(duration * 0.75)}
+                  </span>
+                </>
+              )}
               <span className="time-marker">
-                {showAbsoluteTime
-                  ? formatAbsoluteTimeOnly(sessionTimestamp, duration * 0.5)
-                  : formatTime(duration * 0.5)}
+                {timeMode === "absolute"
+                  ? formatAbsoluteTimeOnly(sessionTimestamp, duration)
+                  : formatTime(duration)}
               </span>
-              <span className="time-marker">
-                {showAbsoluteTime
-                  ? formatAbsoluteTimeOnly(sessionTimestamp, duration * 0.75)
-                  : formatTime(duration * 0.75)}
-              </span>
-            </>
-          )}
-          <span className="time-marker">
-            {showAbsoluteTime
-              ? formatAbsoluteTimeOnly(sessionTimestamp, duration)
-              : formatTime(duration)}
-          </span>
-        </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Controls row */}
       <div className="player-controls">
+        {timeMode === "hour" && (
+          <button
+            className="reset-hour-btn"
+            onClick={resetToCurrentHour}
+            disabled={selectedHourIndex === hourViewData.currentHourIndex}
+            title="Reset to current playback hour"
+            aria-label="Reset to current playback hour"
+          >
+            ⟲
+          </button>
+        )}
+
         <button
           className="time-mode-toggle"
-          onClick={() => setShowAbsoluteTime(!showAbsoluteTime)}
-          title={showAbsoluteTime ? "Show relative time" : "Show absolute time"}
-          aria-label={showAbsoluteTime ? "Show relative time" : "Show absolute time"}
+          onClick={cycleTimeMode}
+          title={
+            timeMode === "absolute"
+              ? "Switch to relative time"
+              : timeMode === "relative"
+              ? "Switch to hour view"
+              : "Switch to absolute time"
+          }
+          aria-label="Toggle time mode"
         >
-          {showAbsoluteTime ? "⏱" : "🕐"}
+          {timeMode === "absolute" ? "⏱" : timeMode === "relative" ? "🕐" : "⏰"}
         </button>
 
         <button
