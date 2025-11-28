@@ -3,16 +3,16 @@
 set -e
 
 # Parse arguments
-SKIP_PUSH=false
+DO_PUSH=false
 for arg in "$@"; do
     case $arg in
-        --no-push)
-            SKIP_PUSH=true
+        --push)
+            DO_PUSH=true
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--no-push]"
-            echo "  --no-push  Skip pushing to GitHub Container Registry"
+            echo "Usage: $0 [--push]"
+            echo "  --push  Push to GitHub Container Registry"
             exit 0
             ;;
     esac
@@ -45,8 +45,8 @@ echo "Both binaries built successfully!"
 echo "  tmp/save_audio_stream-amd64"
 echo "  tmp/save_audio_stream-arm64"
 
-# Push to GitHub Container Registry (unless --no-push)
-if [ "$SKIP_PUSH" = false ]; then
+# Push to GitHub Container Registry (only with --push)
+if [ "$DO_PUSH" = true ]; then
     GHCR_IMAGE="ghcr.io/andrewtheguy/save_audio_stream"
     TAG=$(date -u +"%Y%m%d%H%M%S")
 
@@ -66,7 +66,7 @@ if [ "$SKIP_PUSH" = false ]; then
     echo "  ${GHCR_IMAGE}:latest"
 else
     echo ""
-    echo "Skipping push to GitHub Container Registry (--no-push)"
+    echo "To push to GitHub Container Registry, run with --push"
 fi
 
 # run scp -i ~/.ssh/id_rsa_oracle tmp/save_audio_stream-arm64 opc@private.hpmp.net:~/ to update the server binary
