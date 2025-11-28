@@ -37,8 +37,14 @@ function formatAbsoluteTime(timestampMs: number, offsetSeconds: number): string 
   if (isToday) {
     return absoluteTime.toLocaleTimeString();
   } else {
-    return `${absoluteTime.toLocaleTimeString()} ${absoluteTime.toLocaleDateString()}`;
+    return `${absoluteTime.toLocaleDateString()} ${absoluteTime.toLocaleTimeString()}`;
   }
+}
+
+function formatAbsoluteTimeOnly(timestampMs: number, offsetSeconds: number): string {
+  if (!isFinite(offsetSeconds)) return "--:--:--";
+  const absoluteTime = new Date(timestampMs + offsetSeconds * 1000);
+  return absoluteTime.toLocaleTimeString();
 }
 
 export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime, showName }: AudioPlayerProps) {
@@ -330,6 +336,11 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
 
       {/* Progress section at top */}
       <div className="progress-section">
+        <div className="current-time-display">
+          {showAbsoluteTime
+            ? formatAbsoluteTime(sessionTimestamp, currentTime)
+            : formatTime(currentTime)}
+        </div>
         <input
           type="range"
           className="progress-bar"
@@ -339,15 +350,45 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
           onChange={handleSeek}
           disabled={!duration || !!error}
         />
+        <div className={`slider-ticks ${duration >= 120 ? 'with-quarters' : ''}`}>
+          <span className="tick"></span>
+          {duration >= 120 && (
+            <>
+              <span className="tick"></span>
+              <span className="tick"></span>
+              <span className="tick"></span>
+            </>
+          )}
+          <span className="tick"></span>
+        </div>
         <div className="time-markers">
-          <span className="time-display">
+          <span className="time-marker">
             {showAbsoluteTime
-              ? formatAbsoluteTime(sessionTimestamp, currentTime)
-              : formatTime(currentTime)}
+              ? formatAbsoluteTimeOnly(sessionTimestamp, 0)
+              : formatTime(0)}
           </span>
-          <span className="time-display">
+          {duration >= 120 && (
+            <>
+              <span className="time-marker">
+                {showAbsoluteTime
+                  ? formatAbsoluteTimeOnly(sessionTimestamp, duration * 0.25)
+                  : formatTime(duration * 0.25)}
+              </span>
+              <span className="time-marker">
+                {showAbsoluteTime
+                  ? formatAbsoluteTimeOnly(sessionTimestamp, duration * 0.5)
+                  : formatTime(duration * 0.5)}
+              </span>
+              <span className="time-marker">
+                {showAbsoluteTime
+                  ? formatAbsoluteTimeOnly(sessionTimestamp, duration * 0.75)
+                  : formatTime(duration * 0.75)}
+              </span>
+            </>
+          )}
+          <span className="time-marker">
             {showAbsoluteTime
-              ? formatAbsoluteTime(sessionTimestamp, duration)
+              ? formatAbsoluteTimeOnly(sessionTimestamp, duration)
               : formatTime(duration)}
           </span>
         </div>

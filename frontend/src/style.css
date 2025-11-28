@@ -261,17 +261,50 @@ h2 {
 
 .progress-section {
   margin-bottom: 0.75rem;
+  position: relative;
+}
+
+.current-time-display {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #2c3e50;
+  text-align: center;
+  margin-bottom: 0.5rem;
 }
 
 .progress-section .progress-bar {
   width: 100%;
+  margin-bottom: 0;
+}
+
+.slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 7px; /* Half of slider thumb width to align with track edges */
+  pointer-events: none;
+  margin-top: -4px;
   margin-bottom: 0.25rem;
+}
+
+.slider-ticks .tick {
+  width: 2px;
+  height: 8px;
+  background: #adb5bd;
+  border-radius: 1px;
 }
 
 .time-markers {
   display: flex;
   justify-content: space-between;
   padding: 0 2px;
+}
+
+.time-marker {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.75rem;
+  color: #6c757d;
+  text-align: center;
 }
 
 .skip-btn {
@@ -474,8 +507,12 @@ h2 {
 }
 
 @media (max-width: 768px) {
-  .time-markers .time-display {
-    font-size: 0.8rem;
+  .current-time-display {
+    font-size: 0.9rem;
+  }
+
+  .time-marker {
+    font-size: 0.65rem;
   }
 
   .skip-btn {
