@@ -1,0 +1,30 @@
+# Recording Configuration with SFTP Export
+# Audio sections stream directly to SFTP server without local temp files
+
+config_type = 'record'
+output_dir = './recordings'
+api_port = 17000
+
+# SFTP export options:
+# - export_to_sftp: enables SFTP upload via API endpoint /api/sync/shows/{name}/sections/{id}/export
+# - export_to_remote_periodically: automatically exports new sections every hour (requires export_to_sftp)
+export_to_sftp = true
+export_to_remote_periodically = true
+
+# SFTP server configuration
+[sftp]
+host = 'sftp.example.com'
+port = 22
+username = 'uploader'
+credential_profile = 'my-sftp-server'  # Profile in credentials.toml [sftp.<profile>]
+remote_dir = '/uploads/radio'
+
+[[sessions]]
+url = 'https://stream.example.com/radio'
+name = 'myradio'
+audio_format = 'opus'
+split_interval = 300
+
+[sessions.schedule]
+record_start = '14:00'
+record_end = '16:00'

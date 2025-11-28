@@ -1,0 +1,20 @@
+# Receiver Configuration Example
+# Syncs recordings from a remote server to local PostgreSQL databases
+
+config_type = 'receiver'
+
+# Required: URL of remote recording server
+remote_url = 'http://recording-server:17000'
+
+# Optional settings
+#shows = ['show1', 'show2']  # Whitelist shows to sync (omit to sync all)
+chunk_size = 100             # Batch size for fetching segments
+port = 18000                 # HTTP server port for web UI
+sync_interval_seconds = 60   # Seconds between automatic syncs
+
+# PostgreSQL database configuration
+[database]
+url = 'postgres://user@localhost:5432'  # Connection URL (without password)
+credential_profile = 'my-postgres'       # Profile in credentials.toml [postgres.<profile>]
+#prefix = 'show'                         # Database name prefix (default: 'show')
+                                         # Database names: save_audio_{prefix}_{show_name}

@@ -110,53 +110,23 @@ When built without the web frontend:
 ## Quick Start
 
 **On your recording server (stable connection):**
-```bash
-# Create recording config
-cat > record.toml << 'EOF'
-config_type = 'record'
-api_port = 17000
 
-[[sessions]]
-url = 'https://stream.example.com/radio'
-name = 'myradio'
-audio_format = 'opus'
-
-[sessions.schedule]
-record_start = '09:00'
-record_end = '17:00'
-EOF
-
-# Start recording
-./save_audio_stream record -c record.toml
-```
+1. Copy [`config/record.example.toml`](config/record.example.toml) to `record.toml` and customize
+2. Start recording:
+   ```bash
+   ./save_audio_stream record -c record.toml
+   ```
 
 **On your receiver server (can be offline, syncs when available):**
 
 Prerequisites: PostgreSQL server running locally or accessible remotely.
 
-```bash
-# Create credentials file for PostgreSQL password
-mkdir -p ~/.config/save_audio_stream
-cat > ~/.config/save_audio_stream/credentials.toml << 'EOF'
-[postgres.my-postgres]
-password = "your_postgres_password"
-EOF
-
-# Create receiver config
-cat > receiver.toml << 'EOF'
-config_type = 'receiver'
-remote_url = 'http://recording-server:17000'
-port = 18000
-sync_interval_seconds = 300
-
-[database]
-url = 'postgres://your_user@localhost:5432'
-credential_profile = 'my-postgres'
-EOF
-
-# Start receiver (syncs automatically, serves web UI)
-./save_audio_stream receiver --config receiver.toml
-```
+1. Copy [`config/credentials.example.toml`](config/credentials.example.toml) to `~/.config/save_audio_stream/credentials.toml` and add your PostgreSQL password
+2. Copy [`config/receiver.example.toml`](config/receiver.example.toml) to `receiver.toml` and customize
+3. Start receiver:
+   ```bash
+   ./save_audio_stream receiver --config receiver.toml
+   ```
 
 The receiver creates PostgreSQL databases named `save_audio_{prefix}_{show_name}` for each synced show (default prefix is `show`, e.g., `save_audio_show_myradio`).
 
@@ -183,42 +153,7 @@ save_audio_stream record -c <CONFIG_FILE> [-p <PORT>]
 
 #### Recording Config
 
-Config files use TOML format with `config_type = 'record'`:
-
-```toml
-# Required
-config_type = 'record'
-
-# Global settings
-output_dir = 'recordings'  # default: 'tmp' (applies to all sessions)
-api_port = 17000           # default: 17000 (API server for all sessions)
-
-[[sessions]]
-# Required
-url = 'https://stream.example.com/radio'
-name = 'myradio'
-
-# Optional (with defaults)
-audio_format = 'opus'      # default: 'opus' (options: aac, opus, wav)
-bitrate = 24               # default: 32 for AAC, 16 for Opus
-split_interval = 300       # default: 0 (no splitting, in seconds)
-storage_format = 'sqlite'  # default: 'sqlite'
-retention_hours = 72       # Optional: auto-delete old recordings after N hours
-
-# Schedule configuration (required)
-[sessions.schedule]
-record_start = '14:00'     # UTC time to start recording (HH:MM)
-record_end = '16:00'       # UTC time to stop recording (HH:MM)
-
-[[sessions]]
-# Add more sessions as needed
-url = 'https://stream2.example.com/radio'
-name = 'myradio2'
-
-[sessions.schedule]
-record_start = '18:00'
-record_end = '20:00'
-```
+Config files use TOML format with `config_type = 'record'`. See [`config/record.example.toml`](config/record.example.toml) for a complete example.
 
 ### Receiver Mode
 
@@ -241,30 +176,9 @@ save_audio_stream receiver --config <CONFIG_FILE> [--sync-only]
 
 #### Receiver Config
 
-Config files use TOML format with `config_type = 'receiver'`:
+Config files use TOML format with `config_type = 'receiver'`. See [`config/receiver.example.toml`](config/receiver.example.toml) for a complete example.
 
-```toml
-config_type = 'receiver'
-remote_url = 'http://remote:17000'  # URL of remote recording server
-
-# Optional
-shows = ['show1', 'show2']  # Show names to sync (omit to sync all shows from remote)
-chunk_size = 100            # default: 100 (batch size for fetching chunks)
-port = 18000                # default: 18000 (HTTP server port for web UI)
-sync_interval_seconds = 60  # default: 60 (seconds between automatic syncs)
-
-[database]
-url = 'postgres://user@host:5432'   # PostgreSQL URL (without password)
-credential_profile = 'my-postgres'  # Profile name in credentials.toml [postgres.<profile>]
-prefix = 'show'                     # default: 'show' (database name: save_audio_{prefix}_{show_name})
-```
-
-**Credentials file** (`~/.config/save_audio_stream/credentials.toml`):
-
-```toml
-[postgres.my-postgres]
-password = "your_postgres_password"
-```
+Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`config/credentials.example.toml`](config/credentials.example.toml) for the format.
 
 **Database naming:** Each show is stored in a separate PostgreSQL database named `save_audio_{prefix}_{show_name}` (default prefix is `show`). The databases are created automatically if they don't exist.
 
@@ -526,40 +440,15 @@ The application supports one-way synchronization from a remote recording server 
 
 ### Quick Start
 
-**1. Set up PostgreSQL credentials:**
+**1. Set up credentials and config:**
+
+- Copy [`config/credentials.example.toml`](config/credentials.example.toml) to `~/.config/save_audio_stream/credentials.toml` and add your PostgreSQL password
+- Copy [`config/receiver.example.toml`](config/receiver.example.toml) and customize for your setup
+
+**2. Run the receiver command:**
 
 ```bash
-mkdir -p ~/.config/save_audio_stream
-cat > ~/.config/save_audio_stream/credentials << 'EOF'
-[my-postgres]
-password = "your_postgres_password"
-EOF
-```
-
-**2. Create a sync config file** (e.g., `config/sync.toml`):
-
-**Sync all shows from remote (recommended):**
-```toml
-config_type = 'receiver'
-remote_url = 'http://remote:17000'
-postgres_url = 'postgres://user@localhost:5432'
-credential_profile = 'my-postgres'
-# shows parameter is omitted - will sync all available shows
-```
-
-**Or sync specific shows only (whitelist):**
-```toml
-config_type = 'receiver'
-remote_url = 'http://remote:17000'
-postgres_url = 'postgres://user@localhost:5432'
-credential_profile = 'my-postgres'
-shows = ['myradio']  # or ['show1', 'show2'] for multiple shows
-```
-
-**3. Run the receiver command:**
-
-```bash
-save_audio_stream receiver -c config/sync.toml
+save_audio_stream receiver -c config/receiver.toml
 ```
 
 Each show is stored in a separate PostgreSQL database named `save_audio_{prefix}_{show_name}` (e.g., `save_audio_show_myradio` with default prefix). Databases are created automatically if they don't exist.
@@ -662,46 +551,9 @@ The export API allows you to export individual recording sections (sessions) as 
 
 When SFTP export is configured globally, audio sections are streamed directly to the remote SFTP server from memory without creating local temporary files.
 
-**Configuration with SFTP export:**
+See [`config/record_sftp.example.toml`](config/record_sftp.example.toml) for a complete configuration example.
 
-```toml
-config_type = 'record'
-output_dir = './tmp/recorded'
-api_port = 17000
-
-# Enable SFTP export (global setting)
-export_to_sftp = true
-export_to_remote_periodically = true  # Optional: periodic auto-export
-
-# SFTP configuration (global)
-[sftp]
-host = 'sftp.example.com'
-port = 22
-username = 'uploader'
-credential_profile = 'my-sftp-server'  # Reference to credentials.toml [sftp.<profile>]
-remote_dir = '/uploads/radio'
-
-[[sessions]]
-url = 'https://stream.example.com/radio'
-name = 'myradio'
-
-[sessions.schedule]
-record_start = '14:00'
-record_end = '16:00'
-```
-
-**Credential file format** (`~/.config/save_audio_stream/credentials.toml`):
-
-```toml
-[sftp.my-sftp-server]
-password = 'secret123'
-
-[sftp.another-server]
-password = 'another_password'
-
-[postgres.my-postgres]
-password = 'postgres_password'
-```
+Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`config/credentials.example.toml`](config/credentials.example.toml) for the format.
 
 **SFTP Export Features:**
 - **Zero-disk I/O**: Audio data streams directly from database to SFTP server without local file creation
@@ -747,37 +599,11 @@ mkdir -p /tmp/sftp-uploads
 rclone serve sftp /tmp/sftp-uploads --addr :2233 --user demo --pass demo
 ```
 
-Then configure your session to use the local server:
+Then configure using [`config/record_sftp.example.toml`](config/record_sftp.example.toml) as a template, setting `host = 'localhost'`, `port = 2233`, `username = 'demo'`, and add the credential to `~/.config/save_audio_stream/credentials.toml`:
 
 ```toml
-config_type = 'record'
-export_to_sftp = true
-
-[sftp]
-host = 'localhost'
-port = 2233
-username = 'demo'
-credential_profile = 'local-dev'  # Reference to ~/.config/save_audio_stream/credentials
-remote_dir = '/'
-
-[[sessions]]
-url = 'https://stream.example.com/radio'
-name = 'myradio'
-
-[sessions.schedule]
-record_start = '14:00'
-record_end = '16:00'
-```
-
-And add credentials:
-
-```bash
-# Create credentials file
-mkdir -p ~/.config/save_audio_stream
-cat > ~/.config/save_audio_stream/credentials << 'EOF'
-[local-dev]
+[sftp.local-dev]
 password = "demo"
-EOF
 ```
 
 **Error Responses:**

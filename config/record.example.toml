@@ -1,0 +1,36 @@
+# Recording Configuration Example
+# Copy this file and customize for your setup
+
+config_type = 'record'
+
+# Global settings
+output_dir = './recordings'  # Directory to save recordings
+api_port = 17000             # API server port (required for sync)
+
+# Optional: SFTP export (see record_sftp.example.toml for full SFTP config)
+# export_to_sftp = true
+
+[[sessions]]
+url = 'https://stream.example.com/radio'
+name = 'myradio'
+
+# Optional settings (with defaults)
+audio_format = 'opus'       # Options: opus, aac, wav
+bitrate = 24                # kbps (default: 32 for AAC, 16 for Opus)
+split_interval = 300        # Split chunks every N seconds (0 = no split)
+storage_format = 'sqlite'   # Currently only sqlite supported
+retention_hours = 72        # Auto-delete recordings older than N hours
+
+# Schedule: when to record (UTC times)
+[sessions.schedule]
+record_start = '14:00'
+record_end = '16:00'
+
+# Add more sessions as needed
+[[sessions]]
+url = 'https://stream2.example.com/radio'
+name = 'myradio2'
+
+[sessions.schedule]
+record_start = '18:00'
+record_end = '20:00'

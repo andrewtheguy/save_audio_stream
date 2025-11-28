@@ -51,28 +51,11 @@ save_audio_stream receiver --config <CONFIG_FILE> --sync-only
 
 ### Configuration (TOML)
 
-```toml
-config_type = "receiver"
-remote_url = "http://remote:17000"
-shows = ["show1", "show2"]  # Optional filter
-port = 18000
-sync_interval_seconds = 60
-chunk_size = 100
-
-[database]
-url = "postgres://user@localhost:5432"
-credential_profile = "receiver"
-prefix = "show"  # Optional: database name prefix (default: "show")
-```
+See [`config/receiver.example.toml`](../config/receiver.example.toml) for a complete example.
 
 ### Credentials File
 
-Store PostgreSQL passwords in `~/.config/save_audio_stream/credentials.toml`:
-
-```toml
-[postgres.receiver]
-password = "your_postgres_password"
-```
+See [`config/credentials.example.toml`](../config/credentials.example.toml) for the format. Copy to `~/.config/save_audio_stream/credentials.toml`.
 
 ### Sync Architecture
 
