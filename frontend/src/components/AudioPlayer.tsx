@@ -150,13 +150,23 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     setSelectedHourIndex(0);
   }, [sectionId]);
 
-  // Initialize selectedHourIndex to the current playback hour when duration becomes available
+  // Initialize selectedHourIndex to the hour containing the initial/current position
   useEffect(() => {
-    if (!hourInitializedRef.current && duration > 0 && hourViewData.currentHourIndex >= 0) {
-      setSelectedHourIndex(hourViewData.currentHourIndex);
+    if (!hourInitializedRef.current && duration > 0) {
+      // Use initialTime if provided, otherwise use currentTime
+      const targetTime = (initialTime !== undefined && currentTime === 0) ? initialTime : currentTime;
+
+      // Calculate which hour the target position is in
+      const HOUR_SECONDS = 3600;
+      const targetAbsoluteTime = sessionTimestamp + targetTime * 1000;
+      const targetAbsoluteHour = Math.floor(targetAbsoluteTime / (HOUR_SECONDS * 1000));
+      const startHour = Math.floor(sessionTimestamp / (HOUR_SECONDS * 1000));
+      const targetHourIndex = Math.max(0, targetAbsoluteHour - startHour);
+
+      setSelectedHourIndex(targetHourIndex);
       hourInitializedRef.current = true;
     }
-  }, [duration, hourViewData.currentHourIndex]);
+  }, [duration, initialTime, currentTime, sessionTimestamp]);
 
   // Save playback position to localStorage (per-session)
   const savePlaybackPosition = (position: number) => {
