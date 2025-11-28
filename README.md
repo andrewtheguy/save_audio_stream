@@ -4,6 +4,10 @@ A live audio stream relay service that records Shoutcast/Icecast streams and syn
 
 > **Disclaimer**: This tool is intended for **private personal use only**, such as time-shifting live broadcasts for personal listening or capturing streams for AI/ML workflows (e.g., speech-to-text, audio analysis). Do not use this software for illegal purposes including but not limited to: setting up public relay servers, redistributing copyrighted content, or circumventing access controls. Users are responsible for complying with applicable laws and the terms of service of any streams they access.
 
+## Screenshot
+<img width="3457" height="2058" alt="Screenshot 2025-11-28 at 3 47 50 PM" src="https://github.com/user-attachments/assets/3a1e29be-e078-4ac8-8d92-89d3c64e7e76" />
+
+
 ## Architecture Overview
 
 This tool is designed for scenarios where you need to:
