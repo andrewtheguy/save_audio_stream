@@ -259,9 +259,48 @@ h2 {
   font-size: 0.9rem;
 }
 
+.progress-section {
+  margin-bottom: 0.75rem;
+}
+
+.progress-section .progress-bar {
+  width: 100%;
+  margin-bottom: 0.25rem;
+}
+
+.time-markers {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+
+.skip-btn {
+  background: transparent;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #495057;
+}
+
+.skip-btn:hover:not(:disabled) {
+  background: #f8f9fa;
+  border-color: #0066cc;
+  color: #0066cc;
+}
+
+.skip-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .player-controls {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
 }
@@ -435,27 +474,17 @@ h2 {
 }
 
 @media (max-width: 768px) {
-  .player-controls {
-    flex-wrap: wrap;
-  }
-
-  .progress-bar {
-    order: 3;
-    width: 100%;
-    flex-basis: 100%;
-  }
-
-  .time-mode-toggle {
-    order: 4;
-  }
-
-  .volume-control {
-    order: 5;
-    margin-left: auto;
-  }
-
-  .time-display {
+  .time-markers .time-display {
     font-size: 0.8rem;
+  }
+
+  .skip-btn {
+    padding: 0.3rem 0.5rem;
+    font-size: 0.8rem;
+  }
+
+  .volume-slider {
+    width: 60px;
   }
 }
 

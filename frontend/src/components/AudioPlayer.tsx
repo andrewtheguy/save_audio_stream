@@ -312,28 +312,24 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     setVolume(vol);
   };
 
+  const skipBackward = () => {
+    if (!audioRef.current) return;
+    audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 15);
+  };
+
+  const skipForward = () => {
+    if (!audioRef.current) return;
+    audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 30);
+  };
+
   return (
     <div className="audio-player-container">
       <audio ref={audioRef} />
 
       {error && <div className="player-error">{error}</div>}
 
-      <div className="player-controls">
-        <button
-          className="play-pause-btn"
-          onClick={togglePlayPause}
-          disabled={!!error}
-          aria-label={isPlaying ? "Pause" : "Play"}
-        >
-          {isLoading ? "⏳" : isPlaying ? "⏸" : "▶"}
-        </button>
-
-        <div className="time-display">
-          {showAbsoluteTime
-            ? formatAbsoluteTime(sessionTimestamp, currentTime)
-            : formatTime(currentTime)}
-        </div>
-
+      {/* Progress section at top */}
+      <div className="progress-section">
         <input
           type="range"
           className="progress-bar"
@@ -343,13 +339,22 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
           onChange={handleSeek}
           disabled={!duration || !!error}
         />
-
-        <div className="time-display">
-          {showAbsoluteTime
-            ? formatAbsoluteTime(sessionTimestamp, duration)
-            : formatTime(duration)}
+        <div className="time-markers">
+          <span className="time-display">
+            {showAbsoluteTime
+              ? formatAbsoluteTime(sessionTimestamp, currentTime)
+              : formatTime(currentTime)}
+          </span>
+          <span className="time-display">
+            {showAbsoluteTime
+              ? formatAbsoluteTime(sessionTimestamp, duration)
+              : formatTime(duration)}
+          </span>
         </div>
+      </div>
 
+      {/* Controls row */}
+      <div className="player-controls">
         <button
           className="time-mode-toggle"
           onClick={() => setShowAbsoluteTime(!showAbsoluteTime)}
@@ -357,6 +362,35 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
           aria-label={showAbsoluteTime ? "Show relative time" : "Show absolute time"}
         >
           {showAbsoluteTime ? "⏱" : "🕐"}
+        </button>
+
+        <button
+          className="skip-btn"
+          onClick={skipBackward}
+          disabled={!!error}
+          aria-label="Rewind 15 seconds"
+          title="Rewind 15 seconds"
+        >
+          -15s
+        </button>
+
+        <button
+          className="play-pause-btn"
+          onClick={togglePlayPause}
+          disabled={!!error}
+          aria-label={isPlaying ? "Pause" : "Play"}
+        >
+          {isLoading ? "⏳" : isPlaying ? "⏸" : "▶"}
+        </button>
+
+        <button
+          className="skip-btn"
+          onClick={skipForward}
+          disabled={!!error}
+          aria-label="Forward 30 seconds"
+          title="Forward 30 seconds"
+        >
+          +30s
         </button>
 
         <div className="volume-control">
