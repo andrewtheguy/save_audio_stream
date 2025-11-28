@@ -18,12 +18,28 @@ if ! command -v rclone &> /dev/null; then
     exit 1
 fi
 
+# Check for timeout command (gtimeout on macOS, timeout on Linux)
+if command -v gtimeout &> /dev/null; then
+    TIMEOUT_CMD="gtimeout"
+elif command -v timeout &> /dev/null; then
+    TIMEOUT_CMD="timeout"
+else
+    echo -e "${RED}Error: neither 'timeout' nor 'gtimeout' is installed${NC}"
+    echo "Please install coreutils:"
+    echo "  macOS:        brew install coreutils"
+    echo "  Ubuntu/Debian: sudo apt install coreutils"
+    exit 1
+fi
+
+# Timeout for rclone server (5 minutes should be plenty for tests)
+RCLONE_TIMEOUT="5m"
+
 PORT=13222
 
-echo -e "${GREEN}Starting rclone SFTP server on port $PORT...${NC}"
+echo -e "${GREEN}Starting rclone SFTP server on port $PORT (timeout: $RCLONE_TIMEOUT)...${NC}"
 
-# Start rclone in background
-rclone serve sftp :memory: --addr ":$PORT" --user demo --pass demo > /dev/null 2>&1 &
+# Start rclone in background with timeout to prevent hanging forever
+$TIMEOUT_CMD $RCLONE_TIMEOUT rclone serve sftp :memory: --addr ":$PORT" --user demo --pass demo > /dev/null 2>&1 &
 RCLONE_PID=$!
 
 # Ensure rclone is killed on script exit
