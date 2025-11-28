@@ -67,7 +67,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const [volume, setVolume] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [timeMode, setTimeMode] = useState<TimeMode>("absolute");
+  const [timeMode, setTimeMode] = useState<TimeMode>("hour");
   const [selectedHourIndex, setSelectedHourIndex] = useState(0);
 
   // Hour view computed values
@@ -182,20 +182,24 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
       hls.on(Hls.Events.ERROR, (event, data) => {
         console.error("HLS error:", data);
         if (data.fatal) {
-          // Check if it's a network error (temporary/recoverable)
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            // Retry with exponential backoff
+          const maxRetries = 5;
+
+          // Retry for network errors or media errors (both can be temporary)
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR || data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             retryCountRef.current += 1;
-            const maxRetries = 5;
 
             if (retryCountRef.current <= maxRetries) {
               const retryDelay = Math.min(1000 * Math.pow(2, retryCountRef.current - 1), 10000);
-              console.log(`Network error, retrying in ${retryDelay}ms (attempt ${retryCountRef.current}/${maxRetries})`);
+              console.log(`HLS error (${data.type}), retrying in ${retryDelay}ms (attempt ${retryCountRef.current}/${maxRetries})`);
               setError(`Connection error, retrying... (${retryCountRef.current}/${maxRetries})`);
 
               setTimeout(() => {
                 if (hlsRef.current) {
-                  hlsRef.current.startLoad();
+                  if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                    hlsRef.current.recoverMediaError();
+                  } else {
+                    hlsRef.current.startLoad();
+                  }
                 }
               }, retryDelay);
             } else {
@@ -208,7 +212,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
               }
             }
           } else {
-            // Media error or other fatal error - don't retry
+            // Other fatal error - don't retry
             setError("Failed to load HLS stream");
             setIsLoading(false);
             setIsPlaying(false);
