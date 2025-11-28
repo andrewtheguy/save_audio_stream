@@ -10,6 +10,8 @@ interface AudioPlayerProps {
   sectionId: number;
   initialTime?: number;
   showName?: string | null;
+  isActive: boolean;
+  onActivate: () => void;
 }
 
 // Time mode enum
@@ -54,7 +56,7 @@ function formatTimestampTimeOnly(timestampMs: number): string {
   return date.toLocaleTimeString();
 }
 
-export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime, showName }: AudioPlayerProps) {
+export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime, showName, isActive, onActivate }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const saveTimerRef = useRef<number | null>(null);
@@ -167,6 +169,9 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
 
   useEffect(() => {
     if (!audioRef.current) return;
+
+    // Only load HLS when this session is active
+    if (!isActive) return;
 
     // Reset retry count when loading new stream
     retryCountRef.current = 0;
@@ -298,7 +303,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         hlsRef.current = null;
       }
     };
-  }, [format, streamUrl, showName]);
+  }, [format, streamUrl, showName, isActive]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -374,6 +379,12 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   }, [dbUniqueId, sectionId]);
 
   const togglePlayPause = () => {
+    // Activate this session if not active
+    if (!isActive) {
+      onActivate();
+      return; // Will play after HLS loads when session becomes active
+    }
+
     if (!audioRef.current) return;
 
     if (isPlaying) {
@@ -390,6 +401,12 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Activate this session if not active
+    if (!isActive) {
+      onActivate();
+      return;
+    }
+
     if (!audioRef.current) return;
     const time = parseFloat(e.target.value);
     audioRef.current.currentTime = time;
@@ -404,11 +421,23 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   };
 
   const skipBackward = () => {
+    // Activate this session if not active
+    if (!isActive) {
+      onActivate();
+      return;
+    }
+
     if (!audioRef.current) return;
     audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 15);
   };
 
   const skipForward = () => {
+    // Activate this session if not active
+    if (!isActive) {
+      onActivate();
+      return;
+    }
+
     if (!audioRef.current) return;
     audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 30);
   };
@@ -444,6 +473,12 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
 
   // Handle seek in hour mode
   const handleHourSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Activate this session if not active
+    if (!isActive) {
+      onActivate();
+      return;
+    }
+
     if (!audioRef.current) return;
     const timeInHour = parseFloat(e.target.value);
     // Convert hour position to audio currentTime

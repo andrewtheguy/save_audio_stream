@@ -113,6 +113,16 @@ h2 {
   box-shadow: 0 4px 16px rgba(0, 102, 204, 0.2);
 }
 
+.session-card.active {
+  border-color: #28a745;
+  background: #f8fff9;
+}
+
+.session-card.active.selected {
+  border-color: #28a745;
+  box-shadow: 0 4px 16px rgba(40, 167, 69, 0.2);
+}
+
 .session-header {
   display: flex;
   justify-content: space-between;
@@ -151,6 +161,16 @@ h2 {
   color: #2c3e50;
 }
 
+.playing-badge {
+  font-size: 0.8rem;
+  color: #155724;
+  background: #d4edda;
+  padding: 0.25rem 0.75rem;
+  border-radius: 16px;
+  font-weight: 600;
+  margin-left: 0.5rem;
+}
+
 .session-duration {
   font-size: 0.95rem;
   color: #6c757d;
@@ -170,6 +190,41 @@ h2 {
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px solid #e9ecef;
+}
+
+.session-content.hidden-player {
+  display: none;
+}
+
+.inactive-session-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  margin-top: 0.5rem;
+  background: #fff3cd;
+  border: 1px solid #ffeeba;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  color: #856404;
+}
+
+.switch-to-active-btn {
+  background: #0066cc;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  white-space: nowrap;
+}
+
+.switch-to-active-btn:hover {
+  background: #0052a3;
 }
 
 .url-row {
@@ -777,6 +832,38 @@ a.show-card {
   padding: 0.25rem 0.75rem;
   border-radius: 16px;
   font-weight: 500;
+}
+
+/* Now Playing Indicator */
+.now-playing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: #d4edda;
+  border: 1px solid #c3e6cb;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  color: #155724;
+  font-weight: 500;
+}
+
+.now-playing-indicator.clickable {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.now-playing-indicator.clickable:hover {
+  background: #c3e6cb;
+  border-color: #28a745;
+}
+
+.now-playing-icon {
+  font-size: 0.85rem;
+}
+
+.now-playing-text {
+  white-space: nowrap;
 }
 
 /* Filter Controls */

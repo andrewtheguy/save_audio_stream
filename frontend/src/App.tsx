@@ -150,7 +150,8 @@ function ShowDetail({
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [audioFormat, setAudioFormat] = useState<string>("opus");
-  const [selectedSessionIndex, setSelectedSessionIndex] = useState<number | null>(null);
+  const [expandedSessionIndex, setExpandedSessionIndex] = useState<number | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(null); // section_id of actively playing session
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
   const [isReloading, setIsReloading] = useState(false);
 
@@ -200,7 +201,7 @@ function ShowDetail({
 
     const loadShowData = async () => {
       setLoading(true);
-      setSelectedSessionIndex(null);
+      setExpandedSessionIndex(null);
 
       try {
         const [formatData, sessionsData] = await Promise.all([
@@ -217,7 +218,7 @@ function ShowDetail({
         const metadata = await fetch(`/api/show/${decodedShowName}/metadata`).then((r) => r.json());
         setDbUniqueId(metadata.unique_id);
 
-        // Restore last played session for auto-select
+        // Restore last played session for auto-expand
         try {
           const lastSessionKey = `${metadata.unique_id}_lastSession`;
           const lastSessionId = localStorage.getItem(lastSessionKey);
@@ -227,7 +228,7 @@ function ShowDetail({
               (s: SessionInfo) => s.section_id === sectionId
             );
             if (sessionIndex !== -1) {
-              setSelectedSessionIndex(sessionIndex);
+              setExpandedSessionIndex(sessionIndex);
             }
           }
         } catch (err) {
@@ -322,7 +323,37 @@ function ShowDetail({
   const handleClearFilter = () => {
     setDateFilter("");
     setCurrentPage(1);
-    setSelectedSessionIndex(null);
+    setExpandedSessionIndex(null);
+  };
+
+  // Find the active session object
+  const activeSession = activeSessionId !== null
+    ? data.sessions.find((s) => s.section_id === activeSessionId)
+    : null;
+
+  // Handle activating a session (when user interacts with its controls)
+  const handleActivateSession = (sectionId: number) => {
+    setActiveSessionId(sectionId);
+  };
+
+  // Switch view to the active session
+  const handleSwitchToActiveSession = () => {
+    if (activeSession) {
+      const sessionIndex = paginatedSessions.findIndex((s) => s.section_id === activeSessionId);
+      if (sessionIndex !== -1) {
+        setExpandedSessionIndex(sessionIndex);
+      } else {
+        // Active session is on a different page - for now just expand it if it's in current data
+        const fullIndex = data.sessions.findIndex((s) => s.section_id === activeSessionId);
+        if (fullIndex !== -1) {
+          // Calculate which page and navigate there
+          const targetPage = Math.floor(fullIndex / pageSize) + 1;
+          setCurrentPage(targetPage);
+          const indexInPage = fullIndex % pageSize;
+          setExpandedSessionIndex(indexInPage);
+        }
+      }
+    }
   };
 
   return (
@@ -384,7 +415,7 @@ function ShowDetail({
               onChange={(e) => {
                 setDateFilter(e.target.value);
                 setCurrentPage(1);
-                setSelectedSessionIndex(null);
+                setExpandedSessionIndex(null);
               }}
               className="date-input"
             />
@@ -398,6 +429,18 @@ function ShowDetail({
               </button>
             )}
           </div>
+          {activeSession && (
+            <div
+              className="now-playing-indicator clickable"
+              onClick={handleSwitchToActiveSession}
+              title="Click to view active session"
+            >
+              <span className="now-playing-icon">▶</span>
+              <span className="now-playing-text">
+                Now Playing: {formatTimestamp(activeSession.timestamp_ms)}
+              </span>
+            </div>
+          )}
           <div className="filter-info">
             {dateFilter
               ? `${totalSessions} session${totalSessions !== 1 ? "s" : ""} on ${dateFilter}`
@@ -410,23 +453,28 @@ function ShowDetail({
         ) : (
           <div className="sessions-list">
             {paginatedSessions.map((session, index) => {
-              const isSelected = selectedSessionIndex === index;
+              const isExpanded = expandedSessionIndex === index;
+              const isActive = activeSessionId === session.section_id;
+              const showPlayer = isExpanded || isActive; // Show player if expanded OR active
               return (
                 <div
                   key={session.section_id}
-                  className={`session-card ${isSelected ? "selected" : ""}`}
+                  className={`session-card ${isExpanded ? "selected" : ""} ${isActive ? "active" : ""}`}
                 >
                   <div
                     className="session-header clickable"
-                    onClick={() => setSelectedSessionIndex(isSelected ? null : index)}
+                    onClick={() => setExpandedSessionIndex(isExpanded ? null : index)}
                   >
                     <span className="session-time">
                       {formatTimestamp(session.timestamp_ms)}
                     </span>
+                    {isActive && (
+                      <span className="playing-badge">▶ Playing</span>
+                    )}
                     <span className="session-duration">
                       Duration: {formatDuration(session.duration_seconds)}
                     </span>
-                    <span className="expand-icon">{isSelected ? "▼" : "▶"}</span>
+                    <span className="expand-icon">{isExpanded ? "▼" : "▶"}</span>
                   </div>
                   <div className="session-info">
                     <div className="url-row">
@@ -442,8 +490,24 @@ function ShowDetail({
                       </a>
                     </div>
                   </div>
-                  {isSelected && (
-                    <div className="session-content">
+                  {/* Show inactive session banner when expanded but not active */}
+                  {isExpanded && !isActive && activeSessionId !== null && (
+                    <div className="inactive-session-banner">
+                      <span>This is not the active session</span>
+                      <button
+                        className="switch-to-active-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSwitchToActiveSession();
+                        }}
+                      >
+                        Switch to active session
+                      </button>
+                    </div>
+                  )}
+                  {/* AudioPlayer: visible when expanded, hidden when active but collapsed */}
+                  {showPlayer && (
+                    <div className={`session-content ${!isExpanded && isActive ? "hidden-player" : ""}`}>
                       <AudioPlayer
                         format={audioFormat}
                         startId={session.start_id}
@@ -453,6 +517,8 @@ function ShowDetail({
                         sectionId={session.section_id}
                         initialTime={getSavedPosition(session.section_id)}
                         showName={decodedShowName}
+                        isActive={isActive}
+                        onActivate={() => handleActivateSession(session.section_id)}
                       />
                     </div>
                   )}
@@ -469,7 +535,7 @@ function ShowDetail({
               className="pagination-btn"
               onClick={() => {
                 setCurrentPage(1);
-                setSelectedSessionIndex(null);
+                setExpandedSessionIndex(null);
               }}
               disabled={currentPage === 1}
               title="First page"
@@ -480,7 +546,7 @@ function ShowDetail({
               className="pagination-btn"
               onClick={() => {
                 setCurrentPage((p) => Math.max(1, p - 1));
-                setSelectedSessionIndex(null);
+                setExpandedSessionIndex(null);
               }}
               disabled={currentPage === 1}
               title="Previous page"
@@ -494,7 +560,7 @@ function ShowDetail({
               className="pagination-btn"
               onClick={() => {
                 setCurrentPage((p) => Math.min(totalPages, p + 1));
-                setSelectedSessionIndex(null);
+                setExpandedSessionIndex(null);
               }}
               disabled={currentPage === totalPages}
               title="Next page"
@@ -505,7 +571,7 @@ function ShowDetail({
               className="pagination-btn"
               onClick={() => {
                 setCurrentPage(totalPages);
-                setSelectedSessionIndex(null);
+                setExpandedSessionIndex(null);
               }}
               disabled={currentPage === totalPages}
               title="Last page"
@@ -525,7 +591,8 @@ function InspectView() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [audioFormat, setAudioFormat] = useState<string>("opus");
-  const [selectedSessionIndex, setSelectedSessionIndex] = useState<number | null>(null);
+  const [expandedSessionIndex, setExpandedSessionIndex] = useState<number | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(null); // section_id of actively playing session
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
   const [isReloading, setIsReloading] = useState(false);
 
@@ -559,7 +626,7 @@ function InspectView() {
         const metadata = await fetch("/api/metadata").then((r) => r.json());
         setDbUniqueId(metadata.unique_id);
 
-        // Restore last played session for auto-select
+        // Restore last played session for auto-expand
         try {
           const lastSessionKey = `${metadata.unique_id}_lastSession`;
           const lastSessionId = localStorage.getItem(lastSessionKey);
@@ -569,7 +636,7 @@ function InspectView() {
               (s: SessionInfo) => s.section_id === sectionId
             );
             if (sessionIndex !== -1) {
-              setSelectedSessionIndex(sessionIndex);
+              setExpandedSessionIndex(sessionIndex);
             }
           }
         } catch (err) {
@@ -630,6 +697,26 @@ function InspectView() {
     return null;
   }
 
+  // Find the active session object
+  const activeSession = activeSessionId !== null
+    ? data.sessions.find((s) => s.section_id === activeSessionId)
+    : null;
+
+  // Handle activating a session (when user interacts with its controls)
+  const handleActivateSession = (sectionId: number) => {
+    setActiveSessionId(sectionId);
+  };
+
+  // Switch view to the active session
+  const handleSwitchToActiveSession = () => {
+    if (activeSession) {
+      const sessionIndex = data.sessions.findIndex((s) => s.section_id === activeSessionId);
+      if (sessionIndex !== -1) {
+        setExpandedSessionIndex(sessionIndex);
+      }
+    }
+  };
+
   return (
     <div id="app">
       <div className="app-header">
@@ -649,28 +736,45 @@ function InspectView() {
 
       <div className="sessions-container">
         <h2>Recording Sessions</h2>
+        {activeSession && (
+          <div
+            className="now-playing-indicator clickable"
+            onClick={handleSwitchToActiveSession}
+            title="Click to view active session"
+          >
+            <span className="now-playing-icon">▶</span>
+            <span className="now-playing-text">
+              Now Playing: {formatTimestamp(activeSession.timestamp_ms)}
+            </span>
+          </div>
+        )}
         {data.sessions.length === 0 ? (
           <p>No recording sessions found.</p>
         ) : (
           <div className="sessions-list">
             {data.sessions.map((session, index) => {
-              const isSelected = selectedSessionIndex === index;
+              const isExpanded = expandedSessionIndex === index;
+              const isActive = activeSessionId === session.section_id;
+              const showPlayer = isExpanded || isActive;
               return (
                 <div
-                  key={index}
-                  className={`session-card ${isSelected ? "selected" : ""}`}
+                  key={session.section_id}
+                  className={`session-card ${isExpanded ? "selected" : ""} ${isActive ? "active" : ""}`}
                 >
                   <div
                     className="session-header clickable"
-                    onClick={() => setSelectedSessionIndex(isSelected ? null : index)}
+                    onClick={() => setExpandedSessionIndex(isExpanded ? null : index)}
                   >
                     <span className="session-time">
                       {formatTimestamp(session.timestamp_ms)}
                     </span>
+                    {isActive && (
+                      <span className="playing-badge">▶ Playing</span>
+                    )}
                     <span className="session-duration">
                       Duration: {formatDuration(session.duration_seconds)}
                     </span>
-                    <span className="expand-icon">{isSelected ? "▼" : "▶"}</span>
+                    <span className="expand-icon">{isExpanded ? "▼" : "▶"}</span>
                   </div>
                   <div className="session-info">
                     <div className="url-row">
@@ -686,8 +790,24 @@ function InspectView() {
                       </a>
                     </div>
                   </div>
-                  {isSelected && (
-                    <div className="session-content">
+                  {/* Show inactive session banner when expanded but not active */}
+                  {isExpanded && !isActive && activeSessionId !== null && (
+                    <div className="inactive-session-banner">
+                      <span>This is not the active session</span>
+                      <button
+                        className="switch-to-active-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSwitchToActiveSession();
+                        }}
+                      >
+                        Switch to active session
+                      </button>
+                    </div>
+                  )}
+                  {/* AudioPlayer: visible when expanded, hidden when active but collapsed */}
+                  {showPlayer && (
+                    <div className={`session-content ${!isExpanded && isActive ? "hidden-player" : ""}`}>
                       <AudioPlayer
                         format={audioFormat}
                         startId={session.start_id}
@@ -696,6 +816,8 @@ function InspectView() {
                         dbUniqueId={dbUniqueId}
                         sectionId={session.section_id}
                         initialTime={getSavedPosition(session.section_id)}
+                        isActive={isActive}
+                        onActivate={() => handleActivateSession(session.section_id)}
                       />
                     </div>
                   )}
