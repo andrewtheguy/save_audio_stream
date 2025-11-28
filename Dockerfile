@@ -31,6 +31,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-v2-${T
     cargo build --release && \
     cp target/release/save_audio_stream /save_audio_stream
 
-# Final stage - copy binary to /tmp
+# Export stage - for extracting standalone binaries (used by docker-bake.hcl)
 FROM scratch AS export
 COPY --from=builder /save_audio_stream /save_audio_stream
+
+# Runtime stage - minimal image for container deployment
+FROM debian:trixie-slim AS runtime
+
+# Install runtime dependencies (SSL for HTTPS streams)
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /save_audio_stream /usr/local/bin/save_audio_stream
+
+ENTRYPOINT ["/usr/local/bin/save_audio_stream"]
