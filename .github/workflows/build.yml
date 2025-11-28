@@ -64,10 +64,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build and push Docker image (using pre-built binary)
         run: |
           TAG=${{ needs.prepare.outputs.tag }}
-          docker build --target runtime -t ${{ env.GHCR_IMAGE }}:${TAG}-${{ matrix.arch }} .
+          # Copy binary to build context root for Dockerfile
+          cp target/release/save_audio_stream-linux-${{ matrix.arch }} save_audio_stream
+          docker build --target runtime-prebuilt -t ${{ env.GHCR_IMAGE }}:${TAG}-${{ matrix.arch }} .
           docker push ${{ env.GHCR_IMAGE }}:${TAG}-${{ matrix.arch }}
 
   build-windows:
