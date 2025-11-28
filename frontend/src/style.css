@@ -525,6 +525,30 @@ h2 {
   margin-bottom: 0.75rem;
 }
 
+.controls-left,
+.controls-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.controls-left {
+  justify-content: flex-end;
+}
+
+.controls-right {
+  justify-content: flex-start;
+}
+
+.controls-center {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
 .play-pause-btn {
   background: #0066cc;
   color: white;
@@ -627,13 +651,6 @@ h2 {
   cursor: not-allowed;
 }
 
-.volume-control {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-shrink: 0;
-}
-
 .volume-icon {
   font-size: 1rem;
 }
@@ -712,6 +729,18 @@ h2 {
     gap: 0.4rem;
   }
 
+  .controls-center {
+    order: -1;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .controls-left,
+  .controls-right {
+    flex: 0 0 auto;
+    justify-content: center;
+  }
+
   .play-pause-btn {
     width: 48px;
     height: 48px;
@@ -734,14 +763,6 @@ h2 {
   /* Hide spacer on mobile to save space */
   .reset-hour-spacer {
     display: none;
-  }
-
-  /* Volume control on its own row */
-  .volume-control {
-    flex-basis: 100%;
-    justify-content: center;
-    min-height: 40px;
-    margin-top: 0.25rem;
   }
 
   .volume-slider {

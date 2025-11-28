@@ -632,56 +632,60 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
 
       {/* Controls row */}
       <div className="player-controls">
-        {timeMode === "hour" ? (
+        <div className="controls-left">
+          {timeMode === "hour" ? (
+            <button
+              className="reset-hour-btn"
+              onClick={resetToCurrentHour}
+              disabled={selectedHourIndex === hourViewData.currentHourIndex}
+              title="Reset to current playback hour"
+              aria-label="Reset to current playback hour"
+            >
+              ⟲
+            </button>
+          ) : (
+            <div className="reset-hour-spacer"></div>
+          )}
+
           <button
-            className="reset-hour-btn"
-            onClick={resetToCurrentHour}
-            disabled={selectedHourIndex === hourViewData.currentHourIndex}
-            title="Reset to current playback hour"
-            aria-label="Reset to current playback hour"
+            className="time-mode-toggle"
+            onClick={cycleTimeMode}
+            title={timeMode === "absolute" ? "Switch to hour view" : "Switch to absolute time"}
+            aria-label="Toggle time mode"
           >
-            ⟲
+            {timeMode === "absolute" ? "⏱" : "⏰"}
           </button>
-        ) : (
-          <div className="reset-hour-spacer"></div>
-        )}
+        </div>
 
-        <button
-          className="time-mode-toggle"
-          onClick={cycleTimeMode}
-          title={timeMode === "absolute" ? "Switch to hour view" : "Switch to absolute time"}
-          aria-label="Toggle time mode"
-        >
-          {timeMode === "absolute" ? "⏱" : "⏰"}
-        </button>
+        <div className="controls-center">
+          <button
+            className="skip-btn"
+            onClick={skipBackward}
+            aria-label="Rewind 15 seconds"
+            title="Rewind 15 seconds"
+          >
+            -15s
+          </button>
 
-        <button
-          className="skip-btn"
-          onClick={skipBackward}
-          aria-label="Rewind 15 seconds"
-          title="Rewind 15 seconds"
-        >
-          -15s
-        </button>
+          <button
+            className="play-pause-btn"
+            onClick={togglePlayPause}
+            aria-label={isPlaying ? "Pause" : "Play"}
+          >
+            {isLoading ? "⏳" : isPlaying ? "⏸" : "▶"}
+          </button>
 
-        <button
-          className="play-pause-btn"
-          onClick={togglePlayPause}
-          aria-label={isPlaying ? "Pause" : "Play"}
-        >
-          {isLoading ? "⏳" : isPlaying ? "⏸" : "▶"}
-        </button>
+          <button
+            className="skip-btn"
+            onClick={skipForward}
+            aria-label="Forward 30 seconds"
+            title="Forward 30 seconds"
+          >
+            +30s
+          </button>
+        </div>
 
-        <button
-          className="skip-btn"
-          onClick={skipForward}
-          aria-label="Forward 30 seconds"
-          title="Forward 30 seconds"
-        >
-          +30s
-        </button>
-
-        <div className="volume-control">
+        <div className="controls-right">
           <span className="volume-icon">🔊</span>
           <input
             type="range"
