@@ -110,6 +110,10 @@ pub struct SyncConfig {
     /// Interval in seconds between sync polling (default: 60)
     #[serde(default = "default_sync_interval")]
     pub sync_interval_seconds: u64,
+    /// Custom lease name for sync coordination (default: "sync")
+    /// Useful for testing to allow parallel execution with unique lease names
+    #[serde(default)]
+    pub lease_name: Option<String>,
 }
 
 /// Single session configuration

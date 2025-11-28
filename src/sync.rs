@@ -84,6 +84,12 @@ pub fn sync_shows(
             .as_millis()
     );
 
+    // Use custom lease name from config if provided, otherwise use default
+    let lease_name = config
+        .lease_name
+        .as_deref()
+        .unwrap_or(SYNC_LEASE_NAME);
+
     let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
 
     // Try to acquire the lease
@@ -91,7 +97,7 @@ pub fn sync_shows(
     let acquired = rt.block_on(async {
         db_postgres::try_acquire_lease_pg(
             global_pool,
-            SYNC_LEASE_NAME,
+            lease_name,
             &holder_id,
             lease_duration_ms,
         )
@@ -108,6 +114,7 @@ pub fn sync_shows(
     // Spawn lease renewal thread
     let renewal_pool = global_pool.clone();
     let renewal_holder_id = holder_id.clone();
+    let renewal_lease_name = lease_name.to_string();
     let renewal_interval_ms = (lease_duration_ms / 4).clamp(10_000, 30_000) as u64;
     let renewal_interval = std::time::Duration::from_millis(renewal_interval_ms);
     let (stop_tx, stop_rx) = mpsc::channel();
@@ -121,7 +128,7 @@ pub fn sync_shows(
                     let renewed = rt.block_on(async {
                         db_postgres::renew_lease_pg(
                             &renewal_pool,
-                            SYNC_LEASE_NAME,
+                            &renewal_lease_name,
                             &renewal_holder_id,
                             lease_duration_ms,
                         )
@@ -148,7 +155,7 @@ pub fn sync_shows(
 
     // Release the lease
     let _ = rt.block_on(async {
-        db_postgres::release_lease_pg(global_pool, SYNC_LEASE_NAME, &holder_id).await
+        db_postgres::release_lease_pg(global_pool, lease_name, &holder_id).await
     });
     println!("[Sync] Released sync lease");
 

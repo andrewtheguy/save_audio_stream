@@ -85,6 +85,7 @@ fn create_test_sync_config(
     postgres_url: String,
     shows: Option<Vec<String>>,
     chunk_size: u64,
+    lease_name: &str,
 ) -> SyncConfig {
     SyncConfig {
         config_type: ConfigType::Receiver,
@@ -95,6 +96,7 @@ fn create_test_sync_config(
         chunk_size: Some(chunk_size),
         port: 8080,
         sync_interval_seconds: 60,
+        lease_name: Some(lease_name.to_string()),
     }
 }
 
@@ -544,7 +546,7 @@ async fn test_sync_new_show() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Sync to destination (spawn blocking since sync_shows uses blocking reqwest client)
-    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
         sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
@@ -592,7 +594,7 @@ async fn test_sync_incremental() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Initial sync
-    let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100);
+    let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let global_pool_clone = global_pool.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -616,7 +618,7 @@ async fn test_sync_incremental() {
     // Now add more data to source and sync again
     // (In a real scenario, we'd update the source DB and restart server)
     // For this test, we verify that re-syncing doesn't break anything
-    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
         sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
@@ -672,6 +674,7 @@ async fn test_sync_with_whitelist() {
         postgres_url.clone(),
         Some(vec!["show1".to_string(), "show3".to_string()]),
         100,
+        "test_whitelist",
     );
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -725,7 +728,7 @@ async fn test_sync_metadata_validation() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Initial sync
-    let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100);
+    let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let global_pool_clone = global_pool.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -751,7 +754,7 @@ async fn test_sync_metadata_validation() {
     drop(pool);
 
     // Try to sync again - should fail due to metadata mismatch
-    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
         sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
@@ -867,7 +870,7 @@ async fn test_sync_rejects_old_version() {
     let global_pool = create_global_pool(&postgres_url, &password).await;
 
     // Try to sync - should fail due to version mismatch
-    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
         sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
@@ -991,7 +994,7 @@ async fn test_sync_rejects_recipient_database() {
     let global_pool = create_global_pool(&postgres_url, &password).await;
 
     // Try to sync - should fail with forbidden error
-    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100);
+    let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
         sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
