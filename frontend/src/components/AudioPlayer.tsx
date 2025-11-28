@@ -69,6 +69,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const [error, setError] = useState<string | null>(null);
   const [timeMode, setTimeMode] = useState<TimeMode>("hour");
   const [selectedHourIndex, setSelectedHourIndex] = useState(0);
+  const hourInitializedRef = useRef(false);
 
   // Hour view computed values
   const hourViewData = useMemo(() => {
@@ -142,6 +143,20 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
       availableEndTimestamp,
     };
   }, [duration, currentTime, selectedHourIndex, sessionTimestamp]);
+
+  // Reset hour initialization when session changes
+  useEffect(() => {
+    hourInitializedRef.current = false;
+    setSelectedHourIndex(0);
+  }, [sectionId]);
+
+  // Initialize selectedHourIndex to the current playback hour when duration becomes available
+  useEffect(() => {
+    if (!hourInitializedRef.current && duration > 0 && hourViewData.currentHourIndex >= 0) {
+      setSelectedHourIndex(hourViewData.currentHourIndex);
+      hourInitializedRef.current = true;
+    }
+  }, [duration, hourViewData.currentHourIndex]);
 
   // Save playback position to localStorage (per-session)
   const savePlaybackPosition = (position: number) => {
