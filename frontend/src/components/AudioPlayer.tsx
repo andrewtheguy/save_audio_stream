@@ -208,15 +208,14 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
       hls.on(Hls.Events.ERROR, (_event: unknown, data: { fatal: boolean; type: string }) => {
         console.error("HLS error:", data);
         if (data.fatal) {
-          const maxRetries = 2; // TODO: change back to 5 after testing
-          const retryDelay = 5000; // TODO: change back to exponential backoff after testing
+          const maxRetries = 5;
 
           // Retry for network errors or media errors (both can be temporary)
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR || data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             retryCountRef.current += 1;
 
             if (retryCountRef.current <= maxRetries) {
-              // const retryDelay = Math.min(1000 * Math.pow(2, retryCountRef.current - 1), 10000);
+              const retryDelay = Math.min(1000 * Math.pow(2, retryCountRef.current - 1), 10000);
               console.log(`HLS error (${data.type}), retrying in ${retryDelay}ms (attempt ${retryCountRef.current}/${maxRetries})`);
               setError(`Connection error, retrying... (${retryCountRef.current}/${maxRetries})`);
 
