@@ -170,9 +170,10 @@ function ShowDetail({
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [audioFormat, setAudioFormat] = useState<string>("opus");
-  const [selectedSessionIndex, setSelectedSessionIndex] = useState<number | null>(null);
+  const [activeSessionIndex, setActiveSessionIndex] = useState<number | null>(null);
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
   const [isReloading, setIsReloading] = useState(false);
+  const [newDataAvailable, setNewDataAvailable] = useState(false);
 
   // Helper to get saved position for any session
   const getSavedPosition = (sectionId: number): number | undefined => {
@@ -188,7 +189,6 @@ function ShowDetail({
     }
     return undefined;
   };
-  const [newDataAvailable, setNewDataAvailable] = useState(false);
   const [lastKnownEndId, setLastKnownEndId] = useState<number>(0);
   const [prevSyncStatus, setPrevSyncStatus] = useState<boolean>(false);
 
@@ -220,7 +220,7 @@ function ShowDetail({
 
     const loadShowData = async () => {
       setLoading(true);
-      setSelectedSessionIndex(null);
+      setActiveSessionIndex(null);
 
       try {
         const [formatData, sessionsData] = await Promise.all([
@@ -247,7 +247,7 @@ function ShowDetail({
               (s: SessionInfo) => s.section_id === sectionId
             );
             if (sessionIndex !== -1) {
-              setSelectedSessionIndex(sessionIndex);
+              setActiveSessionIndex(sessionIndex);
             }
           }
         } catch (err) {
@@ -342,7 +342,7 @@ function ShowDetail({
   const handleClearFilter = () => {
     setDateFilter("");
     setCurrentPage(1);
-    setSelectedSessionIndex(null);
+    setActiveSessionIndex(null);
   };
 
   return (
@@ -404,7 +404,7 @@ function ShowDetail({
               onChange={(e) => {
                 setDateFilter(e.target.value);
                 setCurrentPage(1);
-                setSelectedSessionIndex(null);
+                setActiveSessionIndex(null);
               }}
               className="date-input"
             />
@@ -425,23 +425,54 @@ function ShowDetail({
           </div>
         </div>
 
+        {/* Now Playing Section */}
+        <div className="now-playing-section">
+          {activeSessionIndex !== null && paginatedSessions[activeSessionIndex] ? (
+            <>
+              <div className="now-playing-info">
+                <span className="now-playing-label">Now Playing:</span>
+                <span className="now-playing-time">
+                  {formatDateWithTimeRange(
+                    paginatedSessions[activeSessionIndex].timestamp_ms,
+                    paginatedSessions[activeSessionIndex].timestamp_ms + paginatedSessions[activeSessionIndex].duration_seconds * 1000
+                  )}
+                </span>
+                <span className="now-playing-duration">
+                  Duration: {formatDuration(paginatedSessions[activeSessionIndex].duration_seconds)}
+                </span>
+              </div>
+              <AudioPlayer
+                format={audioFormat}
+                startId={paginatedSessions[activeSessionIndex].start_id}
+                endId={paginatedSessions[activeSessionIndex].end_id}
+                sessionTimestamp={paginatedSessions[activeSessionIndex].timestamp_ms}
+                dbUniqueId={dbUniqueId}
+                sectionId={paginatedSessions[activeSessionIndex].section_id}
+                initialTime={getSavedPosition(paginatedSessions[activeSessionIndex].section_id)}
+                showName={decodedShowName}
+              />
+            </>
+          ) : (
+            <div className="now-playing-placeholder">
+              Select a session to play
+            </div>
+          )}
+        </div>
+
         {totalSessions === 0 ? (
           <p>{dateFilter ? "No sessions found for this date." : "No recording sessions found."}</p>
         ) : (
           <div className="sessions-list">
             {paginatedSessions.map((session, index) => {
-              const isSelected = selectedSessionIndex === index;
+              const isActive = activeSessionIndex === index;
               const endTimestampMs = session.timestamp_ms + session.duration_seconds * 1000;
               const savedPos = getSavedPosition(session.section_id);
               return (
                 <div
                   key={session.section_id}
-                  className={`session-card ${isSelected ? "selected" : ""}`}
+                  className={`session-card ${isActive ? "active" : ""}`}
                 >
-                  <div
-                    className="session-header clickable"
-                    onClick={() => setSelectedSessionIndex(isSelected ? null : index)}
-                  >
+                  <div className="session-header">
                     <span className="session-time">
                       {formatDateWithTimeRange(session.timestamp_ms, endTimestampMs)}
                     </span>
@@ -451,36 +482,17 @@ function ShowDetail({
                     <span className="session-position">
                       Position: {formatPosition(savedPos)}
                     </span>
-                    <span className="expand-icon">{isSelected ? "▼" : "▶"}</span>
-                  </div>
-                  <div className="session-info">
-                    <div className="url-row">
-                      <span className="url-label">HLS:</span>
-                      <a
-                        href={getHlsUrl(session)}
-                        className="url-link"
-                        onClick={(e) => e.stopPropagation()}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                    {isActive ? (
+                      <span className="active-badge">Active</span>
+                    ) : (
+                      <button
+                        className="select-btn"
+                        onClick={() => setActiveSessionIndex(index)}
                       >
-                        {getHlsUrl(session)}
-                      </a>
-                    </div>
+                        Select
+                      </button>
+                    )}
                   </div>
-                  {isSelected && (
-                    <div className="session-content">
-                      <AudioPlayer
-                        format={audioFormat}
-                        startId={session.start_id}
-                        endId={session.end_id}
-                        sessionTimestamp={session.timestamp_ms}
-                        dbUniqueId={dbUniqueId}
-                        sectionId={session.section_id}
-                        initialTime={savedPos}
-                        showName={decodedShowName}
-                      />
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -494,7 +506,7 @@ function ShowDetail({
               className="pagination-btn"
               onClick={() => {
                 setCurrentPage(1);
-                setSelectedSessionIndex(null);
+                setActiveSessionIndex(null);
               }}
               disabled={currentPage === 1}
               title="First page"
@@ -505,7 +517,7 @@ function ShowDetail({
               className="pagination-btn"
               onClick={() => {
                 setCurrentPage((p) => Math.max(1, p - 1));
-                setSelectedSessionIndex(null);
+                setActiveSessionIndex(null);
               }}
               disabled={currentPage === 1}
               title="Previous page"
@@ -519,7 +531,7 @@ function ShowDetail({
               className="pagination-btn"
               onClick={() => {
                 setCurrentPage((p) => Math.min(totalPages, p + 1));
-                setSelectedSessionIndex(null);
+                setActiveSessionIndex(null);
               }}
               disabled={currentPage === totalPages}
               title="Next page"
@@ -530,7 +542,7 @@ function ShowDetail({
               className="pagination-btn"
               onClick={() => {
                 setCurrentPage(totalPages);
-                setSelectedSessionIndex(null);
+                setActiveSessionIndex(null);
               }}
               disabled={currentPage === totalPages}
               title="Last page"
@@ -550,7 +562,7 @@ function InspectView() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [audioFormat, setAudioFormat] = useState<string>("opus");
-  const [selectedSessionIndex, setSelectedSessionIndex] = useState<number | null>(null);
+  const [activeSessionIndex, setActiveSessionIndex] = useState<number | null>(null);
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
   const [isReloading, setIsReloading] = useState(false);
 
@@ -594,7 +606,7 @@ function InspectView() {
               (s: SessionInfo) => s.section_id === sectionId
             );
             if (sessionIndex !== -1) {
-              setSelectedSessionIndex(sessionIndex);
+              setActiveSessionIndex(sessionIndex);
             }
           }
         } catch (err) {
@@ -674,23 +686,54 @@ function InspectView() {
 
       <div className="sessions-container">
         <h2>Recording Sessions</h2>
+
+        {/* Now Playing Section */}
+        <div className="now-playing-section">
+          {activeSessionIndex !== null && data.sessions[activeSessionIndex] ? (
+            <>
+              <div className="now-playing-info">
+                <span className="now-playing-label">Now Playing:</span>
+                <span className="now-playing-time">
+                  {formatDateWithTimeRange(
+                    data.sessions[activeSessionIndex].timestamp_ms,
+                    data.sessions[activeSessionIndex].timestamp_ms + data.sessions[activeSessionIndex].duration_seconds * 1000
+                  )}
+                </span>
+                <span className="now-playing-duration">
+                  Duration: {formatDuration(data.sessions[activeSessionIndex].duration_seconds)}
+                </span>
+              </div>
+              <AudioPlayer
+                format={audioFormat}
+                startId={data.sessions[activeSessionIndex].start_id}
+                endId={data.sessions[activeSessionIndex].end_id}
+                sessionTimestamp={data.sessions[activeSessionIndex].timestamp_ms}
+                dbUniqueId={dbUniqueId}
+                sectionId={data.sessions[activeSessionIndex].section_id}
+                initialTime={getSavedPosition(data.sessions[activeSessionIndex].section_id)}
+              />
+            </>
+          ) : (
+            <div className="now-playing-placeholder">
+              Select a session to play
+            </div>
+          )}
+        </div>
+
         {data.sessions.length === 0 ? (
           <p>No recording sessions found.</p>
         ) : (
           <div className="sessions-list">
             {data.sessions.map((session, index) => {
-              const isSelected = selectedSessionIndex === index;
+              const isActive = activeSessionIndex === index;
               const endTimestampMs = session.timestamp_ms + session.duration_seconds * 1000;
               const savedPos = getSavedPosition(session.section_id);
               return (
                 <div
                   key={index}
-                  className={`session-card ${isSelected ? "selected" : ""}`}
+                  className={`session-card ${isActive ? "active" : ""}`}
                 >
-                  <div
-                    className="session-header clickable"
-                    onClick={() => setSelectedSessionIndex(isSelected ? null : index)}
-                  >
+                  <div className="session-header">
                     <span className="session-time">
                       {formatDateWithTimeRange(session.timestamp_ms, endTimestampMs)}
                     </span>
@@ -700,35 +743,17 @@ function InspectView() {
                     <span className="session-position">
                       Position: {formatPosition(savedPos)}
                     </span>
-                    <span className="expand-icon">{isSelected ? "▼" : "▶"}</span>
-                  </div>
-                  <div className="session-info">
-                    <div className="url-row">
-                      <span className="url-label">HLS:</span>
-                      <a
-                        href={getHlsUrl(session)}
-                        className="url-link"
-                        onClick={(e) => e.stopPropagation()}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                    {isActive ? (
+                      <span className="active-badge">Active</span>
+                    ) : (
+                      <button
+                        className="select-btn"
+                        onClick={() => setActiveSessionIndex(index)}
                       >
-                        {getHlsUrl(session)}
-                      </a>
-                    </div>
+                        Select
+                      </button>
+                    )}
                   </div>
-                  {isSelected && (
-                    <div className="session-content">
-                      <AudioPlayer
-                        format={audioFormat}
-                        startId={session.start_id}
-                        endId={session.end_id}
-                        sessionTimestamp={session.timestamp_ms}
-                        dbUniqueId={dbUniqueId}
-                        sectionId={session.section_id}
-                        initialTime={savedPos}
-                      />
-                    </div>
-                  )}
                 </div>
               );
             })}

@@ -113,6 +113,83 @@ h2 {
   box-shadow: 0 4px 16px rgba(0, 102, 204, 0.2);
 }
 
+.session-card.active {
+  border-color: #28a745;
+  background: #f8fff9;
+  box-shadow: 0 4px 16px rgba(40, 167, 69, 0.2);
+}
+
+/* Now Playing Section */
+.now-playing-section {
+  background: #ffffff;
+  border: 1px solid #e9ecef;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.now-playing-info {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.now-playing-label {
+  font-weight: 700;
+  color: #28a745;
+  font-size: 1rem;
+}
+
+.now-playing-time {
+  font-size: 1rem;
+  color: #2c3e50;
+}
+
+.now-playing-duration {
+  font-size: 0.9rem;
+  color: #6c757d;
+  background: #e7f3ff;
+  padding: 0.25rem 0.75rem;
+  border-radius: 16px;
+}
+
+.now-playing-placeholder {
+  color: #6c757d;
+  font-style: italic;
+  text-align: center;
+  padding: 2rem;
+}
+
+.active-badge {
+  background: #28a745;
+  color: white;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 16px;
+  margin-left: auto;
+}
+
+.select-btn {
+  background: #0066cc;
+  color: white;
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 16px;
+  cursor: pointer;
+  margin-left: auto;
+  transition: background-color 0.2s ease;
+}
+
+.select-btn:hover {
+  background: #0052a3;
+}
+
 .session-header {
   display: flex;
   justify-content: space-between;
