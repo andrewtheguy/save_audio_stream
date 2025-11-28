@@ -67,6 +67,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const [volume, setVolume] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hlsReloadKey, setHlsReloadKey] = useState(0);
   const [timeMode, setTimeMode] = useState<TimeMode>("hour");
   const [selectedHourIndex, setSelectedHourIndex] = useState(0);
   const hourInitializedRef = useRef(false);
@@ -318,7 +319,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         hlsRef.current = null;
       }
     };
-  }, [format, streamUrl, showName]);
+  }, [format, streamUrl, showName, hlsReloadKey]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -404,15 +405,21 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     if (isPlaying) {
       audioRef.current.pause();
     } else {
-      // Clear any previous error and reset retry count when user tries to play
-      if (error) {
+      // For fatal errors, trigger a full HLS reload
+      if (error && !error.includes("retrying")) {
+        // Save current position for restore after reload
+        savedPositionRef.current = audioRef.current.currentTime;
+        wasPlayingRef.current = false; // Don't auto-play, user needs to click play again
+
         setError(null);
         retryCountRef.current = 0;
-        // Reload HLS source if it was in error state
-        if (hlsRef.current) {
-          hlsRef.current.startLoad();
-        }
+        setIsLoading(true);
+
+        // Trigger full HLS reload
+        setHlsReloadKey((k) => k + 1);
+        return;
       }
+
       setIsLoading(true);
       audioRef.current.play().catch((err: unknown) => {
         console.error("Play error:", err);
