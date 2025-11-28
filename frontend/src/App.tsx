@@ -201,14 +201,13 @@ function ShowDetail({
   const buildSessionsUrl = (filterDate: string) => {
     let url = `/api/show/${decodedShowName}/sessions`;
     if (filterDate) {
-      // Calculate 12am local time of selected date
-      const startOfDay = new Date(filterDate);
-      startOfDay.setHours(0, 0, 0, 0);
+      // Parse date string as local time (YYYY-MM-DD format)
+      // Note: new Date("YYYY-MM-DD") parses as UTC, so we split and construct manually
+      const [year, month, day] = filterDate.split("-").map(Number);
+      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
       const startTs = startOfDay.getTime();
       // Calculate 12am of next day
-      const endOfDay = new Date(filterDate);
-      endOfDay.setDate(endOfDay.getDate() + 1);
-      endOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
       const endTs = endOfDay.getTime();
       url += `?start_ts=${startTs}&end_ts=${endTs}`;
     }
@@ -571,14 +570,13 @@ function InspectView() {
   const buildSessionsUrl = (filterDate: string) => {
     let url = "/api/sessions";
     if (filterDate) {
-      // Calculate 12am local time of selected date
-      const startOfDay = new Date(filterDate);
-      startOfDay.setHours(0, 0, 0, 0);
+      // Parse date string as local time (YYYY-MM-DD format)
+      // Note: new Date("YYYY-MM-DD") parses as UTC, so we split and construct manually
+      const [year, month, day] = filterDate.split("-").map(Number);
+      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
       const startTs = startOfDay.getTime();
       // Calculate 12am of next day
-      const endOfDay = new Date(filterDate);
-      endOfDay.setDate(endOfDay.getDate() + 1);
-      endOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
       const endTs = endOfDay.getTime();
       url += `?start_ts=${startTs}&end_ts=${endTs}`;
     }
