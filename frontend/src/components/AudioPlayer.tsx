@@ -30,18 +30,7 @@ function formatTime(seconds: number): string {
 function formatAbsoluteTime(timestampMs: number, offsetSeconds: number): string {
   if (!isFinite(offsetSeconds)) return "--:--:--";
   const absoluteTime = new Date(timestampMs + offsetSeconds * 1000);
-  const now = new Date();
-
-  // Check if the absolute time is today
-  const isToday = absoluteTime.getDate() === now.getDate() &&
-                  absoluteTime.getMonth() === now.getMonth() &&
-                  absoluteTime.getFullYear() === now.getFullYear();
-
-  if (isToday) {
-    return absoluteTime.toLocaleTimeString();
-  } else {
-    return `${absoluteTime.toLocaleDateString()} ${absoluteTime.toLocaleTimeString()}`;
-  }
+  return `${absoluteTime.toLocaleDateString()}, ${absoluteTime.toLocaleTimeString()}`;
 }
 
 function formatAbsoluteTimeOnly(timestampMs: number, offsetSeconds: number): string {
@@ -58,11 +47,11 @@ function formatHourTime(secondsInHour: number): string {
   return `${minutes.toString().padStart(2, "0")}:${secs.toFixed(2).padStart(5, "0")}`;
 }
 
-// Format timestamp as date + time for hour view markers
-function formatTimestampWithDate(timestampMs: number): string {
+// Format timestamp as time only for hour view markers
+function formatTimestampTimeOnly(timestampMs: number): string {
   if (!isFinite(timestampMs)) return "--:--:--";
   const date = new Date(timestampMs);
-  return `${date.toLocaleDateString()}, ${date.toLocaleTimeString()}`;
+  return date.toLocaleTimeString();
 }
 
 export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime, showName }: AudioPlayerProps) {
@@ -420,15 +409,14 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 30);
   };
 
-  // Cycle through time modes: absolute -> relative -> hour -> absolute
+  // Cycle through time modes: absolute -> hour -> absolute (relative disabled for now)
   const cycleTimeMode = () => {
     setTimeMode((prev) => {
       // When entering hour mode, set to current hour
-      if (prev === "relative") {
+      if (prev === "absolute") {
         setSelectedHourIndex(hourViewData.currentHourIndex);
+        return "hour";
       }
-      if (prev === "absolute") return "relative";
-      if (prev === "relative") return "hour";
       return "absolute";
     });
   };
@@ -489,11 +477,8 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
       {/* Progress section at top */}
       <div className="progress-section">
         <div className="current-time-display">
-          {timeMode === "absolute"
-            ? formatAbsoluteTime(sessionTimestamp, currentTime)
-            : timeMode === "relative"
-            ? formatTime(currentTime)
-            : formatAbsoluteTimeOnly(sessionTimestamp, currentTime)}
+          <div className="current-date">{new Date(sessionTimestamp + currentTime * 1000).toLocaleDateString()}</div>
+          <div className="current-time">{new Date(sessionTimestamp + currentTime * 1000).toLocaleTimeString()}</div>
         </div>
 
         {timeMode === "hour" ? (
@@ -519,13 +504,19 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
                 onChange={handleHourSeek}
                 disabled={!duration || !!error || hourViewData.availableEndInHour <= hourViewData.availableStartInHour}
               />
-              <div className="slider-ticks">
+              <div className="slider-ticks with-quarters">
+                <span className="tick"></span>
+                <span className="tick"></span>
+                <span className="tick"></span>
                 <span className="tick"></span>
                 <span className="tick"></span>
               </div>
               <div className="time-markers">
-                <span className="time-marker">{formatTimestampWithDate(hourViewData.availableStartTimestamp)}</span>
-                <span className="time-marker">{formatTimestampWithDate(hourViewData.availableEndTimestamp)}</span>
+                <span className="time-marker">{formatTimestampTimeOnly(hourViewData.availableStartTimestamp)}</span>
+                <span className="time-marker">{formatTimestampTimeOnly(hourViewData.availableStartTimestamp + (hourViewData.availableEndTimestamp - hourViewData.availableStartTimestamp) * 0.25)}</span>
+                <span className="time-marker">{formatTimestampTimeOnly(hourViewData.availableStartTimestamp + (hourViewData.availableEndTimestamp - hourViewData.availableStartTimestamp) * 0.5)}</span>
+                <span className="time-marker">{formatTimestampTimeOnly(hourViewData.availableStartTimestamp + (hourViewData.availableEndTimestamp - hourViewData.availableStartTimestamp) * 0.75)}</span>
+                <span className="time-marker">{formatTimestampTimeOnly(hourViewData.availableEndTimestamp)}</span>
               </div>
             </div>
             <button
@@ -612,16 +603,10 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="time-mode-toggle"
           onClick={cycleTimeMode}
-          title={
-            timeMode === "absolute"
-              ? "Switch to relative time"
-              : timeMode === "relative"
-              ? "Switch to hour view"
-              : "Switch to absolute time"
-          }
+          title={timeMode === "absolute" ? "Switch to hour view" : "Switch to absolute time"}
           aria-label="Toggle time mode"
         >
-          {timeMode === "absolute" ? "⏱" : timeMode === "relative" ? "🕐" : "⏰"}
+          {timeMode === "absolute" ? "⏱" : "⏰"}
         </button>
 
         <button

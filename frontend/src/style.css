@@ -266,11 +266,19 @@ h2 {
 
 .current-time-display {
   font-family: 'Courier New', Courier, monospace;
+  text-align: center;
+  margin-bottom: 0.5rem;
+}
+
+.current-date {
+  font-size: 0.8rem;
+  color: #6c757d;
+}
+
+.current-time {
   font-size: 1rem;
   font-weight: 600;
   color: #2c3e50;
-  text-align: center;
-  margin-bottom: 0.5rem;
 }
 
 .progress-section .progress-bar {
@@ -581,8 +589,12 @@ h2 {
 }
 
 @media (max-width: 768px) {
-  .current-time-display {
-    font-size: 0.9rem;
+  .current-date {
+    font-size: 0.7rem;
+  }
+
+  .current-time {
+    font-size: 0.85rem;
   }
 
   .time-marker {
