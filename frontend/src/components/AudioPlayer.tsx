@@ -67,8 +67,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const [volume, setVolume] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Only disable controls on fatal errors, not during retries
-  const isFatalError = error !== null && !error.includes("retrying");
+  const [hlsReloadKey, setHlsReloadKey] = useState(0);
   const [timeMode, setTimeMode] = useState<TimeMode>("hour");
   const [selectedHourIndex, setSelectedHourIndex] = useState(0);
   const hourInitializedRef = useRef(false);
@@ -209,14 +208,15 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
       hls.on(Hls.Events.ERROR, (_event: unknown, data: { fatal: boolean; type: string }) => {
         console.error("HLS error:", data);
         if (data.fatal) {
-          const maxRetries = 5;
+          const maxRetries = 2; // TODO: change back to 5 after testing
+          const retryDelay = 5000; // TODO: change back to exponential backoff after testing
 
           // Retry for network errors or media errors (both can be temporary)
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR || data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             retryCountRef.current += 1;
 
             if (retryCountRef.current <= maxRetries) {
-              const retryDelay = Math.min(1000 * Math.pow(2, retryCountRef.current - 1), 10000);
+              // const retryDelay = Math.min(1000 * Math.pow(2, retryCountRef.current - 1), 10000);
               console.log(`HLS error (${data.type}), retrying in ${retryDelay}ms (attempt ${retryCountRef.current}/${maxRetries})`);
               setError(`Connection error, retrying... (${retryCountRef.current}/${maxRetries})`);
 
@@ -319,7 +319,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         hlsRef.current = null;
       }
     };
-  }, [format, streamUrl, showName]);
+  }, [format, streamUrl, showName, hlsReloadKey]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -405,8 +405,23 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     if (isPlaying) {
       audioRef.current.pause();
     } else {
+      // For fatal errors, trigger a full HLS reload
+      if (error && !error.includes("retrying")) {
+        // Save current position for restore after reload
+        savedPositionRef.current = audioRef.current.currentTime;
+        wasPlayingRef.current = false; // Don't auto-play, user needs to click play again
+
+        setError(null);
+        retryCountRef.current = 0;
+        setIsLoading(true);
+
+        // Trigger full HLS reload
+        setHlsReloadKey((k) => k + 1);
+        return;
+      }
+
       setIsLoading(true);
-      audioRef.current.play().catch((err) => {
+      audioRef.current.play().catch((err: unknown) => {
         console.error("Play error:", err);
         setError("Failed to play audio");
         setIsLoading(false);
@@ -532,7 +547,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
                   ? Math.max(hourViewData.availableStartInHour, Math.min(hourViewData.currentTimeInHour, hourViewData.availableEndInHour))
                   : hourViewData.availableStartInHour}
                 onChange={handleHourSeek}
-                disabled={!duration || !!error || hourViewData.availableEndInHour <= hourViewData.availableStartInHour}
+                disabled={!duration || hourViewData.availableEndInHour <= hourViewData.availableStartInHour}
               />
               <div className="slider-ticks with-quarters">
                 <span className="tick"></span>
@@ -568,7 +583,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
               max={duration || 0}
               value={currentTime}
               onChange={handleSeek}
-              disabled={!duration || !!error}
+              disabled={!duration}
             />
             <div className={`slider-ticks ${duration >= 120 ? 'with-quarters' : ''}`}>
               <span className="tick"></span>
@@ -644,7 +659,6 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="skip-btn"
           onClick={skipBackward}
-          disabled={isFatalError}
           aria-label="Rewind 15 seconds"
           title="Rewind 15 seconds"
         >
@@ -654,7 +668,6 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="play-pause-btn"
           onClick={togglePlayPause}
-          disabled={isFatalError}
           aria-label={isPlaying ? "Pause" : "Play"}
         >
           {isLoading ? "⏳" : isPlaying ? "⏸" : "▶"}
@@ -663,7 +676,6 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="skip-btn"
           onClick={skipForward}
-          disabled={isFatalError}
           aria-label="Forward 30 seconds"
           title="Forward 30 seconds"
         >
