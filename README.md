@@ -823,7 +823,7 @@ In release mode:
 The `build.rs` script automatically:
 1. Detects release builds with `web-frontend` feature enabled
 2. Checks for Deno availability
-3. Runs `deno task build` in the `app/` directory to compile frontend assets to `app/dist/`
+3. Runs `deno task build` in the `frontend/` directory to compile frontend assets to `frontend/dist/`
 4. Embeds assets into the binary at compile time via `include_bytes!`
 
 If Deno is not available or the `web-frontend` feature is disabled, the frontend build is skipped.

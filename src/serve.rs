@@ -29,13 +29,13 @@ use crate::fmp4::{generate_init_segment, generate_media_segment};
 use crate::queries::{metadata, segments};
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
-const INDEX_HTML: &[u8] = include_bytes!("../app/dist/index.html");
+const INDEX_HTML: &[u8] = include_bytes!("../frontend/dist/index.html");
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
-const STYLE_CSS: &[u8] = include_bytes!("../app/dist/assets/style.css");
+const STYLE_CSS: &[u8] = include_bytes!("../frontend/dist/assets/style.css");
 
 #[cfg(all(not(debug_assertions), feature = "web-frontend"))]
-const MAIN_JS: &[u8] = include_bytes!("../app/dist/assets/main.js");
+const MAIN_JS: &[u8] = include_bytes!("../frontend/dist/assets/main.js");
 
 /// Parse Opus packets from audio data for fMP4 generation
 /// Opus packets are stored as 2-byte little-endian length followed by packet data
@@ -1074,7 +1074,7 @@ async fn proxy_to_vite(path: &str) -> Response {
             );
             (
                 StatusCode::BAD_GATEWAY,
-                format!("Failed to connect to dev server at {}. Make sure to run 'deno task dev' in the app/ directory.", VITE_DEV_SERVER)
+                format!("Failed to connect to dev server at {}. Make sure to run 'deno task dev' in the frontend/ directory.", VITE_DEV_SERVER)
             ).into_response()
         }
     }

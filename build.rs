@@ -20,7 +20,7 @@ fn main() {
 
         // Run deno task build
         let build_status = Command::new("deno")
-            .current_dir("app")
+            .current_dir("frontend")
             .arg("task")
             .arg("build")
             .status();
@@ -44,7 +44,7 @@ fn main() {
         // Tell cargo to rerun if app files change (excluding node_modules and dist)
         let exclude = ["node_modules", "dist"];
         //let mut debug_output = String::new();
-        if let Ok(entries) = fs::read_dir("app") {
+        if let Ok(entries) = fs::read_dir("frontend") {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 if !exclude.contains(&name.to_string_lossy().as_ref()) {
