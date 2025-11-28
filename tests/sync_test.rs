@@ -75,6 +75,7 @@ use tokio::sync::Mutex;
 use save_audio_stream::config::{ConfigType, SyncConfig};
 use save_audio_stream::db_postgres::{self, GLOBAL_DATABASE_NAME};
 use save_audio_stream::queries::{metadata, sections, segments};
+use save_audio_stream::segment_wire::{self, WireSegment};
 use save_audio_stream::sync::sync_shows;
 use save_audio_stream::EXPECTED_DB_VERSION;
 use sqlx::postgres::PgPool;
@@ -148,17 +149,6 @@ struct ShowsList {
 struct SectionInfo {
     id: i64,
     start_timestamp_ms: i64,
-}
-
-#[derive(Debug, Serialize)]
-struct SegmentData {
-    id: i64,
-    timestamp_ms: i64,
-    is_timestamp_from_source: i32,
-    #[serde(with = "serde_bytes")]
-    audio_data: Vec<u8>,
-    section_id: i64,
-    duration_samples: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -414,9 +404,9 @@ async fn get_segments_handler(
     .await
     .unwrap();
 
-    let segments: Vec<SegmentData> = rows
+    let segments: Vec<WireSegment> = rows
         .iter()
-        .map(|row| SegmentData {
+        .map(|row| WireSegment {
             id: row.get(0),
             timestamp_ms: row.get(1),
             is_timestamp_from_source: row.get(2),
@@ -426,7 +416,17 @@ async fn get_segments_handler(
         })
         .collect();
 
-    Json(segments).into_response()
+    let body = segment_wire::encode_segments(&segments);
+
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            segment_wire::CONTENT_TYPE,
+        )],
+        body,
+    )
+        .into_response()
 }
 
 /// Start a test HTTP server

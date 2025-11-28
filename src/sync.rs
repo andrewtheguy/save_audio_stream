@@ -8,6 +8,7 @@ use crate::config::SyncConfig;
 use crate::constants::EXPECTED_DB_VERSION;
 use crate::db_postgres::{self, SyncDbPg};
 use crate::queries::{metadata, segments};
+use crate::segment_wire;
 
 #[derive(Debug, Deserialize)]
 struct ShowInfo {
@@ -29,17 +30,6 @@ struct ShowMetadata {
     version: String,
     min_id: i64,
     max_id: i64,
-}
-
-#[derive(Debug, Deserialize)]
-struct SegmentData {
-    id: i64,
-    timestamp_ms: i64,
-    is_timestamp_from_source: i32,
-    #[serde(with = "serde_bytes")]
-    audio_data: Vec<u8>,
-    section_id: i64,
-    duration_samples: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -446,18 +436,39 @@ fn sync_single_show(
     while current_id <= target_max_id {
         let end_id = std::cmp::min(current_id + chunk_size as i64 - 1, target_max_id);
 
-        // Fetch segments (no retry on network error)
+        // Fetch segments as binary (no retry on network error)
         let segments_url = format!(
             "{}/api/sync/shows/{}/segments?start_id={}&end_id={}&limit={}",
             remote_url, show_name, current_id, end_id, chunk_size
         );
 
-        let segments: Vec<SegmentData> = client
+        let response = client
             .get(&segments_url)
             .send()
-            .map_err(|e| format!("Network error fetching segments: {}", e))?
-            .json()
-            .map_err(|e| format!("Failed to parse segments JSON: {}", e))?;
+            .map_err(|e| format!("Network error fetching segments: {}", e))?;
+
+        // Verify content type
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if content_type != segment_wire::CONTENT_TYPE {
+            return Err(format!(
+                "Unexpected content type: '{}'. Server may be running old version (expected '{}')",
+                content_type,
+                segment_wire::CONTENT_TYPE
+            )
+            .into());
+        }
+
+        let body = response
+            .bytes()
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+        let segments = segment_wire::decode_segments(&body)
+            .map_err(|e| format!("Failed to decode segments: {}", e))?;
 
         if segments.is_empty() {
             return Err(format!("No segments returned for range {}-{}", current_id, end_id).into());

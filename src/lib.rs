@@ -15,6 +15,7 @@ pub mod queries;
 pub mod record;
 pub mod schedule;
 pub mod schema;
+pub mod segment_wire;
 pub mod serve;
 pub mod serve_record;
 pub mod sftp;

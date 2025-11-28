@@ -1,1 +1,3 @@
 - Since the project is still not finalized yet, no backward compatibility or migration path is needed for any updates including sqlite to reduce unnecessary complexity. An exception would be the postgresql database because it is storing data in its final form for long-term use.
+- use scripts/run-sftp-tests.sh to run sftp related tests.
+- use scripts/run-sync-tests.sh to run sync related tests with real postgres instance.

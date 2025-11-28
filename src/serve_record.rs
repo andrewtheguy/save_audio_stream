@@ -20,6 +20,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::audio::{create_opus_comment_header_with_duration, create_opus_id_header};
 use crate::queries::{metadata, sections, segments};
+use crate::segment_wire::{self, WireSegment};
 
 // Import ShowLocks and get_show_lock from the crate root
 // (defined in both lib.rs and main.rs)
@@ -175,16 +176,6 @@ pub struct SyncSegmentsQuery {
     pub limit: Option<u64>,
 }
 
-#[derive(Serialize)]
-struct SegmentData {
-    id: i64,
-    timestamp_ms: i64,
-    is_timestamp_from_source: i32,
-    #[serde(with = "serde_bytes")]
-    audio_data: Vec<u8>,
-    section_id: i64,
-    duration_samples: i64,
-}
 
 pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
     // Scan output directory for .sqlite files
@@ -630,9 +621,9 @@ pub async fn sync_show_segments_handler(
         }
     };
 
-    let segment_list: Vec<SegmentData> = rows
+    let segments: Vec<WireSegment> = rows
         .iter()
-        .map(|row| SegmentData {
+        .map(|row| WireSegment {
             id: row.get(0),
             timestamp_ms: row.get(1),
             is_timestamp_from_source: row.get(2),
@@ -642,7 +633,17 @@ pub async fn sync_show_segments_handler(
         })
         .collect();
 
-    (StatusCode::OK, axum::Json(segment_list)).into_response()
+    let body = segment_wire::encode_segments(&segments);
+
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            segment_wire::CONTENT_TYPE,
+        )],
+        body,
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
