@@ -10,6 +10,8 @@ interface AudioPlayerProps {
   sectionId: number;
   initialTime?: number;
   showName?: string | null;
+  isActive?: boolean; // Whether this is the active playing session (default true)
+  onSwitchToSession?: () => void; // Callback when user clicks "Switch to this session"
 }
 
 // Time mode enum
@@ -54,7 +56,7 @@ function formatTimestampTimeOnly(timestampMs: number): string {
   return date.toLocaleTimeString();
 }
 
-export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime, showName }: AudioPlayerProps) {
+export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUniqueId, sectionId, initialTime, showName, isActive = true, onSwitchToSession }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const saveTimerRef = useRef<number | null>(null);
@@ -167,6 +169,11 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
 
   useEffect(() => {
     if (!audioRef.current) return;
+
+    // Don't load HLS if not active - just show preview UI
+    if (!isActive) {
+      return;
+    }
 
     // Reset retry count when loading new stream
     retryCountRef.current = 0;
@@ -298,7 +305,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         hlsRef.current = null;
       }
     };
-  }, [format, streamUrl, showName]);
+  }, [format, streamUrl, showName, isActive]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -472,17 +479,27 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     prevHourIndexRef.current = hourViewData.currentHourIndex;
   }, [currentTime, timeMode, isPlaying, selectedHourIndex, hourViewData.currentHourIndex, hourViewData.totalHours]);
 
+  // For inactive players, use initialTime as the preview position
+  const previewTime = initialTime ?? 0;
+
   return (
-    <div className="audio-player-container">
+    <div className={`audio-player-container ${!isActive ? 'disabled' : ''}`}>
       <audio ref={audioRef} />
+
+      {/* Switch to session button for inactive players */}
+      {!isActive && onSwitchToSession && (
+        <button className="switch-session-btn" onClick={onSwitchToSession}>
+          Switch to this session
+        </button>
+      )}
 
       {error && <div className="player-error">{error}</div>}
 
       {/* Progress section at top */}
       <div className="progress-section">
         <div className="current-time-display">
-          <div className="current-date">{new Date(sessionTimestamp + currentTime * 1000).toLocaleDateString()}</div>
-          <div className="current-time">{new Date(sessionTimestamp + currentTime * 1000).toLocaleTimeString()}</div>
+          <div className="current-date">{new Date(sessionTimestamp + (isActive ? currentTime : previewTime) * 1000).toLocaleDateString()}</div>
+          <div className="current-time">{new Date(sessionTimestamp + (isActive ? currentTime : previewTime) * 1000).toLocaleTimeString()}</div>
         </div>
 
         {timeMode === "hour" ? (
@@ -490,7 +507,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
             <button
               className="hour-nav-btn"
               onClick={goToPrevHour}
-              disabled={selectedHourIndex === 0}
+              disabled={!isActive || selectedHourIndex === 0}
               aria-label="Previous hour"
               title="Previous hour"
             >
@@ -506,7 +523,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
                   ? Math.max(hourViewData.availableStartInHour, Math.min(hourViewData.currentTimeInHour, hourViewData.availableEndInHour))
                   : hourViewData.availableStartInHour}
                 onChange={handleHourSeek}
-                disabled={!duration || !!error || hourViewData.availableEndInHour <= hourViewData.availableStartInHour}
+                disabled={!isActive || !duration || !!error || hourViewData.availableEndInHour <= hourViewData.availableStartInHour}
               />
               <div className="slider-ticks with-quarters">
                 <span className="tick"></span>
@@ -526,7 +543,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
             <button
               className="hour-nav-btn"
               onClick={goToNextHour}
-              disabled={selectedHourIndex >= hourViewData.totalHours - 1}
+              disabled={!isActive || selectedHourIndex >= hourViewData.totalHours - 1}
               aria-label="Next hour"
               title="Next hour"
             >
@@ -540,9 +557,9 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
               className="progress-bar"
               min="0"
               max={duration || 0}
-              value={currentTime}
+              value={isActive ? currentTime : previewTime}
               onChange={handleSeek}
-              disabled={!duration || !!error}
+              disabled={!isActive || !duration || !!error}
             />
             <div className={`slider-ticks ${duration >= 120 ? 'with-quarters' : ''}`}>
               <span className="tick"></span>
@@ -596,7 +613,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
           <button
             className="reset-hour-btn"
             onClick={resetToCurrentHour}
-            disabled={selectedHourIndex === hourViewData.currentHourIndex}
+            disabled={!isActive || selectedHourIndex === hourViewData.currentHourIndex}
             title="Reset to current playback hour"
             aria-label="Reset to current playback hour"
           >
@@ -609,6 +626,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="time-mode-toggle"
           onClick={cycleTimeMode}
+          disabled={!isActive}
           title={timeMode === "absolute" ? "Switch to hour view" : "Switch to absolute time"}
           aria-label="Toggle time mode"
         >
@@ -618,7 +636,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="skip-btn"
           onClick={skipBackward}
-          disabled={!!error}
+          disabled={!isActive || !!error}
           aria-label="Rewind 15 seconds"
           title="Rewind 15 seconds"
         >
@@ -628,7 +646,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="play-pause-btn"
           onClick={togglePlayPause}
-          disabled={!!error}
+          disabled={!isActive || !!error}
           aria-label={isPlaying ? "Pause" : "Play"}
         >
           {isLoading ? "⏳" : isPlaying ? "⏸" : "▶"}
@@ -637,7 +655,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="skip-btn"
           onClick={skipForward}
-          disabled={!!error}
+          disabled={!isActive || !!error}
           aria-label="Forward 30 seconds"
           title="Forward 30 seconds"
         >
@@ -654,6 +672,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
             step="0.1"
             value={volume}
             onChange={handleVolumeChange}
+            disabled={!isActive}
           />
         </div>
       </div>

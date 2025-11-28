@@ -923,3 +923,108 @@ a.show-card {
     font-size: 0.85rem;
   }
 }
+
+/* Now Playing Banner */
+.now-playing-banner {
+  background: linear-gradient(135deg, #e8f4fc 0%, #d4edda 100%);
+  border: 1px solid #28a745;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.now-playing-banner:hover {
+  background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(40, 167, 69, 0.2);
+}
+
+.now-playing-label {
+  font-weight: 700;
+  color: #155724;
+  font-size: 0.95rem;
+}
+
+.now-playing-time {
+  color: #2c3e50;
+  font-weight: 500;
+}
+
+.now-playing-duration {
+  color: #6c757d;
+  font-size: 0.9rem;
+}
+
+/* Now Playing indicator on session cards */
+.session-card.now-playing {
+  border-color: #28a745;
+  background: linear-gradient(to bottom, #f8fff8 0%, #ffffff 100%);
+}
+
+.now-playing-indicator {
+  background: #28a745;
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Disabled Audio Player state */
+.audio-player-container.disabled {
+  opacity: 0.7;
+  position: relative;
+}
+
+.audio-player-container.disabled .progress-bar,
+.audio-player-container.disabled .volume-slider {
+  cursor: not-allowed;
+}
+
+.audio-player-container.disabled .play-pause-btn {
+  background: #adb5bd;
+  cursor: not-allowed;
+}
+
+.audio-player-container.disabled .skip-btn,
+.audio-player-container.disabled .time-mode-toggle,
+.audio-player-container.disabled .reset-hour-btn,
+.audio-player-container.disabled .hour-nav-btn {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Switch to Session Button */
+.switch-session-btn {
+  background: linear-gradient(135deg, #0066cc 0%, #0052a3 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: block;
+  width: 100%;
+  margin-bottom: 0.75rem;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 102, 204, 0.2);
+}
+
+.switch-session-btn:hover {
+  background: linear-gradient(135deg, #0052a3 0%, #004080 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 102, 204, 0.3);
+}
+
+.switch-session-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(0, 102, 204, 0.2);
+}
