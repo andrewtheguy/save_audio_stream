@@ -156,7 +156,7 @@ EOF
 ./save_audio_stream receiver --config receiver.toml
 ```
 
-The receiver creates PostgreSQL databases named `save_audio_{show_name}` for each synced show.
+The receiver creates PostgreSQL databases named `save_audio_{prefix}_{show_name}` for each synced show (default prefix is `show`, e.g., `save_audio_show_myradio`).
 
 Open `http://localhost:18000` to browse and play synced recordings.
 
@@ -252,6 +252,7 @@ shows = ['show1', 'show2']  # Show names to sync (omit to sync all shows from re
 chunk_size = 100            # default: 100 (batch size for fetching chunks)
 port = 18000                # default: 18000 (HTTP server port for web UI)
 sync_interval_seconds = 60  # default: 60 (seconds between automatic syncs)
+database_prefix = 'show'    # default: 'show' (database name: save_audio_{prefix}_{show_name})
 ```
 
 **Credentials file** (`~/.config/save_audio_stream/credentials`):
@@ -261,7 +262,7 @@ sync_interval_seconds = 60  # default: 60 (seconds between automatic syncs)
 password = "your_postgres_password"
 ```
 
-**Database naming:** Each show is stored in a separate PostgreSQL database named `save_audio_{show_name}`. The databases are created automatically if they don't exist.
+**Database naming:** Each show is stored in a separate PostgreSQL database named `save_audio_{prefix}_{show_name}` (default prefix is `show`). The databases are created automatically if they don't exist.
 
 **Note:** Periodic sync runs automatically in the backend at `sync_interval_seconds` intervals. The web UI displays sync status but does not control the sync schedule.
 
@@ -323,6 +324,7 @@ password = "your_postgres_password"
 | `chunk_size` | Batch size for fetching chunks | 100 |
 | `port` | HTTP server port for web UI | 18000 |
 | `sync_interval_seconds` | Polling interval for background sync | 60 |
+| `database_prefix` | Prefix in database name (`save_audio_{prefix}_{show}`) | `show` |
 
 ### Examples
 
@@ -556,7 +558,7 @@ shows = ['myradio']  # or ['show1', 'show2'] for multiple shows
 save_audio_stream receiver -c config/sync.toml
 ```
 
-Each show is stored in a separate PostgreSQL database named `save_audio_{show_name}` (e.g., `save_audio_myradio`). Databases are created automatically if they don't exist.
+Each show is stored in a separate PostgreSQL database named `save_audio_{prefix}_{show_name}` (e.g., `save_audio_show_myradio` with default prefix). Databases are created automatically if they don't exist.
 
 **Key Features:**
 - **Web UI with show selection**: Browse and play synced shows through a web interface

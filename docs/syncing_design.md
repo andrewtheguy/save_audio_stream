@@ -27,7 +27,7 @@ Record radio streams on a cloud server (stable connection, limited storage), the
 
 ### Receiver (Sync Client)
 - Syncs show data from remote sender to local PostgreSQL databases
-- Creates PostgreSQL databases named `save_audio_{show_name}` with `is_recipient = true` in metadata
+- Creates PostgreSQL databases named `save_audio_{prefix}_{show_name}` with `is_recipient = true` in metadata (default prefix: `show`)
 - Prevents accidental recording to sync target databases
 - Requires PostgreSQL server with CREATE DATABASE privileges
 
@@ -60,6 +60,7 @@ shows = ["show1", "show2"]  # Optional filter
 port = 18000
 sync_interval_seconds = 60
 chunk_size = 100
+database_prefix = "show"    # Optional: database name prefix (default: "show")
 ```
 
 ### Credentials File
@@ -109,6 +110,7 @@ password = "your_postgres_password"
 | `port` | HTTP server port | 18000 |
 | `sync_interval_seconds` | Seconds between automatic syncs | 60 |
 | `chunk_size` | Batch size for segment fetching | 100 |
+| `database_prefix` | Prefix in database name (`save_audio_{prefix}_{show}`) | `show` |
 
 ## Sync Behavior
 
