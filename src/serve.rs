@@ -28,13 +28,13 @@ use crate::constants::EXPECTED_DB_VERSION;
 use crate::fmp4::{generate_init_segment, generate_media_segment};
 use crate::queries::{metadata, segments};
 
-#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+#[cfg(not(debug_assertions))]
 const INDEX_HTML: &[u8] = include_bytes!("../frontend/dist/index.html");
 
-#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+#[cfg(not(debug_assertions))]
 const STYLE_CSS: &[u8] = include_bytes!("../frontend/dist/assets/style.css");
 
-#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+#[cfg(not(debug_assertions))]
 const MAIN_JS: &[u8] = include_bytes!("../frontend/dist/assets/main.js");
 
 /// Parse Opus packets from audio data for fMP4 generation
@@ -1120,7 +1120,7 @@ async fn vite_node_modules_handler(Path(path): Path<String>) -> Response {
     proxy_to_vite(&format!("/node_modules/{}", path)).await
 }
 
-#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+#[cfg(not(debug_assertions))]
 async fn index_handler_release() -> Response {
     let mut response = Response::new(Body::from(INDEX_HTML));
     response
@@ -1129,16 +1129,7 @@ async fn index_handler_release() -> Response {
     response
 }
 
-#[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
-async fn index_handler_release() -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        "Web frontend not available in this build",
-    )
-        .into_response()
-}
-
-#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+#[cfg(not(debug_assertions))]
 async fn assets_handler_release(Path(path): Path<String>) -> Response {
     let (content, mime_type): (&[u8], &str) = match path.as_str() {
         "style.css" => (STYLE_CSS, "text/css"),
@@ -1153,15 +1144,6 @@ async fn assets_handler_release(Path(path): Path<String>) -> Response {
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
     response
-}
-
-#[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
-async fn assets_handler_release(Path(_path): Path<String>) -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        "Web frontend not available in this build",
-    )
-        .into_response()
 }
 
 // Sync handlers moved to serve_record.rs
@@ -2185,7 +2167,7 @@ async fn receiver_trigger_sync_handler(
 }
 
 // Release mode handlers for receiver (reuse the same embedded assets)
-#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+#[cfg(not(debug_assertions))]
 async fn receiver_index_handler_release() -> Response {
     let mut response = Response::new(Body::from(INDEX_HTML));
     response
@@ -2194,16 +2176,7 @@ async fn receiver_index_handler_release() -> Response {
     response
 }
 
-#[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
-async fn receiver_index_handler_release() -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        "Web frontend not available in this build",
-    )
-        .into_response()
-}
-
-#[cfg(all(not(debug_assertions), feature = "web-frontend"))]
+#[cfg(not(debug_assertions))]
 async fn receiver_assets_handler_release(Path(path): Path<String>) -> Response {
     let (content, mime_type): (&[u8], &str) = match path.as_str() {
         "style.css" => (STYLE_CSS, "text/css"),
@@ -2215,13 +2188,4 @@ async fn receiver_assets_handler_release(Path(path): Path<String>) -> Response {
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
     response
-}
-
-#[cfg(all(not(debug_assertions), not(feature = "web-frontend")))]
-async fn receiver_assets_handler_release(Path(_path): Path<String>) -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        "Web frontend not available in this build",
-    )
-        .into_response()
 }

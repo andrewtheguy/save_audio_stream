@@ -85,28 +85,6 @@ The binary will be at `target/release/save_audio_stream`.
 
 Note: windows file locking is not tested yet.
 
-#### Web Frontend Feature Flag
-
-The project includes a `web-frontend` feature flag that controls whether the web UI is built and embedded into the binary:
-
-- **Default**: Web frontend is **enabled** (requires Deno)
-- **Disabled**: Build without web frontend (no Deno required)
-
-**Build without web frontend:**
-```bash
-cargo build --release --no-default-features
-```
-
-This is useful for:
-- CI/CD environments without Deno
-- Headless server deployments
-- Reducing binary size when web UI is not needed
-
-When built without the web frontend:
-- All API endpoints remain fully functional
-- Web UI routes (`/`, `/assets/*`) return 404 with message "Web frontend not available in this build"
-- The server can still serve audio and handle sync operations
-
 ## Quick Start
 
 **On your recording server (stable connection):**
@@ -651,17 +629,13 @@ In release mode:
 - No separate dev server needed
 - Single binary deployment
 
-**Note:** If the `web-frontend` feature is disabled (`--no-default-features`), the frontend build is skipped and web UI routes will return 404.
-
 ### Build Process
 
 The `build.rs` script automatically:
-1. Detects release builds with `web-frontend` feature enabled
+1. Detects release builds
 2. Checks for Deno availability
 3. Runs `deno task build` in the `frontend/` directory to compile frontend assets to `frontend/dist/`
 4. Embeds assets into the binary at compile time via `include_bytes!`
-
-If Deno is not available or the `web-frontend` feature is disabled, the frontend build is skipped.
 
 ### Example Usage
 
