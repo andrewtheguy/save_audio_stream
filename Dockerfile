@@ -38,6 +38,8 @@ COPY --from=builder /save_audio_stream /save_audio_stream
 # Runtime stage - minimal image for container deployment (builds from source)
 FROM debian:trixie-slim AS runtime
 
+LABEL org.opencontainers.image.source=https://github.com/andrewtheguy/save_audio_stream
+
 # Install runtime dependencies (SSL for HTTPS streams)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
@@ -49,6 +51,8 @@ ENTRYPOINT ["/usr/local/bin/save_audio_stream"]
 
 # Runtime stage for pre-built binary (used by CI to avoid double build)
 FROM debian:trixie-slim AS runtime-prebuilt
+
+LABEL org.opencontainers.image.source=https://github.com/ai03/save_audio_stream
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
