@@ -55,7 +55,7 @@ See [`config/receiver.example.toml`](../config/receiver.example.toml) for a comp
 
 ### Credentials File
 
-See [`config/credentials.example.toml`](../config/credentials.example.toml) for the format. Copy to `~/.config/save_audio_stream/credentials.toml`.
+See [`config/user/credentials.example.toml`](../config/user/credentials.example.toml) for the format. Copy to `~/.config/save_audio_stream/credentials.toml`.
 
 ### Sync Architecture
 

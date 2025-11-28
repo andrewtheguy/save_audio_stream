@@ -121,7 +121,7 @@ When built without the web frontend:
 
 Prerequisites: PostgreSQL server running locally or accessible remotely.
 
-1. Copy [`config/credentials.example.toml`](config/credentials.example.toml) to `~/.config/save_audio_stream/credentials.toml` and add your PostgreSQL password
+1. Copy [`config/user/credentials.example.toml`](config/user/credentials.example.toml) to `~/.config/save_audio_stream/credentials.toml` and add your PostgreSQL password
 2. Copy [`config/receiver.example.toml`](config/receiver.example.toml) to `receiver.toml` and customize
 3. Start receiver:
    ```bash
@@ -178,7 +178,7 @@ save_audio_stream receiver --config <CONFIG_FILE> [--sync-only]
 
 Config files use TOML format with `config_type = 'receiver'`. See [`config/receiver.example.toml`](config/receiver.example.toml) for a complete example.
 
-Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`config/credentials.example.toml`](config/credentials.example.toml) for the format.
+Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`config/user/credentials.example.toml`](config/user/credentials.example.toml) for the format.
 
 **Database naming:** Each show is stored in a separate PostgreSQL database named `save_audio_{prefix}_{show_name}` (default prefix is `show`). The databases are created automatically if they don't exist.
 
@@ -442,7 +442,7 @@ The application supports one-way synchronization from a remote recording server 
 
 **1. Set up credentials and config:**
 
-- Copy [`config/credentials.example.toml`](config/credentials.example.toml) to `~/.config/save_audio_stream/credentials.toml` and add your PostgreSQL password
+- Copy [`config/user/credentials.example.toml`](config/user/credentials.example.toml) to `~/.config/save_audio_stream/credentials.toml` and add your PostgreSQL password
 - Copy [`config/receiver.example.toml`](config/receiver.example.toml) and customize for your setup
 
 **2. Run the receiver command:**
@@ -553,7 +553,7 @@ When SFTP export is configured globally, audio sections are streamed directly to
 
 See [`config/record_with_export.example.toml`](config/record_with_export.example.toml) for a complete configuration example.
 
-Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`config/credentials.example.toml`](config/credentials.example.toml) for the format.
+Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`config/user/credentials.example.toml`](config/user/credentials.example.toml) for the format.
 
 **SFTP Export Features:**
 - **Zero-disk I/O**: Audio data streams directly from database to SFTP server without local file creation
