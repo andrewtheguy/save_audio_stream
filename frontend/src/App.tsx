@@ -152,9 +152,22 @@ function ShowDetail({
   const [audioFormat, setAudioFormat] = useState<string>("opus");
   const [selectedSessionIndex, setSelectedSessionIndex] = useState<number | null>(null);
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
-  const [initialTime, setInitialTime] = useState<number | undefined>(undefined);
-  const [savedSectionId, setSavedSectionId] = useState<number | null>(null);
   const [isReloading, setIsReloading] = useState(false);
+
+  // Helper to get saved position for any session
+  const getSavedPosition = (sectionId: number): number | undefined => {
+    if (!dbUniqueId) return undefined;
+    try {
+      const stored = localStorage.getItem(`${dbUniqueId}_position_${sectionId}`);
+      if (stored) {
+        const position = parseFloat(stored);
+        return isFinite(position) ? position : undefined;
+      }
+    } catch (err) {
+      console.error("Failed to get saved position:", err);
+    }
+    return undefined;
+  };
   const [newDataAvailable, setNewDataAvailable] = useState(false);
   const [lastKnownEndId, setLastKnownEndId] = useState<number>(0);
   const [prevSyncStatus, setPrevSyncStatus] = useState<boolean>(false);
@@ -188,8 +201,6 @@ function ShowDetail({
     const loadShowData = async () => {
       setLoading(true);
       setSelectedSessionIndex(null);
-      setInitialTime(undefined);
-      setSavedSectionId(null);
 
       try {
         const [formatData, sessionsData] = await Promise.all([
@@ -206,23 +217,21 @@ function ShowDetail({
         const metadata = await fetch(`/api/show/${decodedShowName}/metadata`).then((r) => r.json());
         setDbUniqueId(metadata.unique_id);
 
-        // Restore last playback session from localStorage
+        // Restore last played session for auto-select
         try {
-          const storageKey = `${metadata.unique_id}_lastPlayback`;
-          const stored = localStorage.getItem(storageKey);
-          if (stored) {
-            const { section_id, position } = JSON.parse(stored);
+          const lastSessionKey = `${metadata.unique_id}_lastSession`;
+          const lastSessionId = localStorage.getItem(lastSessionKey);
+          if (lastSessionId) {
+            const sectionId = parseInt(lastSessionId, 10);
             const sessionIndex = sessionsData.sessions.findIndex(
-              (s: SessionInfo) => s.section_id === section_id
+              (s: SessionInfo) => s.section_id === sectionId
             );
             if (sessionIndex !== -1) {
               setSelectedSessionIndex(sessionIndex);
-              setInitialTime(position);
-              setSavedSectionId(section_id);
             }
           }
         } catch (err) {
-          console.error("Failed to restore last playback:", err);
+          console.error("Failed to restore last session:", err);
         }
 
         setLoading(false);
@@ -442,7 +451,7 @@ function ShowDetail({
                         sessionTimestamp={session.timestamp_ms}
                         dbUniqueId={dbUniqueId}
                         sectionId={session.section_id}
-                        initialTime={session.section_id === savedSectionId ? initialTime : undefined}
+                        initialTime={getSavedPosition(session.section_id)}
                         showName={decodedShowName}
                       />
                     </div>
@@ -518,9 +527,22 @@ function InspectView() {
   const [audioFormat, setAudioFormat] = useState<string>("opus");
   const [selectedSessionIndex, setSelectedSessionIndex] = useState<number | null>(null);
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
-  const [initialTime, setInitialTime] = useState<number | undefined>(undefined);
-  const [savedSectionId, setSavedSectionId] = useState<number | null>(null);
   const [isReloading, setIsReloading] = useState(false);
+
+  // Helper to get saved position for any session
+  const getSavedPosition = (sectionId: number): number | undefined => {
+    if (!dbUniqueId) return undefined;
+    try {
+      const stored = localStorage.getItem(`${dbUniqueId}_position_${sectionId}`);
+      if (stored) {
+        const position = parseFloat(stored);
+        return isFinite(position) ? position : undefined;
+      }
+    } catch (err) {
+      console.error("Failed to get saved position:", err);
+    }
+    return undefined;
+  };
 
   useEffect(() => {
     const loadInspectData = async () => {
@@ -537,23 +559,21 @@ function InspectView() {
         const metadata = await fetch("/api/metadata").then((r) => r.json());
         setDbUniqueId(metadata.unique_id);
 
-        // Restore last playback session from localStorage
+        // Restore last played session for auto-select
         try {
-          const storageKey = `${metadata.unique_id}_lastPlayback`;
-          const stored = localStorage.getItem(storageKey);
-          if (stored) {
-            const { section_id, position } = JSON.parse(stored);
+          const lastSessionKey = `${metadata.unique_id}_lastSession`;
+          const lastSessionId = localStorage.getItem(lastSessionKey);
+          if (lastSessionId) {
+            const sectionId = parseInt(lastSessionId, 10);
             const sessionIndex = sessionsData.sessions.findIndex(
-              (s: SessionInfo) => s.section_id === section_id
+              (s: SessionInfo) => s.section_id === sectionId
             );
             if (sessionIndex !== -1) {
               setSelectedSessionIndex(sessionIndex);
-              setInitialTime(position);
-              setSavedSectionId(section_id);
             }
           }
         } catch (err) {
-          console.error("Failed to restore last playback:", err);
+          console.error("Failed to restore last session:", err);
         }
 
         setLoading(false);
@@ -675,7 +695,7 @@ function InspectView() {
                         sessionTimestamp={session.timestamp_ms}
                         dbUniqueId={dbUniqueId}
                         sectionId={session.section_id}
-                        initialTime={session.section_id === savedSectionId ? initialTime : undefined}
+                        initialTime={getSavedPosition(session.section_id)}
                       />
                     </div>
                   )}

@@ -56,15 +56,16 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const [error, setError] = useState<string | null>(null);
   const [showAbsoluteTime, setShowAbsoluteTime] = useState(true);
 
-  // Save playback position to localStorage
+  // Save playback position to localStorage (per-session)
   const savePlaybackPosition = (position: number) => {
     try {
-      const storageKey = `${dbUniqueId}_lastPlayback`;
-      const data = {
-        section_id: sectionId,
-        position: position,
-      };
-      localStorage.setItem(storageKey, JSON.stringify(data));
+      // Save position for this specific session
+      const positionKey = `${dbUniqueId}_position_${sectionId}`;
+      localStorage.setItem(positionKey, position.toString());
+
+      // Also track this as the last played session
+      const lastSessionKey = `${dbUniqueId}_lastSession`;
+      localStorage.setItem(lastSessionKey, sectionId.toString());
     } catch (err) {
       console.error("Failed to save playback position:", err);
     }
@@ -264,7 +265,10 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         clearInterval(saveTimerRef.current);
         saveTimerRef.current = null;
       }
-      savePlaybackPosition(audio.currentTime);
+      // Only save if we have a valid position (avoid overwriting with 0)
+      if (audio.currentTime > 0) {
+        savePlaybackPosition(audio.currentTime);
+      }
 
       audio.removeEventListener("timeupdate", updateTime);
       audio.removeEventListener("durationchange", updateDuration);
