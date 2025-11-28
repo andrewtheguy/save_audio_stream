@@ -67,6 +67,8 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const [volume, setVolume] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Only disable controls on fatal errors, not during retries
+  const isFatalError = error !== null && !error.includes("retrying");
   const [timeMode, setTimeMode] = useState<TimeMode>("hour");
   const [selectedHourIndex, setSelectedHourIndex] = useState(0);
   const hourInitializedRef = useRef(false);
@@ -204,7 +206,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
       hls.loadSource(streamUrl);
       hls.attachMedia(audioRef.current);
 
-      hls.on(Hls.Events.ERROR, (event, data) => {
+      hls.on(Hls.Events.ERROR, (_event: unknown, data: { fatal: boolean; type: string }) => {
         console.error("HLS error:", data);
         if (data.fatal) {
           const maxRetries = 5;
@@ -228,22 +230,16 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
                 }
               }, retryDelay);
             } else {
-              // Max retries reached
-              setError("Failed to load HLS stream after multiple retries");
+              // Max retries reached - show error and reset to stopped state
+              setError("Connection lost. Please try again.");
               setIsLoading(false);
               setIsPlaying(false);
-              if (audioRef.current) {
-                audioRef.current.pause();
-              }
             }
           } else {
             // Other fatal error - don't retry
-            setError("Failed to load HLS stream");
+            setError("Failed to load stream");
             setIsLoading(false);
             setIsPlaying(false);
-            if (audioRef.current) {
-              audioRef.current.pause();
-            }
           }
         }
       });
@@ -362,7 +358,12 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
       }
     };
     const handleWaiting = () => setIsLoading(true);
-    const handlePlaying = () => setIsLoading(false);
+    const handlePlaying = () => {
+      setIsLoading(false);
+      // Clear any retry error when playback successfully resumes
+      setError(null);
+      retryCountRef.current = 0;
+    };
     const handleCanPlay = () => setIsLoading(false);
 
     audio.addEventListener("timeupdate", updateTime);
@@ -643,7 +644,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="skip-btn"
           onClick={skipBackward}
-          disabled={!!error}
+          disabled={isFatalError}
           aria-label="Rewind 15 seconds"
           title="Rewind 15 seconds"
         >
@@ -653,7 +654,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="play-pause-btn"
           onClick={togglePlayPause}
-          disabled={!!error}
+          disabled={isFatalError}
           aria-label={isPlaying ? "Pause" : "Play"}
         >
           {isLoading ? "⏳" : isPlaying ? "⏸" : "▶"}
@@ -662,7 +663,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <button
           className="skip-btn"
           onClick={skipForward}
-          disabled={!!error}
+          disabled={isFatalError}
           aria-label="Forward 30 seconds"
           title="Forward 30 seconds"
         >
