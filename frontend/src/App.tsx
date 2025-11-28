@@ -51,6 +51,26 @@ function formatTimestamp(timestampMs: number): string {
   return date.toLocaleString();
 }
 
+function formatDateWithTimeRange(startMs: number, endMs: number): string {
+  const startDate = new Date(startMs);
+  const endDate = new Date(endMs);
+  const dateStr = startDate.toLocaleDateString();
+  const startTime = startDate.toLocaleTimeString();
+  const endTime = endDate.toLocaleTimeString();
+  return `${dateStr} ${startTime} - ${endTime}`;
+}
+
+function formatPosition(seconds: number | undefined): string {
+  if (seconds === undefined) return "Not started";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  }
+  return `${minutes}:${secs.toString().padStart(2, "0")}`;
+}
+
 // Shows list component for receiver mode
 function ShowsList({
   shows,
@@ -411,6 +431,8 @@ function ShowDetail({
           <div className="sessions-list">
             {paginatedSessions.map((session, index) => {
               const isSelected = selectedSessionIndex === index;
+              const endTimestampMs = session.timestamp_ms + session.duration_seconds * 1000;
+              const savedPos = getSavedPosition(session.section_id);
               return (
                 <div
                   key={session.section_id}
@@ -421,10 +443,13 @@ function ShowDetail({
                     onClick={() => setSelectedSessionIndex(isSelected ? null : index)}
                   >
                     <span className="session-time">
-                      {formatTimestamp(session.timestamp_ms)}
+                      {formatDateWithTimeRange(session.timestamp_ms, endTimestampMs)}
                     </span>
                     <span className="session-duration">
                       Duration: {formatDuration(session.duration_seconds)}
+                    </span>
+                    <span className="session-position">
+                      Position: {formatPosition(savedPos)}
                     </span>
                     <span className="expand-icon">{isSelected ? "▼" : "▶"}</span>
                   </div>
@@ -451,7 +476,7 @@ function ShowDetail({
                         sessionTimestamp={session.timestamp_ms}
                         dbUniqueId={dbUniqueId}
                         sectionId={session.section_id}
-                        initialTime={getSavedPosition(session.section_id)}
+                        initialTime={savedPos}
                         showName={decodedShowName}
                       />
                     </div>
@@ -655,6 +680,8 @@ function InspectView() {
           <div className="sessions-list">
             {data.sessions.map((session, index) => {
               const isSelected = selectedSessionIndex === index;
+              const endTimestampMs = session.timestamp_ms + session.duration_seconds * 1000;
+              const savedPos = getSavedPosition(session.section_id);
               return (
                 <div
                   key={index}
@@ -665,10 +692,13 @@ function InspectView() {
                     onClick={() => setSelectedSessionIndex(isSelected ? null : index)}
                   >
                     <span className="session-time">
-                      {formatTimestamp(session.timestamp_ms)}
+                      {formatDateWithTimeRange(session.timestamp_ms, endTimestampMs)}
                     </span>
                     <span className="session-duration">
                       Duration: {formatDuration(session.duration_seconds)}
+                    </span>
+                    <span className="session-position">
+                      Position: {formatPosition(savedPos)}
                     </span>
                     <span className="expand-icon">{isSelected ? "▼" : "▶"}</span>
                   </div>
@@ -695,7 +725,7 @@ function InspectView() {
                         sessionTimestamp={session.timestamp_ms}
                         dbUniqueId={dbUniqueId}
                         sectionId={session.section_id}
-                        initialTime={getSavedPosition(session.section_id)}
+                        initialTime={savedPos}
                       />
                     </div>
                   )}

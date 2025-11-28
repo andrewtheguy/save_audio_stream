@@ -159,6 +159,14 @@ h2 {
   border-radius: 16px;
 }
 
+.session-position {
+  font-size: 0.95rem;
+  color: #495057;
+  background: #f0f0f0;
+  padding: 0.25rem 0.75rem;
+  border-radius: 16px;
+}
+
 .session-info {
   margin-bottom: 1rem;
 }
