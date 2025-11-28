@@ -67,7 +67,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   const [volume, setVolume] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [timeMode, setTimeMode] = useState<TimeMode>("absolute");
+  const [timeMode, setTimeMode] = useState<TimeMode>("hour");
   const [selectedHourIndex, setSelectedHourIndex] = useState(0);
 
   // Hour view computed values
