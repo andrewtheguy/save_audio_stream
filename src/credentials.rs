@@ -56,12 +56,39 @@ pub fn load_credentials() -> Result<Option<Credentials>, Box<dyn std::error::Err
     Ok(Some(credentials))
 }
 
+/// Build environment variable name for a credential
+/// e.g., sftp + default -> CRED_SFTP_DEFAULT_PASSWORD
+fn build_env_var_name(cred_type: CredentialType, profile: &str) -> String {
+    let type_name = match cred_type {
+        CredentialType::Sftp => "SFTP",
+        CredentialType::Postgres => "POSTGRES",
+    };
+    // Replace non-alphanumeric chars with underscore and uppercase
+    let profile_normalized: String = profile
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .collect();
+    format!("CRED_{}_{}_PASSWORD", type_name, profile_normalized)
+}
+
 /// Get password for a specific profile and credential type
+///
+/// Checks in order:
+/// 1. Environment variable: CRED_{TYPE}_{PROFILE}_PASSWORD
+///    (e.g., CRED_SFTP_DEFAULT_PASSWORD, CRED_POSTGRES_MY_SERVER_PASSWORD)
+/// 2. Credentials file: ~/.config/save_audio_stream/credentials.toml
 pub fn get_password(
     credentials: &Option<Credentials>,
     cred_type: CredentialType,
     profile: &str,
 ) -> Result<String, String> {
+    // First, check environment variable
+    let env_var_name = build_env_var_name(cred_type, profile);
+    if let Ok(password) = std::env::var(&env_var_name) {
+        return Ok(password);
+    }
+
+    // Fall back to credentials file
     let section_name = match cred_type {
         CredentialType::Sftp => "sftp",
         CredentialType::Postgres => "postgres",
@@ -78,13 +105,14 @@ pub fn get_password(
                 .map(|p| p.password.clone())
                 .ok_or_else(|| {
                     format!(
-                        "Credential profile '[{}.{}]' not found in credentials file",
-                        section_name, profile
+                        "Credential profile '[{}.{}]' not found. Set {} or add to credentials file",
+                        section_name, profile, env_var_name
                     )
                 })
         }
         None => Err(format!(
-            "Credentials file not found. Expected at: {}",
+            "Credentials not found. Set {} or create credentials file at: {}",
+            env_var_name,
             get_credentials_path().display()
         )),
     }
