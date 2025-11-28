@@ -442,6 +442,7 @@ function ShowDetail({
                 </span>
               </div>
               <AudioPlayer
+                key={paginatedSessions[activeSessionIndex].section_id}
                 format={audioFormat}
                 startId={paginatedSessions[activeSessionIndex].start_id}
                 endId={paginatedSessions[activeSessionIndex].end_id}
@@ -704,6 +705,7 @@ function InspectView() {
                 </span>
               </div>
               <AudioPlayer
+                key={data.sessions[activeSessionIndex].section_id}
                 format={audioFormat}
                 startId={data.sessions[activeSessionIndex].start_id}
                 endId={data.sessions[activeSessionIndex].end_id}
