@@ -170,7 +170,7 @@ function ShowDetail({
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [audioFormat, setAudioFormat] = useState<string>("opus");
-  const [activeSessionIndex, setActiveSessionIndex] = useState<number | null>(null);
+  const [activeSession, setActiveSession] = useState<SessionInfo | null>(null);
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
   const [isReloading, setIsReloading] = useState(false);
   const [newDataAvailable, setNewDataAvailable] = useState(false);
@@ -215,12 +215,16 @@ function ShowDetail({
     return url;
   };
 
+  // Reset active session when show changes
+  useEffect(() => {
+    setActiveSession(null);
+  }, [decodedShowName]);
+
   useEffect(() => {
     if (!decodedShowName) return;
 
     const loadShowData = async () => {
       setLoading(true);
-      setActiveSessionIndex(null);
 
       try {
         const [formatData, sessionsData] = await Promise.all([
@@ -237,21 +241,23 @@ function ShowDetail({
         const metadata = await fetch(`/api/show/${decodedShowName}/metadata`).then((r) => r.json());
         setDbUniqueId(metadata.unique_id);
 
-        // Restore last played session for auto-select
-        try {
-          const lastSessionKey = `${metadata.unique_id}_lastSession`;
-          const lastSessionId = localStorage.getItem(lastSessionKey);
-          if (lastSessionId) {
-            const sectionId = parseInt(lastSessionId, 10);
-            const sessionIndex = sessionsData.sessions.findIndex(
-              (s: SessionInfo) => s.section_id === sectionId
-            );
-            if (sessionIndex !== -1) {
-              setActiveSessionIndex(sessionIndex);
+        // Restore last played session for auto-select (only if no active session)
+        if (!activeSession) {
+          try {
+            const lastSessionKey = `${metadata.unique_id}_lastSession`;
+            const lastSessionId = localStorage.getItem(lastSessionKey);
+            if (lastSessionId) {
+              const sectionId = parseInt(lastSessionId, 10);
+              const foundSession = sessionsData.sessions.find(
+                (s: SessionInfo) => s.section_id === sectionId
+              );
+              if (foundSession) {
+                setActiveSession(foundSession);
+              }
             }
+          } catch (err) {
+            console.error("Failed to restore last session:", err);
           }
-        } catch (err) {
-          console.error("Failed to restore last session:", err);
         }
 
         setLoading(false);
@@ -342,7 +348,6 @@ function ShowDetail({
   const handleClearFilter = () => {
     setDateFilter("");
     setCurrentPage(1);
-    setActiveSessionIndex(null);
   };
 
   return (
@@ -404,7 +409,6 @@ function ShowDetail({
               onChange={(e) => {
                 setDateFilter(e.target.value);
                 setCurrentPage(1);
-                setActiveSessionIndex(null);
               }}
               className="date-input"
             />
@@ -427,29 +431,29 @@ function ShowDetail({
 
         {/* Now Playing Section */}
         <div className="now-playing-section">
-          {activeSessionIndex !== null && paginatedSessions[activeSessionIndex] ? (
+          {activeSession ? (
             <>
               <div className="now-playing-info">
                 <span className="now-playing-label">Now Playing:</span>
                 <span className="now-playing-time">
                   {formatDateWithTimeRange(
-                    paginatedSessions[activeSessionIndex].timestamp_ms,
-                    paginatedSessions[activeSessionIndex].timestamp_ms + paginatedSessions[activeSessionIndex].duration_seconds * 1000
+                    activeSession.timestamp_ms,
+                    activeSession.timestamp_ms + activeSession.duration_seconds * 1000
                   )}
                 </span>
                 <span className="now-playing-duration">
-                  Duration: {formatDuration(paginatedSessions[activeSessionIndex].duration_seconds)}
+                  Duration: {formatDuration(activeSession.duration_seconds)}
                 </span>
               </div>
               <AudioPlayer
-                key={paginatedSessions[activeSessionIndex].section_id}
+                key={activeSession.section_id}
                 format={audioFormat}
-                startId={paginatedSessions[activeSessionIndex].start_id}
-                endId={paginatedSessions[activeSessionIndex].end_id}
-                sessionTimestamp={paginatedSessions[activeSessionIndex].timestamp_ms}
+                startId={activeSession.start_id}
+                endId={activeSession.end_id}
+                sessionTimestamp={activeSession.timestamp_ms}
                 dbUniqueId={dbUniqueId}
-                sectionId={paginatedSessions[activeSessionIndex].section_id}
-                initialTime={getSavedPosition(paginatedSessions[activeSessionIndex].section_id)}
+                sectionId={activeSession.section_id}
+                initialTime={getSavedPosition(activeSession.section_id)}
                 showName={decodedShowName}
               />
             </>
@@ -464,8 +468,8 @@ function ShowDetail({
           <p>{dateFilter ? "No sessions found for this date." : "No recording sessions found."}</p>
         ) : (
           <div className="sessions-list">
-            {paginatedSessions.map((session, index) => {
-              const isActive = activeSessionIndex === index;
+            {paginatedSessions.map((session) => {
+              const isActive = activeSession?.section_id === session.section_id;
               const endTimestampMs = session.timestamp_ms + session.duration_seconds * 1000;
               const savedPos = getSavedPosition(session.section_id);
               return (
@@ -488,7 +492,10 @@ function ShowDetail({
                     ) : (
                       <button
                         className="select-btn"
-                        onClick={() => setActiveSessionIndex(index)}
+                        onClick={() => {
+                          setActiveSession(session);
+                          window.scrollTo({ top: 0, behavior: "smooth" });
+                        }}
                       >
                         Select
                       </button>
@@ -505,10 +512,7 @@ function ShowDetail({
           <div className="pagination-controls">
             <button
               className="pagination-btn"
-              onClick={() => {
-                setCurrentPage(1);
-                setActiveSessionIndex(null);
-              }}
+              onClick={() => setCurrentPage(1)}
               disabled={currentPage === 1}
               title="First page"
             >
@@ -516,10 +520,7 @@ function ShowDetail({
             </button>
             <button
               className="pagination-btn"
-              onClick={() => {
-                setCurrentPage((p) => Math.max(1, p - 1));
-                setActiveSessionIndex(null);
-              }}
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               disabled={currentPage === 1}
               title="Previous page"
             >
@@ -530,10 +531,7 @@ function ShowDetail({
             </span>
             <button
               className="pagination-btn"
-              onClick={() => {
-                setCurrentPage((p) => Math.min(totalPages, p + 1));
-                setActiveSessionIndex(null);
-              }}
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
               title="Next page"
             >
@@ -541,10 +539,7 @@ function ShowDetail({
             </button>
             <button
               className="pagination-btn"
-              onClick={() => {
-                setCurrentPage(totalPages);
-                setActiveSessionIndex(null);
-              }}
+              onClick={() => setCurrentPage(totalPages)}
               disabled={currentPage === totalPages}
               title="Last page"
             >
@@ -563,9 +558,32 @@ function InspectView() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [audioFormat, setAudioFormat] = useState<string>("opus");
-  const [activeSessionIndex, setActiveSessionIndex] = useState<number | null>(null);
+  const [activeSession, setActiveSession] = useState<SessionInfo | null>(null);
   const [dbUniqueId, setDbUniqueId] = useState<string>("");
   const [isReloading, setIsReloading] = useState(false);
+
+  // Pagination and filtering state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(20);
+  const [dateFilter, setDateFilter] = useState<string>("");
+
+  // Helper to build sessions URL with optional date filter
+  const buildSessionsUrl = (filterDate: string) => {
+    let url = "/api/sessions";
+    if (filterDate) {
+      // Calculate 12am local time of selected date
+      const startOfDay = new Date(filterDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const startTs = startOfDay.getTime();
+      // Calculate 12am of next day
+      const endOfDay = new Date(filterDate);
+      endOfDay.setDate(endOfDay.getDate() + 1);
+      endOfDay.setHours(0, 0, 0, 0);
+      const endTs = endOfDay.getTime();
+      url += `?start_ts=${startTs}&end_ts=${endTs}`;
+    }
+    return url;
+  };
 
   // Helper to get saved position for any session
   const getSavedPosition = (sectionId: number): number | undefined => {
@@ -587,7 +605,7 @@ function InspectView() {
       try {
         const [formatData, sessionsData] = await Promise.all([
           fetch("/api/format").then((r) => r.json()),
-          fetch("/api/sessions").then((r) => r.json()),
+          fetch(buildSessionsUrl(dateFilter)).then((r) => r.json()),
         ]);
 
         setAudioFormat(formatData.format || "opus");
@@ -597,21 +615,23 @@ function InspectView() {
         const metadata = await fetch("/api/metadata").then((r) => r.json());
         setDbUniqueId(metadata.unique_id);
 
-        // Restore last played session for auto-select
-        try {
-          const lastSessionKey = `${metadata.unique_id}_lastSession`;
-          const lastSessionId = localStorage.getItem(lastSessionKey);
-          if (lastSessionId) {
-            const sectionId = parseInt(lastSessionId, 10);
-            const sessionIndex = sessionsData.sessions.findIndex(
-              (s: SessionInfo) => s.section_id === sectionId
-            );
-            if (sessionIndex !== -1) {
-              setActiveSessionIndex(sessionIndex);
+        // Restore last played session for auto-select (only if no active session)
+        if (!activeSession) {
+          try {
+            const lastSessionKey = `${metadata.unique_id}_lastSession`;
+            const lastSessionId = localStorage.getItem(lastSessionKey);
+            if (lastSessionId) {
+              const sectionId = parseInt(lastSessionId, 10);
+              const foundSession = sessionsData.sessions.find(
+                (s: SessionInfo) => s.section_id === sectionId
+              );
+              if (foundSession) {
+                setActiveSession(foundSession);
+              }
             }
+          } catch (err) {
+            console.error("Failed to restore last session:", err);
           }
-        } catch (err) {
-          console.error("Failed to restore last session:", err);
         }
 
         setLoading(false);
@@ -623,14 +643,14 @@ function InspectView() {
     };
 
     loadInspectData();
-  }, []);
+  }, [dateFilter]);
 
   const handleReloadSessions = async () => {
     if (isReloading) return;
 
     setIsReloading(true);
     try {
-      const sessionsData = await fetch("/api/sessions").then((r) => r.json());
+      const sessionsData = await fetch(buildSessionsUrl(dateFilter)).then((r) => r.json());
       setData(sessionsData);
       setIsReloading(false);
     } catch (err) {
@@ -638,6 +658,11 @@ function InspectView() {
       setError(`Failed to reload sessions: ${err instanceof Error ? err.message : String(err)}`);
       setIsReloading(false);
     }
+  };
+
+  const handleClearFilter = () => {
+    setDateFilter("");
+    setCurrentPage(1);
   };
 
   const getHlsUrl = (session: SessionInfo): string => {
@@ -688,31 +713,62 @@ function InspectView() {
       <div className="sessions-container">
         <h2>Recording Sessions</h2>
 
+        {/* Filter controls */}
+        <div className="filter-controls">
+          <div className="filter-group">
+            <label htmlFor="date-filter-inspect">Date:</label>
+            <input
+              type="date"
+              id="date-filter-inspect"
+              value={dateFilter}
+              onChange={(e) => {
+                setDateFilter(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="date-input"
+            />
+            {dateFilter && (
+              <button
+                className="clear-filter-btn"
+                onClick={handleClearFilter}
+                title="Clear filter"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <div className="filter-info">
+            {dateFilter
+              ? `${data.sessions.length} session${data.sessions.length !== 1 ? "s" : ""} on ${dateFilter}`
+              : `${data.sessions.length} session${data.sessions.length !== 1 ? "s" : ""} total`}
+          </div>
+        </div>
+
         {/* Now Playing Section */}
         <div className="now-playing-section">
-          {activeSessionIndex !== null && data.sessions[activeSessionIndex] ? (
+          {activeSession ? (
             <>
               <div className="now-playing-info">
                 <span className="now-playing-label">Now Playing:</span>
                 <span className="now-playing-time">
                   {formatDateWithTimeRange(
-                    data.sessions[activeSessionIndex].timestamp_ms,
-                    data.sessions[activeSessionIndex].timestamp_ms + data.sessions[activeSessionIndex].duration_seconds * 1000
+                    activeSession.timestamp_ms,
+                    activeSession.timestamp_ms + activeSession.duration_seconds * 1000
                   )}
                 </span>
                 <span className="now-playing-duration">
-                  Duration: {formatDuration(data.sessions[activeSessionIndex].duration_seconds)}
+                  Duration: {formatDuration(activeSession.duration_seconds)}
                 </span>
               </div>
               <AudioPlayer
-                key={data.sessions[activeSessionIndex].section_id}
+                key={activeSession.section_id}
                 format={audioFormat}
-                startId={data.sessions[activeSessionIndex].start_id}
-                endId={data.sessions[activeSessionIndex].end_id}
-                sessionTimestamp={data.sessions[activeSessionIndex].timestamp_ms}
+                startId={activeSession.start_id}
+                endId={activeSession.end_id}
+                sessionTimestamp={activeSession.timestamp_ms}
                 dbUniqueId={dbUniqueId}
-                sectionId={data.sessions[activeSessionIndex].section_id}
-                initialTime={getSavedPosition(data.sessions[activeSessionIndex].section_id)}
+                sectionId={activeSession.section_id}
+                initialTime={getSavedPosition(activeSession.section_id)}
               />
             </>
           ) : (
@@ -723,16 +779,22 @@ function InspectView() {
         </div>
 
         {data.sessions.length === 0 ? (
-          <p>No recording sessions found.</p>
+          <p>{dateFilter ? "No sessions found for this date." : "No recording sessions found."}</p>
         ) : (
           <div className="sessions-list">
-            {data.sessions.map((session, index) => {
-              const isActive = activeSessionIndex === index;
+            {(() => {
+              const totalSessions = data.sessions.length;
+              const totalPages = Math.ceil(totalSessions / pageSize);
+              const startIndex = (currentPage - 1) * pageSize;
+              const endIndex = startIndex + pageSize;
+              const paginatedSessions = data.sessions.slice(startIndex, endIndex);
+              return paginatedSessions.map((session) => {
+              const isActive = activeSession?.section_id === session.section_id;
               const endTimestampMs = session.timestamp_ms + session.duration_seconds * 1000;
               const savedPos = getSavedPosition(session.section_id);
               return (
                 <div
-                  key={index}
+                  key={session.section_id}
                   className={`session-card ${isActive ? "active" : ""}`}
                 >
                   <div className="session-header">
@@ -750,7 +812,10 @@ function InspectView() {
                     ) : (
                       <button
                         className="select-btn"
-                        onClick={() => setActiveSessionIndex(index)}
+                        onClick={() => {
+                          setActiveSession(session);
+                          window.scrollTo({ top: 0, behavior: "smooth" });
+                        }}
                       >
                         Select
                       </button>
@@ -758,9 +823,56 @@ function InspectView() {
                   </div>
                 </div>
               );
-            })}
+            });
+            })()}
           </div>
         )}
+
+        {/* Pagination controls */}
+        {(() => {
+          const totalSessions = data.sessions.length;
+          const totalPages = Math.ceil(totalSessions / pageSize);
+          if (totalPages <= 1) return null;
+          return (
+            <div className="pagination-controls">
+              <button
+                className="pagination-btn"
+                onClick={() => setCurrentPage(1)}
+                disabled={currentPage === 1}
+                title="First page"
+              >
+                &laquo;
+              </button>
+              <button
+                className="pagination-btn"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                title="Previous page"
+              >
+                &lsaquo;
+              </button>
+              <span className="pagination-info">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                className="pagination-btn"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                title="Next page"
+              >
+                &rsaquo;
+              </button>
+              <button
+                className="pagination-btn"
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={currentPage === totalPages}
+                title="Last page"
+              >
+                &raquo;
+              </button>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

@@ -885,7 +885,16 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
         .into_response()
 }
 
-async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
+#[derive(serde::Deserialize)]
+struct InspectSessionsQueryParams {
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+}
+
+async fn sessions_handler(
+    State(state): State<StdArc<AppState>>,
+    Query(params): Query<InspectSessionsQueryParams>,
+) -> impl IntoResponse {
     let pool = &state.pool;
 
     // Get show name from metadata
@@ -919,8 +928,8 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
     // connection) vs. which come from different recording attempts after reconnection
     // or schedule breaks.
 
-    // Get all sections with their start id, timestamp, and total duration samples
-    let sql = segments::select_sessions_with_join();
+    // Get all sections with their start id, timestamp, and total duration samples, optionally filtered by date range
+    let sql = segments::select_sessions_with_join_filtered(params.start_ts, params.end_ts);
     let rows = match sqlx::query(&sql).fetch_all(pool).await {
         Ok(r) => r,
         Err(e) => {
@@ -956,10 +965,6 @@ async fn sessions_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
             }
         })
         .collect();
-
-    if sessions.is_empty() {
-        return (StatusCode::NOT_FOUND, "No recording sessions found").into_response();
-    }
 
     let response = SessionsResponse { name, sessions };
 
