@@ -592,7 +592,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
 
       {/* Controls row */}
       <div className="player-controls">
-        {timeMode === "hour" && (
+        {timeMode === "hour" ? (
           <button
             className="reset-hour-btn"
             onClick={resetToCurrentHour}
@@ -602,6 +602,8 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
           >
             ⟲
           </button>
+        ) : (
+          <div className="reset-hour-spacer"></div>
         )}
 
         <button

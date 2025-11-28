@@ -399,6 +399,8 @@ h2 {
   cursor: pointer;
   transition: all 0.2s ease;
   color: #495057;
+  width: 32px;
+  box-sizing: border-box;
 }
 
 .reset-hour-btn:hover:not(:disabled) {
@@ -410,6 +412,24 @@ h2 {
 .reset-hour-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.reset-hour-spacer {
+  width: 32px;
+  flex-shrink: 0;
+}
+
+/* Hourly mode time markers theme */
+.hour-slider-container .time-markers {
+  background: linear-gradient(to right, #e8f4fc, #f0f8ff);
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.hour-slider-container .time-marker {
+  color: #0066cc;
+  font-weight: 500;
 }
 
 .player-controls {
