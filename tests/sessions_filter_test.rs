@@ -317,6 +317,303 @@ async fn test_empty_database() {
 }
 
 // ============================================================================
+// Edge case tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_filter_start_ts_equals_end_ts_returns_empty() {
+    // When start_ts == end_ts, range is [start, end) which is empty
+    let timestamps = vec![
+        1730000000000i64,
+        1730100000000i64,
+        1730200000000i64,
+    ];
+
+    let (pool, _guard) = create_test_database_with_sessions(&timestamps, 3).await;
+
+    // Query where start == end (zero-width range)
+    let same_ts = 1730100000000i64;
+    let sessions = query_sessions_filtered(&pool, Some(same_ts), Some(same_ts)).await;
+
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Zero-width range (start == end) should return no sessions"
+    );
+}
+
+#[tokio::test]
+async fn test_filter_start_ts_greater_than_end_ts_returns_empty() {
+    // When start_ts > end_ts, this is an invalid/inverted range
+    let timestamps = vec![
+        1730000000000i64,
+        1730100000000i64,
+        1730200000000i64,
+    ];
+
+    let (pool, _guard) = create_test_database_with_sessions(&timestamps, 3).await;
+
+    // Query where start > end (inverted range)
+    let sessions =
+        query_sessions_filtered(&pool, Some(1730200000000), Some(1730100000000)).await;
+
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Inverted range (start > end) should return no sessions"
+    );
+}
+
+#[tokio::test]
+async fn test_filter_with_negative_timestamps() {
+    // Test with negative timestamps (before Unix epoch)
+    // While unusual, should not crash
+    let timestamps = vec![
+        1730000000000i64,
+        1730100000000i64,
+    ];
+
+    let (pool, _guard) = create_test_database_with_sessions(&timestamps, 2).await;
+
+    // Query with negative start_ts
+    let sessions = query_sessions_filtered(&pool, Some(-1000000), None).await;
+    assert_eq!(
+        sessions.len(),
+        2,
+        "Negative start_ts should work (all sessions are after it)"
+    );
+
+    // Query with negative end_ts (all sessions should be excluded)
+    let sessions = query_sessions_filtered(&pool, None, Some(-1000000)).await;
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Negative end_ts should exclude all positive timestamp sessions"
+    );
+
+    // Query with both negative (inverted)
+    let sessions = query_sessions_filtered(&pool, Some(-500000), Some(-1000000)).await;
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Negative inverted range should return no sessions"
+    );
+}
+
+#[tokio::test]
+async fn test_filter_with_very_large_timestamps() {
+    // Test with very large timestamps (far future)
+    let timestamps = vec![
+        1730000000000i64,
+        1730100000000i64,
+    ];
+
+    let (pool, _guard) = create_test_database_with_sessions(&timestamps, 2).await;
+
+    // Query with very large start_ts (year ~2500)
+    let far_future = 16725225600000i64; // ~2500 AD
+    let sessions = query_sessions_filtered(&pool, Some(far_future), None).await;
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Very large start_ts should exclude all sessions"
+    );
+
+    // Query with very large end_ts
+    let sessions = query_sessions_filtered(&pool, None, Some(far_future)).await;
+    assert_eq!(
+        sessions.len(),
+        2,
+        "Very large end_ts should include all sessions"
+    );
+
+    // Query with max i64 value
+    let sessions = query_sessions_filtered(&pool, Some(i64::MAX - 1), Some(i64::MAX)).await;
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Near i64::MAX range should work without overflow"
+    );
+}
+
+#[tokio::test]
+async fn test_filter_with_zero_timestamp() {
+    // Test with timestamp = 0 (Unix epoch)
+    let timestamps = vec![
+        1730000000000i64,
+        1730100000000i64,
+    ];
+
+    let (pool, _guard) = create_test_database_with_sessions(&timestamps, 2).await;
+
+    // Query starting from epoch
+    let sessions = query_sessions_filtered(&pool, Some(0), None).await;
+    assert_eq!(sessions.len(), 2, "start_ts=0 should include all sessions");
+
+    // Query ending at epoch
+    let sessions = query_sessions_filtered(&pool, None, Some(0)).await;
+    assert_eq!(
+        sessions.len(),
+        0,
+        "end_ts=0 should exclude all positive timestamp sessions"
+    );
+}
+
+#[tokio::test]
+async fn test_filter_sessions_with_identical_timestamps() {
+    // Edge case: multiple sessions with the exact same timestamp
+    // This shouldn't normally happen but the system should handle it
+    let same_timestamp = 1730100000000i64;
+
+    let (pool, guard) = save_audio_stream::db::create_test_connection_in_temporary_file()
+        .await
+        .unwrap();
+
+    save_audio_stream::db::init_database_schema(&pool)
+        .await
+        .unwrap();
+
+    // Insert metadata
+    let sql = metadata::insert("version", EXPECTED_DB_VERSION);
+    sqlx::query(&sql).execute(&pool).await.unwrap();
+    let sql = metadata::insert("sample_rate", "48000");
+    sqlx::query(&sql).execute(&pool).await.unwrap();
+
+    // Insert 3 sections with identical timestamps but different section_ids
+    for idx in 0..3 {
+        let section_id = same_timestamp * 1000 + idx;
+        let sql = sections::insert(section_id, same_timestamp);
+        sqlx::query(&sql).execute(&pool).await.unwrap();
+
+        // Add one segment to each section
+        let audio_data = format!("audio_{}", idx).into_bytes();
+        let sql = segments::insert(same_timestamp, true, section_id, &audio_data, 48000);
+        sqlx::query(&sql).execute(&pool).await.unwrap();
+    }
+
+    // Query should return all 3 sessions
+    let sessions = query_sessions_filtered(&pool, None, None).await;
+    assert_eq!(
+        sessions.len(),
+        3,
+        "Should return all sessions even with identical timestamps"
+    );
+
+    // All should have the same timestamp
+    assert!(
+        sessions.iter().all(|(_, ts)| *ts == same_timestamp),
+        "All sessions should have identical timestamp"
+    );
+
+    // Filter should include all when timestamp is in range
+    let sessions =
+        query_sessions_filtered(&pool, Some(same_timestamp), Some(same_timestamp + 1)).await;
+    assert_eq!(
+        sessions.len(),
+        3,
+        "Filter should include all sessions at exact timestamp"
+    );
+
+    // Filter should exclude all when timestamp equals end (exclusive)
+    let sessions =
+        query_sessions_filtered(&pool, Some(same_timestamp + 1), Some(same_timestamp + 2)).await;
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Filter should exclude sessions when start_ts > session timestamp"
+    );
+
+    drop(guard);
+}
+
+#[tokio::test]
+async fn test_filter_single_session_at_exact_boundaries() {
+    // Test a single session where filter boundaries exactly match the session timestamp
+    let session_ts = 1730100000000i64;
+    let timestamps = vec![session_ts];
+
+    let (pool, _guard) = create_test_database_with_sessions(&timestamps, 2).await;
+
+    // Filter [session_ts, session_ts+1) should include the session
+    let sessions =
+        query_sessions_filtered(&pool, Some(session_ts), Some(session_ts + 1)).await;
+    assert_eq!(sessions.len(), 1, "Should include session at exact start boundary");
+
+    // Filter [session_ts-1, session_ts) should NOT include the session (end is exclusive)
+    let sessions =
+        query_sessions_filtered(&pool, Some(session_ts - 1), Some(session_ts)).await;
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Should exclude session when end_ts equals session timestamp"
+    );
+
+    // Filter [session_ts+1, session_ts+2) should NOT include the session
+    let sessions =
+        query_sessions_filtered(&pool, Some(session_ts + 1), Some(session_ts + 2)).await;
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Should exclude session when start_ts > session timestamp"
+    );
+}
+
+#[tokio::test]
+async fn test_filter_one_millisecond_range() {
+    // Test filtering with a 1ms range window
+    let timestamps = vec![
+        1730100000000i64,
+        1730100000001i64,
+        1730100000002i64,
+    ];
+
+    let (pool, _guard) = create_test_database_with_sessions(&timestamps, 1).await;
+
+    // 1ms window should capture exactly one session
+    let sessions =
+        query_sessions_filtered(&pool, Some(1730100000001), Some(1730100000002)).await;
+    assert_eq!(sessions.len(), 1, "1ms range should capture exactly one session");
+    assert_eq!(sessions[0].1, 1730100000001i64);
+}
+
+#[tokio::test]
+async fn test_filter_preserves_all_session_data() {
+    // Verify that filtering doesn't corrupt or lose session data
+    let timestamps = vec![
+        1730000000000i64,
+        1730100000000i64,
+        1730200000000i64,
+    ];
+
+    let (pool, _guard) = create_test_database_with_sessions(&timestamps, 5).await;
+
+    // Get all sessions
+    let all_sessions = query_sessions_filtered(&pool, None, None).await;
+
+    // Get filtered sessions (middle one only)
+    let filtered_sessions =
+        query_sessions_filtered(&pool, Some(1730050000000), Some(1730150000000)).await;
+
+    assert_eq!(filtered_sessions.len(), 1);
+
+    // The filtered session should match the corresponding one from all_sessions
+    let filtered_session = &filtered_sessions[0];
+    let matching_session = all_sessions
+        .iter()
+        .find(|(_, ts)| *ts == filtered_session.1)
+        .unwrap();
+
+    assert_eq!(
+        filtered_session.0, matching_session.0,
+        "Section ID should be preserved"
+    );
+    assert_eq!(
+        filtered_session.1, matching_session.1,
+        "Timestamp should be preserved"
+    );
+}
+
+// ============================================================================
 // API-level tests - verify JSON response format
 // ============================================================================
 
