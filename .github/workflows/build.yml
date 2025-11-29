@@ -115,8 +115,8 @@ jobs:
 
       - name: Install dependencies via vcpkg
         uses: lukka/run-vcpkg@v11
-        #with:
-          #vcpkgGitCommitId: '86a181505ac6460200d17790869c768dff703e3a'
+        with:
+          vcpkgGitCommitId: '74e6536215718009aae747d86d84b78376bf9e09' #2025.10.17
           #vcpkgDirectory: '${{ runner.temp }}/vcpkg'
 
       # Workaround: esm.sh serves different content on Windows, causing lock file hash mismatch
