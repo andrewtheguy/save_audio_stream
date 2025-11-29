@@ -670,7 +670,7 @@ The web UI displays:
 The GitHub Action supports two modes:
 
 - **Prerelease** (default): Leave the version field empty to create a prerelease with a timestamp tag
-- **Release**: Enter a version (e.g., `0.1.2`) to create a stable release
+- **Release**: Enter a version (e.g., `0.1.2`) to create a stable release with matching Docker tag
 
 ### Creating a Release
 
@@ -678,19 +678,8 @@ The GitHub Action supports two modes:
 2. Commit and push the change
 3. Go to Actions → Build → Run workflow
 4. Enter the version number (e.g., `0.1.2`) and run
-5. After the build completes, tag the Docker image:
 
-```bash
-VERSION=0.1.2  # The version you just released
-
-# Create multi-arch manifest for the new version
-docker manifest create ghcr.io/andrewtheguy/save_audio_stream:$VERSION \
-  ghcr.io/andrewtheguy/save_audio_stream:$VERSION-x86_64 \
-  ghcr.io/andrewtheguy/save_audio_stream:$VERSION-arm64
-
-# Push the manifest
-docker manifest push ghcr.io/andrewtheguy/save_audio_stream:$VERSION
-```
+The workflow automatically creates the GitHub release and Docker multi-arch image with the version tag.
 
 ## License
 
