@@ -7,32 +7,63 @@ on:
         description: 'Release version (e.g., 0.1.2). Leave empty for prerelease with timestamp.'
         required: false
         default: ''
-      sha:
-        description: 'Commit SHA to build. Leave empty to use the branch HEAD.'
+      bump_version:
+        description: 'Whether to bump Cargo.toml/Cargo.lock to the provided version.'
+        type: boolean
         required: false
-        default: ''
+        default: false
 
 env:
   GHCR_IMAGE: ghcr.io/andrewtheguy/save_audio_stream
 
 jobs:
-  # Generate release tag first so all jobs use the same tag
+  # Bump version, commit, and prepare build info
   prepare:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.name }}
       is_prerelease: ${{ steps.tag.outputs.is_prerelease }}
+      sha: ${{ steps.bump.outputs.sha }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Determine release tag
         id: tag
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            echo "name=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "name=${INPUT_VERSION}" >> $GITHUB_OUTPUT
             echo "is_prerelease=false" >> $GITHUB_OUTPUT
           else
             echo "name=$(date -u +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
           fi
+
+      - name: Bump version and commit
+        id: bump
+        run: |
+          set -e
+          VERSION="${{ steps.tag.outputs.name }}"
+          IS_PRERELEASE="${{ steps.tag.outputs.is_prerelease }}"
+          BUMP_VERSION="${{ github.event.inputs.bump_version }}"
+
+          if [ "$IS_PRERELEASE" = "false" ] && [ "$BUMP_VERSION" = "true" ]; then
+            # Update Cargo.toml and Cargo.lock to the release version
+            python3 scripts/bump_version.py "$VERSION"
+
+            # Configure git
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+
+            # Commit and push
+            git add Cargo.toml
+            git add Cargo.lock
+            git commit -m "Bump version to ${VERSION}"
+            git push
+          fi
+
+          # Output the SHA to build from
+          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
   build-linux:
     needs: prepare
@@ -54,7 +85,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.sha || github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - uses: denoland/setup-deno@v2
         with:
@@ -95,6 +126,7 @@ jobs:
           docker push ${{ env.GHCR_IMAGE }}:${TAG}-${{ matrix.arch }}
 
   build-windows:
+    needs: prepare
     runs-on: windows-latest
     permissions:
       actions: read
@@ -104,7 +136,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.sha || github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - uses: denoland/setup-deno@v2
         with:

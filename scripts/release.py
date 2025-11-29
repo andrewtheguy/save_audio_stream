@@ -2,9 +2,8 @@
 """
 Release script that:
 1. Validates git state (clean, on main, synced with remote)
-2. Bumps patch version in Cargo.toml
-3. Commits and pushes the change
-4. Triggers GitHub Actions workflow with the new version
+2. Calculates the next patch version
+3. Triggers GitHub Actions workflow which bumps version and builds
 
 Requires Python 3.11+ (for tomllib)
 """
@@ -78,49 +77,14 @@ def bump_patch_version(version: str) -> str:
     return ".".join(parts)
 
 
-def update_cargo_toml(cargo_toml: Path, current_version: str, new_version: str) -> None:
-    """Update version in Cargo.toml [package] section."""
-    content = cargo_toml.read_text()
-    # Replace the first occurrence of the exact version string
-    old_line = f'version = "{current_version}"'
-    new_line = f'version = "{new_version}"'
-    new_content = content.replace(old_line, new_line, 1)
-    if new_content == content:
-        error_exit(f"Could not find '{old_line}' in Cargo.toml")
-    cargo_toml.write_text(new_content)
-
-
-def update_cargo_lock() -> None:
-    """Run cargo check to update Cargo.lock."""
-    print("Running cargo check to update Cargo.lock...")
-    run_cmd(["cargo", "check"], capture=False)
-
-
-def git_commit_and_push(new_version: str) -> str:
-    """Commit the version bump and push to remote. Returns the commit SHA."""
-    print("Committing changes...")
-    run_cmd(["git", "add", "Cargo.toml", "Cargo.lock"])
-    run_cmd(["git", "commit", "-m", f"Bump version to {new_version}"])
-
-    # Get the commit SHA
-    commit_sha = run_cmd(["git", "rev-parse", "HEAD"]).stdout.strip()
-
-    print("Pushing to origin/main...")
-    run_cmd(["git", "push", "origin", "main"])
-
-    return commit_sha
-
-
-def trigger_workflow(new_version: str, commit_sha: str) -> None:
-    """Trigger the GitHub Actions workflow with the new version at the specific commit."""
-    print(f"Triggering GitHub Actions workflow at commit {commit_sha[:8]}...")
-    # GitHub API requires a branch/tag name for --ref, so we use main
-    # But we pass the SHA as an input so the workflow checks out the exact commit
+def trigger_workflow(new_version: str) -> None:
+    """Trigger the GitHub Actions workflow with the new version."""
+    print("Triggering GitHub Actions workflow...")
     run_cmd([
         "gh", "workflow", "run", "build.yml",
         "--ref", "main",
         "-f", f"version={new_version}",
-        "-f", f"sha={commit_sha}",
+        "-f", "bump_version=true",
     ])
 
 
@@ -151,20 +115,11 @@ def main() -> None:
         print("Aborted.")
         sys.exit(0)
 
-    # Update Cargo.toml
-    print("Updating Cargo.toml...")
-    update_cargo_toml(cargo_toml, current_version, new_version)
+    # Trigger workflow (workflow will bump version, commit, and build)
+    trigger_workflow(new_version)
 
-    # Update Cargo.lock
-    update_cargo_lock()
-
-    # Commit and push
-    commit_sha = git_commit_and_push(new_version)
-
-    # Trigger workflow
-    trigger_workflow(new_version, commit_sha)
-
-    print(f"\nDone! Workflow triggered for version {new_version} at commit {commit_sha[:8]}")
+    print(f"\nDone! Workflow triggered for version {new_version}")
+    print("The workflow will bump the version in Cargo.toml and build the release.")
 
 
 if __name__ == "__main__":
