@@ -40,25 +40,27 @@ FROM debian:trixie-slim AS runtime
 
 LABEL org.opencontainers.image.source=https://github.com/andrewtheguy/save_audio_stream
 
-# Install runtime dependencies (SSL for HTTPS streams)
+# Install runtime dependencies (SSL for HTTPS streams, tini for init)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /save_audio_stream /usr/local/bin/save_audio_stream
 
-ENTRYPOINT ["/usr/local/bin/save_audio_stream"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/save_audio_stream"]
 
 # Runtime stage for pre-built binary (used by CI to avoid double build)
 FROM debian:trixie-slim AS runtime-prebuilt
 
-LABEL org.opencontainers.image.source=https://github.com/ai03/save_audio_stream
+LABEL org.opencontainers.image.source=https://github.com/andrewtheguy/save_audio_stream
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Binary must be passed via build context
 COPY save_audio_stream /usr/local/bin/save_audio_stream
 
-ENTRYPOINT ["/usr/local/bin/save_audio_stream"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/save_audio_stream"]
