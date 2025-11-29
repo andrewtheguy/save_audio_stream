@@ -70,7 +70,7 @@ def bump_patch_version(version: str) -> str:
     return ".".join(parts)
 
 
-def update_cargo_toml(cargo_toml: Path, old_version: str, new_version: str) -> None:
+def update_cargo_toml(cargo_toml: Path, new_version: str) -> None:
     """Update version in Cargo.toml."""
     content = cargo_toml.read_text()
     new_content = re.sub(
@@ -128,7 +128,7 @@ def main() -> None:
 
     # Update Cargo.toml
     print("Updating Cargo.toml...")
-    update_cargo_toml(cargo_toml, current_version, new_version)
+    update_cargo_toml(cargo_toml, new_version)
 
     # Update Cargo.lock
     update_cargo_lock()

@@ -691,10 +691,31 @@ The GitHub Action supports two modes:
 
 ### Creating a Release
 
+**Automated (Recommended):**
+
+Use the release script to automate version bumping and workflow triggering:
+
+```bash
+python3 scripts/release.py
+```
+
+The script will:
+1. Verify git working directory is clean
+2. Verify you're on the `main` branch and synced with remote
+3. Bump the patch version in `Cargo.toml` (e.g., `0.1.8` → `0.1.9`)
+4. Run `cargo check` to update `Cargo.lock`
+5. Commit and push the version change
+6. Trigger the GitHub Actions build workflow with the new version
+
+**Prerequisites:** `gh` CLI must be installed and authenticated (`gh auth login`).
+
+**Manual:**
+
 1. Update the version in `Cargo.toml`
-2. Commit and push the change
-3. Go to Actions → Build → Run workflow
-4. Enter the version number (e.g., `0.1.2`) and run
+2. Run `cargo check` to update `Cargo.lock`
+3. Commit and push the change
+4. Go to Actions → Build → Run workflow
+5. Enter the version number (e.g., `0.1.2`) and run
 
 The workflow automatically creates the GitHub release and Docker multi-arch image with the version tag.
 
