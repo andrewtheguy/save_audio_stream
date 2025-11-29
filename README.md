@@ -667,31 +667,30 @@ The web UI displays:
 
 ## Releasing
 
-The GitHub Action creates prereleases by default. To promote a prerelease to a stable release:
+The GitHub Action supports two modes:
 
-### 1. Update Cargo.toml
+- **Prerelease** (default): Leave the version field empty to create a prerelease with a timestamp tag
+- **Release**: Enter a version (e.g., `0.1.2`) to create a stable release
 
-Update the version in `Cargo.toml` before triggering the build so the binary has the correct version.
+### Creating a Release
 
-### 2. Promote the GitHub Release
-
-After the build completes, go to the [Releases page](https://github.com/ai03/save_audio_stream/releases), edit the prerelease, uncheck "Set as a pre-release", and publish.
-
-### 3. Tag the Docker Image
-
-Tag the prerelease Docker image with the version number:
+1. Update the version in `Cargo.toml`
+2. Commit and push the change
+3. Go to Actions → Build → Run workflow
+4. Enter the version number (e.g., `0.1.2`) and run
+5. After the build completes, tag the Docker image:
 
 ```bash
+VERSION=0.1.2  # The version you just released
+
 # Create multi-arch manifest for the new version
-docker manifest create ghcr.io/andrewtheguy/save_audio_stream:X.Y.Z \
-  ghcr.io/andrewtheguy/save_audio_stream:TIMESTAMP-x86_64 \
-  ghcr.io/andrewtheguy/save_audio_stream:TIMESTAMP-arm64
+docker manifest create ghcr.io/andrewtheguy/save_audio_stream:$VERSION \
+  ghcr.io/andrewtheguy/save_audio_stream:$VERSION-x86_64 \
+  ghcr.io/andrewtheguy/save_audio_stream:$VERSION-arm64
 
 # Push the manifest
-docker manifest push ghcr.io/andrewtheguy/save_audio_stream:X.Y.Z
+docker manifest push ghcr.io/andrewtheguy/save_audio_stream:$VERSION
 ```
-
-Replace `TIMESTAMP` with the prerelease tag (e.g., `20251129000040`) and `X.Y.Z` with the version (e.g., `0.1.2`).
 
 ## License
 
