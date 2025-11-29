@@ -98,6 +98,10 @@ jobs:
         run: |
           sudo apt-get install -y cmake pkg-config
 
+      # Workaround: esm.sh serves different content, causing lock file hash mismatch
+      - name: Remove Deno lock file
+        run: rm -f frontend/deno.lock
+
       - name: Build
         run: cargo build --release
 
