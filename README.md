@@ -665,6 +665,34 @@ The web UI displays:
   - HLS URL: `/playlist.m3u8?start_id={min}&end_id={max}`
 - Current segment range from the database
 
+## Releasing
+
+The GitHub Action creates prereleases by default. To promote a prerelease to a stable release:
+
+### 1. Update Cargo.toml
+
+Update the version in `Cargo.toml` before triggering the build so the binary has the correct version.
+
+### 2. Promote the GitHub Release
+
+After the build completes, go to the [Releases page](https://github.com/ai03/save_audio_stream/releases), edit the prerelease, uncheck "Set as a pre-release", and publish.
+
+### 3. Tag the Docker Image
+
+Tag the prerelease Docker image with the version number:
+
+```bash
+# Create multi-arch manifest for the new version
+docker manifest create ghcr.io/andrewtheguy/save_audio_stream:X.Y.Z \
+  ghcr.io/andrewtheguy/save_audio_stream:TIMESTAMP-x86_64 \
+  ghcr.io/andrewtheguy/save_audio_stream:TIMESTAMP-arm64
+
+# Push the manifest
+docker manifest push ghcr.io/andrewtheguy/save_audio_stream:X.Y.Z
+```
+
+Replace `TIMESTAMP` with the prerelease tag (e.g., `20251129000040`) and `X.Y.Z` with the version (e.g., `0.1.2`).
+
 ## License
 
 MIT
