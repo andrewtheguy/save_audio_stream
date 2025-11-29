@@ -121,12 +121,24 @@ h2 {
 
 /* Now Playing Section */
 .now-playing-section {
-  background: #ffffff;
-  border: 1px solid #e9ecef;
+  background: #f0f9f2;
+  border: 1px solid #c3e6cb;
   border-radius: 12px;
   padding: 1.5rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 3rem;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-bottom: 3px solid #28a745;
+  position: relative;
+}
+
+.now-playing-section::after {
+  content: '';
+  position: absolute;
+  bottom: -1.75rem;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(to right, transparent 0%, #adb5bd 5%, #adb5bd 95%, transparent 100%);
 }
 
 .now-playing-info {
@@ -146,6 +158,7 @@ h2 {
 .now-playing-time {
   font-size: 1rem;
   color: #2c3e50;
+  font-weight: 700;
 }
 
 .now-playing-duration {
@@ -452,7 +465,7 @@ h2 {
 
 /* Audio Player Styles */
 .audio-player-container {
-  background: #f8f9fa;
+  background: #f0f9f2;
   border-radius: 8px;
   padding: 1rem;
   margin-bottom: 0.5rem;
@@ -642,7 +655,7 @@ h2 {
 
 /* Hourly mode time markers theme */
 .hour-slider-container .time-markers {
-  background: linear-gradient(to right, #e8f4fc, #f0f8ff);
+  background: linear-gradient(to right, #d4edda, #e8f5eb);
   border-radius: 4px;
   padding: 0.25rem 0.5rem;
   margin-top: 0.25rem;
