@@ -453,18 +453,18 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 30);
   };
 
-  // Cycle through time modes: absolute -> hour -> relative -> absolute
+  // Cycle through time modes: hour -> absolute -> relative -> hour
   const cycleTimeMode = () => {
     setTimeMode((prev) => {
-      // When entering hour mode, set to current hour
-      if (prev === "absolute") {
-        setSelectedHourIndex(hourViewData.currentHourIndex);
-        return "hour";
-      }
       if (prev === "hour") {
+        return "absolute";
+      }
+      if (prev === "absolute") {
         return "relative";
       }
-      return "absolute";
+      // relative -> hour: set to current hour
+      setSelectedHourIndex(hourViewData.currentHourIndex);
+      return "hour";
     });
   };
 
@@ -526,6 +526,9 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
         <div className="current-time-display">
           <div className="current-date">{new Date(sessionTimestamp + currentTime * 1000).toLocaleDateString()}</div>
           <div className="current-time">{new Date(sessionTimestamp + currentTime * 1000).toLocaleTimeString()}</div>
+          {timeMode === "relative" && (
+            <div className="relative-time-indicator">{formatTime(currentTime)} from start</div>
+          )}
         </div>
 
         {timeMode === "hour" ? (
@@ -653,10 +656,10 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
           <button
             className="time-mode-toggle"
             onClick={cycleTimeMode}
-            title={timeMode === "absolute" ? "Switch to hour view" : timeMode === "hour" ? "Switch to relative time" : "Switch to absolute time"}
+            title={timeMode === "hour" ? "Switch to absolute time" : timeMode === "absolute" ? "Switch to relative time" : "Switch to hour view"}
             aria-label="Toggle time mode"
           >
-            {timeMode === "absolute" ? "⏱" : timeMode === "hour" ? "⏰" : "⏲"}
+            {timeMode === "hour" ? "⏰" : timeMode === "absolute" ? "⏱" : "⏲"}
           </button>
         </div>
 

@@ -484,6 +484,17 @@ h2 {
   color: #6c757d;
 }
 
+.relative-time-indicator {
+  font-size: 0.85rem;
+  color: #2a2a3a;
+  font-weight: 600;
+  background: linear-gradient(to right, #e8e8f0, #f0f0f8);
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+  margin-top: 0.25rem;
+  display: inline-block;
+}
+
 .current-time {
   font-size: 1rem;
   font-weight: 600;
@@ -521,6 +532,7 @@ h2 {
   font-family: 'Courier New', Courier, monospace;
   font-size: 0.75rem;
   color: #6c757d;
+  font-weight: 600;
   text-align: center;
 }
 
@@ -638,20 +650,19 @@ h2 {
 
 .hour-slider-container .time-marker {
   color: #0066cc;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 /* Relative mode time markers theme */
 .time-markers.relative-mode {
-  background: linear-gradient(to right, #fef3e2, #fff8f0);
+  background: linear-gradient(to right, #e8e8f0, #f0f0f8);
   border-radius: 4px;
   padding: 0.25rem 0.5rem;
   margin-top: 0.25rem;
 }
 
 .time-markers.relative-mode .time-marker {
-  color: #cc6600;
-  font-weight: 500;
+  color: #2a2a3a;
 }
 
 .player-controls {
