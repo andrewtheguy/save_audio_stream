@@ -5,11 +5,18 @@ Release script that:
 2. Bumps patch version in Cargo.toml
 3. Commits and pushes the change
 4. Triggers GitHub Actions workflow with the new version
+
+Requires Python 3.11+ (for tomllib)
 """
 
 import subprocess
 import sys
-import re
+
+if sys.version_info < (3, 11):
+    print("Error: Python 3.11+ is required (for tomllib)", file=sys.stderr)
+    sys.exit(1)
+
+import tomllib
 from pathlib import Path
 
 
@@ -53,12 +60,13 @@ def check_synced_with_remote() -> None:
 
 
 def get_current_version(cargo_toml: Path) -> str:
-    """Extract current version from Cargo.toml."""
-    content = cargo_toml.read_text()
-    match = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
-    if not match:
-        error_exit("Could not find version in Cargo.toml")
-    return match.group(1)
+    """Extract current version from Cargo.toml [package] section."""
+    with cargo_toml.open("rb") as f:
+        data = tomllib.load(f)
+    try:
+        return data["package"]["version"]
+    except KeyError:
+        error_exit("Could not find version in [package] section of Cargo.toml")
 
 
 def bump_patch_version(version: str) -> str:
@@ -70,16 +78,15 @@ def bump_patch_version(version: str) -> str:
     return ".".join(parts)
 
 
-def update_cargo_toml(cargo_toml: Path, new_version: str) -> None:
-    """Update version in Cargo.toml."""
+def update_cargo_toml(cargo_toml: Path, current_version: str, new_version: str) -> None:
+    """Update version in Cargo.toml [package] section."""
     content = cargo_toml.read_text()
-    new_content = re.sub(
-        r'^(version\s*=\s*)"[^"]+"',
-        f'\\1"{new_version}"',
-        content,
-        count=1,
-        flags=re.MULTILINE
-    )
+    # Replace the first occurrence of the exact version string
+    old_line = f'version = "{current_version}"'
+    new_line = f'version = "{new_version}"'
+    new_content = content.replace(old_line, new_line, 1)
+    if new_content == content:
+        error_exit(f"Could not find '{old_line}' in Cargo.toml")
     cargo_toml.write_text(new_content)
 
 
@@ -89,20 +96,25 @@ def update_cargo_lock() -> None:
     run_cmd(["cargo", "check"], capture=False)
 
 
-def git_commit_and_push(new_version: str) -> None:
-    """Commit the version bump and push to remote."""
+def git_commit_and_push(new_version: str) -> str:
+    """Commit the version bump and push to remote. Returns the commit SHA."""
     print("Committing changes...")
     run_cmd(["git", "add", "Cargo.toml", "Cargo.lock"])
     run_cmd(["git", "commit", "-m", f"Bump version to {new_version}"])
 
+    # Get the commit SHA
+    commit_sha = run_cmd(["git", "rev-parse", "HEAD"]).stdout.strip()
+
     print("Pushing to origin/main...")
     run_cmd(["git", "push", "origin", "main"])
 
+    return commit_sha
 
-def trigger_workflow(new_version: str) -> None:
-    """Trigger the GitHub Actions workflow with the new version."""
-    print("Triggering GitHub Actions workflow...")
-    run_cmd(["gh", "workflow", "run", "build.yml", "-f", f"version={new_version}"])
+
+def trigger_workflow(new_version: str, commit_sha: str) -> None:
+    """Trigger the GitHub Actions workflow with the new version at the specific commit."""
+    print(f"Triggering GitHub Actions workflow at commit {commit_sha[:8]}...")
+    run_cmd(["gh", "workflow", "run", "build.yml", "--ref", commit_sha, "-f", f"version={new_version}"])
 
 
 def main() -> None:
@@ -134,18 +146,18 @@ def main() -> None:
 
     # Update Cargo.toml
     print("Updating Cargo.toml...")
-    update_cargo_toml(cargo_toml, new_version)
+    update_cargo_toml(cargo_toml, current_version, new_version)
 
     # Update Cargo.lock
     update_cargo_lock()
 
     # Commit and push
-    git_commit_and_push(new_version)
+    commit_sha = git_commit_and_push(new_version)
 
     # Trigger workflow
-    trigger_workflow(new_version)
+    trigger_workflow(new_version, commit_sha)
 
-    print(f"\nDone! Workflow triggered for version {new_version}")
+    print(f"\nDone! Workflow triggered for version {new_version} at commit {commit_sha[:8]}")
 
 
 if __name__ == "__main__":
