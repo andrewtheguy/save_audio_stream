@@ -453,13 +453,16 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
     audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 30);
   };
 
-  // Cycle through time modes: absolute -> hour -> absolute (relative disabled for now)
+  // Cycle through time modes: absolute -> hour -> relative -> absolute
   const cycleTimeMode = () => {
     setTimeMode((prev) => {
       // When entering hour mode, set to current hour
       if (prev === "absolute") {
         setSelectedHourIndex(hourViewData.currentHourIndex);
         return "hour";
+      }
+      if (prev === "hour") {
+        return "relative";
       }
       return "absolute";
     });
@@ -595,7 +598,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
               )}
               <span className="tick"></span>
             </div>
-            <div className="time-markers">
+            <div className={`time-markers ${timeMode === "relative" ? "relative-mode" : ""}`}>
               <span className="time-marker">
                 {timeMode === "absolute"
                   ? formatAbsoluteTimeOnly(sessionTimestamp, 0)
@@ -650,10 +653,10 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
           <button
             className="time-mode-toggle"
             onClick={cycleTimeMode}
-            title={timeMode === "absolute" ? "Switch to hour view" : "Switch to absolute time"}
+            title={timeMode === "absolute" ? "Switch to hour view" : timeMode === "hour" ? "Switch to relative time" : "Switch to absolute time"}
             aria-label="Toggle time mode"
           >
-            {timeMode === "absolute" ? "⏱" : "⏰"}
+            {timeMode === "absolute" ? "⏱" : timeMode === "hour" ? "⏰" : "⏲"}
           </button>
         </div>
 

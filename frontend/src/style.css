@@ -641,6 +641,19 @@ h2 {
   font-weight: 500;
 }
 
+/* Relative mode time markers theme */
+.time-markers.relative-mode {
+  background: linear-gradient(to right, #fef3e2, #fff8f0);
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.time-markers.relative-mode .time-marker {
+  color: #cc6600;
+  font-weight: 500;
+}
+
 .player-controls {
   display: flex;
   align-items: center;
