@@ -77,17 +77,17 @@ fn seconds_until_end(current: HourMinute, end: HourMinute) -> u64 {
 /// Returns immediately if already in the window
 /// Checks every second for accurate timing
 pub fn wait_for_active_window(start: HourMinute, end: HourMinute, name: &str) {
+    let mut logged = false;
     loop {
         if is_in_active_window_now(start, end) {
             return;
         }
-        // Log wait status every minute (when seconds == 0)
-        let now = chrono::Utc::now();
-        if now.second() == 0 {
+        if !logged {
             println!(
                 "[{}] Waiting for recording window ({:02}:{:02} - {:02}:{:02} UTC)...",
                 name, start.0, start.1, end.0, end.1
             );
+            logged = true;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
