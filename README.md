@@ -702,22 +702,19 @@ python3 scripts/release.py
 The script will:
 1. Verify git working directory is clean
 2. Verify you're on the `main` branch and synced with remote
-3. Bump the patch version in `Cargo.toml` (e.g., `0.1.8` → `0.1.9`)
-4. Run `cargo check` to update `Cargo.lock`
-5. Commit and push the version change
-6. Trigger the GitHub Actions build workflow with the new version
+3. Calculate the next patch version (e.g., `0.1.8` → `0.1.9`)
+4. Trigger the GitHub Actions workflow which bumps `Cargo.toml`/`Cargo.lock`, commits, and builds
 
 **Prerequisites:** `gh` CLI must be installed and authenticated (`gh auth login`).
 
 **Manual:**
 
-1. Update the version in `Cargo.toml`
-2. Run `cargo check` to update `Cargo.lock`
-3. Commit and push the change
-4. Go to Actions → Build → Run workflow
-5. Enter the version number (e.g., `0.1.2`) and run
+1. Go to Actions → Build → Run workflow
+2. Enter the version number (e.g., `0.1.2`)
+3. Check "bump_version" to have the workflow update Cargo.toml/Cargo.lock
+4. Run the workflow
 
-The workflow automatically creates the GitHub release and Docker multi-arch image with the version tag.
+The workflow automatically bumps the version, commits, creates the GitHub release, and builds Docker multi-arch images with the version tag.
 
 ## License
 
