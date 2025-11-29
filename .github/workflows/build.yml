@@ -91,6 +91,10 @@ jobs:
           vcpkg install fdk-aac:x64-windows opus:x64-windows
           vcpkg integrate install
 
+      # Workaround: esm.sh serves different content on Windows, causing lock file hash mismatch
+      - name: Remove Deno lock file
+        run: Remove-Item -Path frontend/deno.lock -ErrorAction SilentlyContinue
+
       - name: Build
         env:
           VCPKG_ROOT: C:\vcpkg
