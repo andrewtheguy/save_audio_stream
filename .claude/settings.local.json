@@ -28,7 +28,8 @@
       "Bash(./scripts/run-sftp-tests.sh:*)",
       "Bash(git restore:*)",
       "Bash(TEST_POSTGRES_URL=postgres://it3@localhost:5432 TEST_POSTGRES_PASSWORD=qwertasdfg cargo test:*)",
-      "Bash(./scripts/run-sync-tests.sh:*)"
+      "Bash(./scripts/run-sync-tests.sh:*)",
+      "Bash(cargo run:*)"
     ],
     "deny": [],
     "ask": []
