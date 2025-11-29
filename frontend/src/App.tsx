@@ -306,6 +306,17 @@ function ShowDetail({
       setData(sessionsData);
       setLastKnownEndId(getMaxEndId(sessionsData.sessions));
       setNewDataAvailable(false);
+
+      // Update activeSession with refreshed data (e.g., new end_id for pending sessions)
+      if (activeSession) {
+        const updatedSession = sessionsData.sessions.find(
+          (s: SessionInfo) => s.section_id === activeSession.section_id
+        );
+        if (updatedSession) {
+          setActiveSession(updatedSession);
+        }
+      }
+
       setIsReloading(false);
     } catch (err) {
       console.error("Failed to reload sessions:", err);
@@ -558,6 +569,17 @@ function InspectView() {
     try {
       const sessionsData = await fetch(buildSessionsUrl(dateFilter)).then((r) => r.json());
       setData(sessionsData);
+
+      // Update activeSession with refreshed data (e.g., new end_id for pending sessions)
+      if (activeSession) {
+        const updatedSession = sessionsData.sessions.find(
+          (s: SessionInfo) => s.section_id === activeSession.section_id
+        );
+        if (updatedSession) {
+          setActiveSession(updatedSession);
+        }
+      }
+
       setIsReloading(false);
     } catch (err) {
       console.error("Failed to reload sessions:", err);
