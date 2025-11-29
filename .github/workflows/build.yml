@@ -105,13 +105,6 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Clone vcpkg
-        run: |
-          git clone https://github.com/microsoft/vcpkg.git
-          cd vcpkg
-          git checkout 2025.10.17
-          .\bootstrap-vcpkg.bat
-
       - name: Restore vcpkg cache
         id: vcpkg-cache
         uses: TAServers/vcpkg-cache@v3
@@ -122,9 +115,7 @@ jobs:
         env:
           VCPKG_FEATURE_FLAGS: "binarycaching"
           VCPKG_BINARY_SOURCES: "clear;files,${{ steps.vcpkg-cache.outputs.path }},readwrite"
-        run: |
-          .\vcpkg\vcpkg install fdk-aac:x64-windows opus:x64-windows
-          echo "VCPKG_ROOT=${{ github.workspace }}\vcpkg" >> $env:GITHUB_ENV
+        run: vcpkg install fdk-aac:x64-windows opus:x64-windows
 
       # Workaround: esm.sh serves different content on Windows, causing lock file hash mismatch
       - name: Remove Deno lock file
