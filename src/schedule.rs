@@ -89,7 +89,7 @@ pub fn wait_for_active_window(start: HourMinute, end: HourMinute, name: &str) {
                 name, start.0, start.1, end.0, end.1
             );
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }
 
