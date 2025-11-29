@@ -126,6 +126,12 @@ def main() -> None:
     print(f"Current version: {current_version}")
     print(f"New version: {new_version}")
 
+    # Ask for confirmation
+    response = input("\nProceed with release? [y/N] ").strip().lower()
+    if response != "y":
+        print("Aborted.")
+        sys.exit(0)
+
     # Update Cargo.toml
     print("Updating Cargo.toml...")
     update_cargo_toml(cargo_toml, new_version)
