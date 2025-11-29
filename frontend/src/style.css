@@ -206,7 +206,7 @@ h2 {
   background: #545b62;
 }
 
-.copy-hls-btn {
+.show-hls-btn {
   background: #17a2b8;
   color: white;
   border: none;
@@ -218,7 +218,99 @@ h2 {
   transition: background-color 0.2s ease;
 }
 
-.copy-hls-btn:hover {
+.show-hls-btn:hover {
+  background: #138496;
+}
+
+/* HLS URL Modal */
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 600px;
+  width: 90%;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #333;
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: #666;
+  padding: 0;
+  line-height: 1;
+}
+
+.modal-close-btn:hover {
+  color: #333;
+}
+
+.modal-body {
+  margin-bottom: 1rem;
+}
+
+.hls-url-input {
+  width: 100%;
+  padding: 0.75rem;
+  font-size: 0.9rem;
+  font-family: monospace;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #f8f9fa;
+  box-sizing: border-box;
+}
+
+.hls-url-input:focus {
+  outline: none;
+  border-color: #17a2b8;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.copy-url-btn {
+  background: #17a2b8;
+  color: white;
+  border: none;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  min-width: 100px;
+}
+
+.copy-url-btn:hover {
   background: #138496;
 }
 
