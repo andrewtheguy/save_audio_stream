@@ -107,6 +107,7 @@ jobs:
         with:
           pkgs: fdk-aac opus
           triplet: x64-windows
+          cache-key: "x64-windows"
           revision: "2025.10.17"
           token: ${{ github.token }}
 
