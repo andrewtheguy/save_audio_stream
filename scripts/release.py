@@ -114,7 +114,14 @@ def git_commit_and_push(new_version: str) -> str:
 def trigger_workflow(new_version: str, commit_sha: str) -> None:
     """Trigger the GitHub Actions workflow with the new version at the specific commit."""
     print(f"Triggering GitHub Actions workflow at commit {commit_sha[:8]}...")
-    run_cmd(["gh", "workflow", "run", "build.yml", "--ref", commit_sha, "-f", f"version={new_version}"])
+    # GitHub API requires a branch/tag name for --ref, so we use main
+    # But we pass the SHA as an input so the workflow checks out the exact commit
+    run_cmd([
+        "gh", "workflow", "run", "build.yml",
+        "--ref", "main",
+        "-f", f"version={new_version}",
+        "-f", f"sha={commit_sha}",
+    ])
 
 
 def main() -> None:

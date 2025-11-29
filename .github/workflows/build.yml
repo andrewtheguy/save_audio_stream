@@ -7,6 +7,10 @@ on:
         description: 'Release version (e.g., 0.1.2). Leave empty for prerelease with timestamp.'
         required: false
         default: ''
+      sha:
+        description: 'Commit SHA to build. Leave empty to use the branch HEAD.'
+        required: false
+        default: ''
 
 env:
   GHCR_IMAGE: ghcr.io/andrewtheguy/save_audio_stream
@@ -49,6 +53,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.sha || github.ref }}
 
       - uses: denoland/setup-deno@v2
         with:
@@ -97,6 +103,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.sha || github.ref }}
 
       - uses: denoland/setup-deno@v2
         with:
