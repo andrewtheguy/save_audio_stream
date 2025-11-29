@@ -1,8 +1,0 @@
-{
-  "name": "save-audio-stream",
-  "version": "0.1.0",
-  "dependencies": [
-    "fdk-aac",
-    "opus"
-  ]
-}
