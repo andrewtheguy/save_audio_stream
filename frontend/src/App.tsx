@@ -1,14 +1,10 @@
 import { React, Routes, Route, useParams, Link } from "../deps.ts";
 const { useEffect, useState } = React;
-import { AudioPlayer } from "./components/AudioPlayer.tsx";
-
-interface SessionInfo {
-  section_id: number;
-  start_id: number;
-  end_id: number;
-  timestamp_ms: number;
-  duration_seconds: number;
-}
+import { SessionCard, type SessionInfo } from "./components/SessionCard.tsx";
+import { NowPlayingSection } from "./components/NowPlayingSection.tsx";
+import { PaginationControls } from "./components/PaginationControls.tsx";
+import { DateFilterControls } from "./components/DateFilterControls.tsx";
+import { useSessionNavigation } from "./hooks/useSessionNavigation.ts";
 
 interface SessionsResponse {
   name: string;
@@ -349,6 +345,16 @@ function ShowDetail({
     setCurrentPage(1);
   };
 
+  // Use shared navigation hook
+  const { handleGoToActiveSession } = useSessionNavigation({
+    activeSession,
+    sessions: data?.sessions || [],
+    dateFilter,
+    pageSize,
+    setDateFilter,
+    setCurrentPage,
+  });
+
   return (
     <div id="app">
       <div className="app-header">
@@ -398,154 +404,56 @@ function ShowDetail({
         </div>
 
         {/* Filter controls */}
-        <div className="filter-controls">
-          <div className="filter-group">
-            <label htmlFor="date-filter">Date:</label>
-            <input
-              type="date"
-              id="date-filter"
-              value={dateFilter}
-              onChange={(e) => {
-                setDateFilter(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="date-input"
-            />
-            {dateFilter && (
-              <button
-                className="clear-filter-btn"
-                onClick={handleClearFilter}
-                title="Clear filter"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-          <div className="filter-info">
-            {dateFilter
-              ? `${totalSessions} session${totalSessions !== 1 ? "s" : ""} on ${dateFilter}`
-              : `${totalSessions} session${totalSessions !== 1 ? "s" : ""} total`}
-          </div>
-        </div>
+        <DateFilterControls
+          dateFilter={dateFilter}
+          onFilterChange={(date) => {
+            setDateFilter(date);
+            setCurrentPage(1);
+          }}
+          onClearFilter={handleClearFilter}
+          sessionCount={totalSessions}
+          inputId="date-filter"
+        />
 
         {/* Now Playing Section */}
-        <div className="now-playing-section">
-          {activeSession ? (
-            <>
-              <div className="now-playing-info">
-                <span className="now-playing-label">Now Playing:</span>
-                <span className="now-playing-time">
-                  {formatDateWithTimeRange(
-                    activeSession.timestamp_ms,
-                    activeSession.timestamp_ms + activeSession.duration_seconds * 1000
-                  )}
-                </span>
-                <span className="now-playing-duration">
-                  Duration: {formatDuration(activeSession.duration_seconds)}
-                </span>
-              </div>
-              <AudioPlayer
-                key={activeSession.section_id}
-                format={audioFormat}
-                startId={activeSession.start_id}
-                endId={activeSession.end_id}
-                sessionTimestamp={activeSession.timestamp_ms}
-                dbUniqueId={dbUniqueId}
-                sectionId={activeSession.section_id}
-                initialTime={getSavedPosition(activeSession.section_id)}
-                showName={decodedShowName}
-              />
-            </>
-          ) : (
-            <div className="now-playing-placeholder">
-              Select a session to play
-            </div>
-          )}
-        </div>
+        <NowPlayingSection
+          activeSession={activeSession}
+          audioFormat={audioFormat}
+          dbUniqueId={dbUniqueId}
+          getSavedPosition={getSavedPosition}
+          getHlsUrl={getHlsUrl}
+          onGoToSession={handleGoToActiveSession}
+          formatDuration={formatDuration}
+          formatDateWithTimeRange={formatDateWithTimeRange}
+          showName={decodedShowName}
+        />
 
         {totalSessions === 0 ? (
           <p>{dateFilter ? "No sessions found for this date." : "No recording sessions found."}</p>
         ) : (
           <div className="sessions-list">
-            {paginatedSessions.map((session) => {
-              const isActive = activeSession?.section_id === session.section_id;
-              const endTimestampMs = session.timestamp_ms + session.duration_seconds * 1000;
-              const savedPos = getSavedPosition(session.section_id);
-              return (
-                <div
-                  key={session.section_id}
-                  className={`session-card ${isActive ? "active" : ""}`}
-                >
-                  <div className="session-header">
-                    <span className="session-time">
-                      {formatDateWithTimeRange(session.timestamp_ms, endTimestampMs)}
-                    </span>
-                    <span className="session-duration">
-                      Duration: {formatDuration(session.duration_seconds)}
-                    </span>
-                    <span className="session-position">
-                      Position: {formatPosition(savedPos)}
-                    </span>
-                    {isActive ? (
-                      <span className="active-badge">Active</span>
-                    ) : (
-                      <button
-                        className="select-btn"
-                        onClick={() => {
-                          setActiveSession(session);
-                          window.scrollTo({ top: 0, behavior: "smooth" });
-                        }}
-                      >
-                        Select
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+            {paginatedSessions.map((session) => (
+              <SessionCard
+                key={session.section_id}
+                session={session}
+                isActive={activeSession?.section_id === session.section_id}
+                onSelect={setActiveSession}
+                getHlsUrl={getHlsUrl}
+                savedPosition={getSavedPosition(session.section_id)}
+                formatDuration={formatDuration}
+                formatDateWithTimeRange={formatDateWithTimeRange}
+                formatPosition={formatPosition}
+              />
+            ))}
           </div>
         )}
 
         {/* Pagination controls */}
-        {totalPages > 1 && (
-          <div className="pagination-controls">
-            <button
-              className="pagination-btn"
-              onClick={() => setCurrentPage(1)}
-              disabled={currentPage === 1}
-              title="First page"
-            >
-              &laquo;
-            </button>
-            <button
-              className="pagination-btn"
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
-              title="Previous page"
-            >
-              &lsaquo;
-            </button>
-            <span className="pagination-info">
-              Page {currentPage} of {totalPages}
-            </span>
-            <button
-              className="pagination-btn"
-              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
-              title="Next page"
-            >
-              &rsaquo;
-            </button>
-            <button
-              className="pagination-btn"
-              onClick={() => setCurrentPage(totalPages)}
-              disabled={currentPage === totalPages}
-              title="Last page"
-            >
-              &raquo;
-            </button>
-          </div>
-        )}
+        <PaginationControls
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPageChange={setCurrentPage}
+        />
       </div>
     </div>
   );
@@ -663,6 +571,16 @@ function InspectView() {
     setCurrentPage(1);
   };
 
+  // Use shared navigation hook
+  const { handleGoToActiveSession } = useSessionNavigation({
+    activeSession,
+    sessions: data?.sessions || [],
+    dateFilter,
+    pageSize,
+    setDateFilter,
+    setCurrentPage,
+  });
+
   const getHlsUrl = (session: SessionInfo): string => {
     return audioFormat === "aac"
       ? `/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
@@ -712,165 +630,60 @@ function InspectView() {
         <h2>Recording Sessions</h2>
 
         {/* Filter controls */}
-        <div className="filter-controls">
-          <div className="filter-group">
-            <label htmlFor="date-filter-inspect">Date:</label>
-            <input
-              type="date"
-              id="date-filter-inspect"
-              value={dateFilter}
-              onChange={(e) => {
-                setDateFilter(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="date-input"
-            />
-            {dateFilter && (
-              <button
-                className="clear-filter-btn"
-                onClick={handleClearFilter}
-                title="Clear filter"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-          <div className="filter-info">
-            {dateFilter
-              ? `${data.sessions.length} session${data.sessions.length !== 1 ? "s" : ""} on ${dateFilter}`
-              : `${data.sessions.length} session${data.sessions.length !== 1 ? "s" : ""} total`}
-          </div>
-        </div>
+        <DateFilterControls
+          dateFilter={dateFilter}
+          onFilterChange={(date) => {
+            setDateFilter(date);
+            setCurrentPage(1);
+          }}
+          onClearFilter={handleClearFilter}
+          sessionCount={data.sessions.length}
+          inputId="date-filter-inspect"
+        />
 
         {/* Now Playing Section */}
-        <div className="now-playing-section">
-          {activeSession ? (
-            <>
-              <div className="now-playing-info">
-                <span className="now-playing-label">Now Playing:</span>
-                <span className="now-playing-time">
-                  {formatDateWithTimeRange(
-                    activeSession.timestamp_ms,
-                    activeSession.timestamp_ms + activeSession.duration_seconds * 1000
-                  )}
-                </span>
-                <span className="now-playing-duration">
-                  Duration: {formatDuration(activeSession.duration_seconds)}
-                </span>
-              </div>
-              <AudioPlayer
-                key={activeSession.section_id}
-                format={audioFormat}
-                startId={activeSession.start_id}
-                endId={activeSession.end_id}
-                sessionTimestamp={activeSession.timestamp_ms}
-                dbUniqueId={dbUniqueId}
-                sectionId={activeSession.section_id}
-                initialTime={getSavedPosition(activeSession.section_id)}
-              />
-            </>
-          ) : (
-            <div className="now-playing-placeholder">
-              Select a session to play
-            </div>
-          )}
-        </div>
+        <NowPlayingSection
+          activeSession={activeSession}
+          audioFormat={audioFormat}
+          dbUniqueId={dbUniqueId}
+          getSavedPosition={getSavedPosition}
+          getHlsUrl={getHlsUrl}
+          onGoToSession={handleGoToActiveSession}
+          formatDuration={formatDuration}
+          formatDateWithTimeRange={formatDateWithTimeRange}
+        />
 
         {data.sessions.length === 0 ? (
           <p>{dateFilter ? "No sessions found for this date." : "No recording sessions found."}</p>
         ) : (
           <div className="sessions-list">
             {(() => {
-              const totalSessions = data.sessions.length;
-              const totalPages = Math.ceil(totalSessions / pageSize);
               const startIndex = (currentPage - 1) * pageSize;
               const endIndex = startIndex + pageSize;
               const paginatedSessions = data.sessions.slice(startIndex, endIndex);
-              return paginatedSessions.map((session) => {
-              const isActive = activeSession?.section_id === session.section_id;
-              const endTimestampMs = session.timestamp_ms + session.duration_seconds * 1000;
-              const savedPos = getSavedPosition(session.section_id);
-              return (
-                <div
+              return paginatedSessions.map((session: SessionInfo) => (
+                <SessionCard
                   key={session.section_id}
-                  className={`session-card ${isActive ? "active" : ""}`}
-                >
-                  <div className="session-header">
-                    <span className="session-time">
-                      {formatDateWithTimeRange(session.timestamp_ms, endTimestampMs)}
-                    </span>
-                    <span className="session-duration">
-                      Duration: {formatDuration(session.duration_seconds)}
-                    </span>
-                    <span className="session-position">
-                      Position: {formatPosition(savedPos)}
-                    </span>
-                    {isActive ? (
-                      <span className="active-badge">Active</span>
-                    ) : (
-                      <button
-                        className="select-btn"
-                        onClick={() => {
-                          setActiveSession(session);
-                          window.scrollTo({ top: 0, behavior: "smooth" });
-                        }}
-                      >
-                        Select
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            });
+                  session={session}
+                  isActive={activeSession?.section_id === session.section_id}
+                  onSelect={setActiveSession}
+                  getHlsUrl={getHlsUrl}
+                  savedPosition={getSavedPosition(session.section_id)}
+                  formatDuration={formatDuration}
+                  formatDateWithTimeRange={formatDateWithTimeRange}
+                  formatPosition={formatPosition}
+                />
+              ));
             })()}
           </div>
         )}
 
         {/* Pagination controls */}
-        {(() => {
-          const totalSessions = data.sessions.length;
-          const totalPages = Math.ceil(totalSessions / pageSize);
-          if (totalPages <= 1) return null;
-          return (
-            <div className="pagination-controls">
-              <button
-                className="pagination-btn"
-                onClick={() => setCurrentPage(1)}
-                disabled={currentPage === 1}
-                title="First page"
-              >
-                &laquo;
-              </button>
-              <button
-                className="pagination-btn"
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                title="Previous page"
-              >
-                &lsaquo;
-              </button>
-              <span className="pagination-info">
-                Page {currentPage} of {totalPages}
-              </span>
-              <button
-                className="pagination-btn"
-                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                disabled={currentPage === totalPages}
-                title="Next page"
-              >
-                &rsaquo;
-              </button>
-              <button
-                className="pagination-btn"
-                onClick={() => setCurrentPage(totalPages)}
-                disabled={currentPage === totalPages}
-                title="Last page"
-              >
-                &raquo;
-              </button>
-            </div>
-          );
-        })()}
+        <PaginationControls
+          currentPage={currentPage}
+          totalPages={Math.ceil(data.sessions.length / pageSize)}
+          onPageChange={setCurrentPage}
+        />
       </div>
     </div>
   );

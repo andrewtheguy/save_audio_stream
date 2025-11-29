@@ -190,6 +190,38 @@ h2 {
   background: #0052a3;
 }
 
+.go-to-session-btn {
+  background: #6c757d;
+  color: white;
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 16px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.go-to-session-btn:hover {
+  background: #545b62;
+}
+
+.copy-hls-btn {
+  background: #17a2b8;
+  color: white;
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 16px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.copy-hls-btn:hover {
+  background: #138496;
+}
+
 .session-header {
   display: flex;
   justify-content: space-between;
