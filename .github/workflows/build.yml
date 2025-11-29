@@ -98,10 +98,6 @@ jobs:
         run: |
           sudo apt-get install -y cmake pkg-config
 
-      # Workaround: esm.sh serves different content, causing lock file hash mismatch
-      - name: Remove Deno lock file
-        run: rm -f frontend/deno.lock
-
       - name: Build
         run: cargo build --release
 
@@ -160,10 +156,6 @@ jobs:
           VCPKG_FEATURE_FLAGS: "binarycaching"
           VCPKG_BINARY_SOURCES: "clear;files,${{ steps.vcpkg-cache.outputs.path }},readwrite"
         run: vcpkg install fdk-aac:x64-windows opus:x64-windows
-
-      # Workaround: esm.sh serves different content on Windows, causing lock file hash mismatch
-      - name: Remove Deno lock file
-        run: Remove-Item -Path frontend/deno.lock -ErrorAction SilentlyContinue
 
       - name: Build
         run: cargo build --release
