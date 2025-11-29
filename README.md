@@ -475,42 +475,95 @@ save_audio_stream inspect <database.sqlite> [-p PORT]
 
 ### Available Endpoints
 
-#### Receiver/Inspect Endpoints
+#### Playback API (Inspect & Receiver Modes)
 
-**For Opus databases:**
+These endpoints are available for browsing and playing back recorded audio. The main difference between modes is URL structure:
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Web UI with dynamic segment URLs |
-| `GET /opus-playlist.m3u8?start_id=N&end_id=N` | HLS playlist for Opus |
-| `GET /opus-segment/{id}.m4s` | fMP4 audio segment for HLS |
-| `GET /api/segments/range` | JSON with min/max segment IDs |
-| `GET /api/sessions` | List all recording sessions with metadata |
+- **Inspect mode**: Direct paths (e.g., `/api/sessions`)
+- **Receiver mode**: Show-prefixed paths (e.g., `/api/show/{show_name}/sessions`)
 
-**For AAC databases:**
+| Endpoint | Inspect Mode | Receiver Mode | Description |
+|----------|--------------|---------------|-------------|
+| Web UI | `GET /` | `GET /` | Web UI for browsing and playback |
+| Mode check | - | `GET /api/mode` | Returns `{"mode": "receiver"}` |
+| Show list | - | `GET /api/shows` | List all synced shows |
+| Format | `GET /api/format` | `GET /api/show/{show}/format` | Audio format (opus/aac) |
+| Metadata | `GET /api/metadata` | `GET /api/show/{show}/metadata` | Show metadata (format, bitrate, sample rate) |
+| Segment range | `GET /api/segments/range` | `GET /api/show/{show}/segments/range` | Min/max segment IDs |
+| Sessions | `GET /api/sessions` | `GET /api/show/{show}/sessions` | List recording sessions with metadata |
+| Session latest | `GET /api/session/{id}/latest` | - | Latest segment info for a session |
+| Estimate segment | `GET /api/session/{id}/estimate_segment?timestamp_ms=N` | `GET /api/show/{show}/session/{id}/estimate_segment?timestamp_ms=N` | Estimate segment ID from timestamp |
+| Sync status | - | `GET /api/sync/status` | Check if background sync is in progress |
+| Trigger sync | - | `POST /api/sync` | Manually trigger sync |
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Web UI with dynamic segment URLs |
-| `GET /playlist.m3u8?start_id=N&end_id=N` | HLS playlist for AAC |
-| `GET /aac-segment/{id}.aac` | AAC audio segment |
-| `GET /api/segments/range` | JSON with min/max segment IDs |
-| `GET /api/sessions` | List all recording sessions with metadata |
+**HLS Streaming Endpoints (format-specific):**
 
-#### Record Command API Endpoints
+| Audio Format | Inspect Mode | Receiver Mode | Description |
+|--------------|--------------|---------------|-------------|
+| Opus playlist | `GET /opus-playlist.m3u8?start_id=N&end_id=N` | `GET /show/{show}/opus-playlist.m3u8?...` | HLS playlist for Opus |
+| Opus segment | `GET /opus-segment/{id}.m4s` | `GET /show/{show}/opus-segment/{id}.m4s` | fMP4 audio segment |
+| AAC playlist | `GET /playlist.m3u8?start_id=N&end_id=N` | `GET /show/{show}/playlist.m3u8?...` | HLS playlist for AAC |
+| AAC segment | `GET /aac-segment/{id}.aac` | `GET /show/{show}/aac-segment/{id}.aac` | AAC audio segment |
 
-When running `record` command, an API server is available for database synchronization and audio export:
+#### Record Command API (Sync & Export)
+
+When running `record` command, an API server provides synchronization and audio export endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /health` | Health check endpoint |
 | `GET /api/sync/shows` | List available shows for syncing |
 | `GET /api/sync/shows/{show_name}/metadata` | Show metadata (format, bitrate, etc.) |
-| `GET /api/sync/shows/{show_name}/sections` | List all sections (recording sessions) for a show |
-| `GET /api/sync/shows/{show_name}/sections/{section_id}/export` | **Export section audio to file** |
-| `GET /api/sync/shows/{show_name}/segments` | Fetch segments for syncing |
+| `GET /api/sync/shows/{show_name}/sections` | List all sections (recording sessions) |
+| `GET /api/sync/shows/{show_name}/sections/{section_id}/export` | Export section audio to file |
+| `GET /api/sync/shows/{show_name}/segments?start_id=N&end_id=N&limit=N` | Fetch segments for syncing |
 
-### Exporting Audio Sections
+### API Details
+
+#### Estimating Segment ID from Timestamp
+
+The estimate segment API calculates which segment corresponds to a given timestamp within a session.
+
+**Endpoints:**
+- Inspect mode: `GET /api/session/{section_id}/estimate_segment?timestamp_ms={timestamp}`
+- Receiver mode: `GET /api/show/{show_name}/session/{section_id}/estimate_segment?timestamp_ms={timestamp}`
+
+**Features:**
+- **Linear interpolation**: Estimates segment ID based on position within session duration
+- **Bound checking**: Returns error if timestamp is outside session boundaries
+- **Session info**: Error responses include session start/end timestamps for reference
+
+**Example Usage:**
+
+```bash
+# Get sessions first to find section_id
+curl http://localhost:16000/api/sessions
+
+# Estimate segment for a specific timestamp
+curl "http://localhost:16000/api/session/1737550800000000/estimate_segment?timestamp_ms=1737552600000"
+
+# Response:
+{
+  "section_id": 1737550800000000,
+  "estimated_segment_id": 150,
+  "timestamp_ms": 1737552600000
+}
+```
+
+**Error Responses:**
+
+- `400 Bad Request`: Timestamp is outside session bounds (response includes `section_start_ms` and `section_end_ms`)
+- `404 Not Found`: Section doesn't exist or has no segments
+
+```json
+{
+  "error": "Timestamp 1737550000000 is before section start (1737550800000)",
+  "section_start_ms": 1737550800000,
+  "section_end_ms": 1737554400000
+}
+```
+
+#### Exporting Audio Sections
 
 The export API allows you to export individual recording sections (sessions) as audio files without re-encoding.
 
@@ -518,41 +571,25 @@ The export API allows you to export individual recording sections (sessions) as 
 
 **Features:**
 - **No re-encoding**: Direct export from database to file or SFTP
-- **Format-specific output**:
-  - Opus → `.ogg` file (Ogg container)
-  - AAC → `.aac` file (raw ADTS frames)
+- **Format-specific output**: Opus → `.ogg` file, AAC → `.aac` file
 - **Smart filename**: `{showname}_{yyyymmdd_hhmmss}_{hex_section_id}.{ext}`
-  - Timestamp based on section start time
-  - Section ID in hexadecimal for uniqueness
-- **Concurrent safety**: File locking prevents multiple simultaneous exports of the same section
-- **Export destinations**:
-  - Local files: `tmp/` directory by default
-  - SFTP: Direct streaming to remote server (see SFTP configuration below)
+- **Concurrent safety**: File locking prevents multiple simultaneous exports
+- **Export destinations**: Local files (`tmp/`) or SFTP (see config)
 
-#### SFTP Export Configuration
+**SFTP Export Configuration:**
 
-When SFTP export is configured globally, audio sections are streamed directly to the remote SFTP server from memory without creating local temporary files.
-
-See [`config/record_with_export.example.toml`](config/record_with_export.example.toml) for a complete configuration example.
-
-Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`config/user/credentials.example.toml`](config/user/credentials.example.toml) for the format.
-
-**SFTP Export Features:**
-- **Zero-disk I/O**: Audio data streams directly from database to SFTP server without local file creation
-- **Atomic uploads**: Files are uploaded to a temporary location and renamed atomically to prevent partial uploads
-- **Data integrity**: CRC32 checksum validation ensures uploaded data matches the source
-- **Automatic cleanup**: No temporary files left behind on either local or remote systems
+When SFTP export is configured, audio sections stream directly to the remote server without local temp files. See [`config/record_with_export.example.toml`](config/record_with_export.example.toml) for configuration.
 
 **Example Usage:**
 
 ```bash
-# First, get available sections for a show
+# List sections for a show
 curl http://localhost:17000/api/sync/shows/am1430/sections
 
-# Export a specific section (with SFTP configured)
+# Export a section
 curl http://localhost:17000/api/sync/shows/am1430/sections/1737550800000000/export
 
-# Response (SFTP upload):
+# Response (SFTP):
 {
   "remote_path": "sftp://sftp.example.com/uploads/radio/am1430_20250122_143000_62c4b12369400.ogg",
   "section_id": 1737550800000000,
@@ -560,7 +597,7 @@ curl http://localhost:17000/api/sync/shows/am1430/sections/1737550800000000/expo
   "duration_seconds": 3600.0
 }
 
-# Response (local file, when SFTP not configured):
+# Response (local file):
 {
   "file_path": "tmp/am1430_20250122_143000_62c4b12369400.ogg",
   "section_id": 1737550800000000,
@@ -569,30 +606,10 @@ curl http://localhost:17000/api/sync/shows/am1430/sections/1737550800000000/expo
 }
 ```
 
-**Testing with Local SFTP Server:**
-
-For development and testing, you can quickly spin up a local SFTP server using rclone:
-
-```bash
-# Create a test directory for uploads
-mkdir -p /tmp/sftp-uploads
-
-# Start rclone SFTP server
-rclone serve sftp /tmp/sftp-uploads --addr :2233 --user demo --pass demo
-```
-
-Then configure using [`config/record_with_export.example.toml`](config/record_with_export.example.toml) as a template, setting `host = 'localhost'`, `port = 2233`, `username = 'demo'`, and add the credential to `~/.config/save_audio_stream/credentials.toml`:
-
-```toml
-[sftp.local-dev]
-password = "demo"
-```
-
 **Error Responses:**
-
 - `404 Not Found`: Show or section doesn't exist
 - `409 Conflict`: Export already in progress for this section
-- `500 Internal Server Error`: Database, file system, or SFTP connection error
+- `500 Internal Server Error`: Database, file system, or SFTP error
 
 ### Development Workflow
 

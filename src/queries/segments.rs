@@ -251,6 +251,39 @@ pub fn select_sessions_with_join_filtered(start_ts: Option<i64>, end_ts: Option<
         .to_string(SqliteQueryBuilder)
 }
 
+/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id,
+///        SUM(seg.duration_samples) as total_duration_samples
+/// FROM sections s
+/// LEFT JOIN segments seg ON s.id = seg.section_id
+/// WHERE s.id = ?
+/// GROUP BY s.id - SQLite, get info for specific section
+pub fn select_section_info_by_id(section_id: i64) -> String {
+    Query::select()
+        .column((Sections::Table, Sections::Id))
+        .column((Sections::Table, Sections::StartTimestampMs))
+        .expr_as(
+            Func::min(Expr::col((Segments::Table, Segments::Id))),
+            sea_query::Alias::new("start_segment_id"),
+        )
+        .expr_as(
+            Func::max(Expr::col((Segments::Table, Segments::Id))),
+            sea_query::Alias::new("end_segment_id"),
+        )
+        .expr_as(
+            Func::sum(Expr::col((Segments::Table, Segments::DurationSamples))),
+            sea_query::Alias::new("total_duration_samples"),
+        )
+        .from(Sections::Table)
+        .left_join(
+            Segments::Table,
+            Expr::col((Sections::Table, Sections::Id))
+                .equals((Segments::Table, Segments::SectionId)),
+        )
+        .and_where(Expr::col((Sections::Table, Sections::Id)).eq(section_id))
+        .group_by_col((Sections::Table, Sections::Id))
+        .to_string(SqliteQueryBuilder)
+}
+
 // ============================================================================
 // PostgreSQL variants
 // ============================================================================
@@ -454,5 +487,39 @@ pub fn select_sessions_with_join_pg_filtered(start_ts: Option<i64>, end_ts: Opti
     query
         .group_by_col((Sections::Table, Sections::Id))
         .order_by((Sections::Table, Sections::StartTimestampMs), Order::Asc)
+        .to_string(PostgresQueryBuilder)
+}
+
+/// SELECT s.id, s.start_timestamp_ms, MIN(seg.id) as start_segment_id, MAX(seg.id) as end_segment_id,
+///        SUM(seg.duration_samples) as total_duration_samples
+/// FROM sections s
+/// LEFT JOIN segments seg ON s.id = seg.section_id
+/// WHERE s.id = ?
+/// GROUP BY s.id - PostgreSQL, get info for specific section
+pub fn select_section_info_by_id_pg(section_id: i64) -> String {
+    Query::select()
+        .column((Sections::Table, Sections::Id))
+        .column((Sections::Table, Sections::StartTimestampMs))
+        .expr_as(
+            Func::min(Expr::col((Segments::Table, Segments::Id))),
+            sea_query::Alias::new("start_segment_id"),
+        )
+        .expr_as(
+            Func::max(Expr::col((Segments::Table, Segments::Id))),
+            sea_query::Alias::new("end_segment_id"),
+        )
+        .expr_as(
+            Func::sum(Expr::col((Segments::Table, Segments::DurationSamples)))
+                .cast_as(sea_query::Alias::new("BIGINT")),
+            sea_query::Alias::new("total_duration_samples"),
+        )
+        .from(Sections::Table)
+        .left_join(
+            Segments::Table,
+            Expr::col((Sections::Table, Sections::Id))
+                .equals((Segments::Table, Segments::SectionId)),
+        )
+        .and_where(Expr::col((Sections::Table, Sections::Id)).eq(section_id))
+        .group_by_col((Sections::Table, Sections::Id))
         .to_string(PostgresQueryBuilder)
 }

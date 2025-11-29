@@ -167,6 +167,10 @@ pub fn inspect_audio(
             .route(
                 "/api/session/{section_id}/latest",
                 get(session_latest_handler),
+            )
+            .route(
+                "/api/session/{section_id}/estimate_segment",
+                get(estimate_segment_handler),
             );
 
         // Add format-specific routes
@@ -1027,6 +1031,157 @@ async fn session_latest_handler(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct EstimateSegmentParams {
+    timestamp_ms: i64,
+}
+
+#[derive(Serialize)]
+struct EstimateSegmentResponse {
+    section_id: i64,
+    estimated_segment_id: i64,
+    timestamp_ms: i64,
+}
+
+#[derive(Serialize)]
+struct EstimateSegmentError {
+    error: String,
+    section_start_ms: Option<i64>,
+    section_end_ms: Option<i64>,
+}
+
+/// Estimate segment ID from timestamp for a given section (inspect mode - SQLite)
+async fn estimate_segment_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(section_id): Path<i64>,
+    Query(params): Query<EstimateSegmentParams>,
+) -> impl IntoResponse {
+    let pool = &state.pool;
+
+    // Get sample rate for duration calculation
+    let sql = metadata::select_by_key("sample_rate");
+    let sample_rate: f64 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(pool).await {
+        Ok(val) => val.parse().unwrap_or(48000.0),
+        Err(_) => 48000.0,
+    };
+
+    // Get section info with segment bounds and total duration
+    let sql = segments::select_section_info_by_id(section_id);
+    let row = match sqlx::query(&sql).fetch_optional(pool).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&EstimateSegmentError {
+                    error: format!("Section {} not found", section_id),
+                    section_start_ms: None,
+                    section_end_ms: None,
+                })
+                .unwrap(),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!("Failed to query section info: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&EstimateSegmentError {
+                    error: format!("Database error: {}", e),
+                    section_start_ms: None,
+                    section_end_ms: None,
+                })
+                .unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    let section_start_ms: i64 = row.get(1);
+    let start_segment_id: Option<i64> = row.get(2);
+    let end_segment_id: Option<i64> = row.get(3);
+    let total_duration_samples: Option<i64> = row.get(4);
+
+    // Check if section has any segments
+    let (start_id, end_id, total_samples) = match (start_segment_id, end_segment_id, total_duration_samples) {
+        (Some(s), Some(e), Some(d)) => (s, e, d),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&EstimateSegmentError {
+                    error: format!("Section {} has no segments", section_id),
+                    section_start_ms: Some(section_start_ms),
+                    section_end_ms: None,
+                })
+                .unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    // Calculate total duration in milliseconds
+    let total_duration_ms = (total_samples as f64 / sample_rate * 1000.0) as i64;
+    let section_end_ms = section_start_ms + total_duration_ms;
+
+    // Check if timestamp is within bounds
+    if params.timestamp_ms < section_start_ms {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::to_string(&EstimateSegmentError {
+                error: format!(
+                    "Timestamp {} is before section start ({})",
+                    params.timestamp_ms, section_start_ms
+                ),
+                section_start_ms: Some(section_start_ms),
+                section_end_ms: Some(section_end_ms),
+            })
+            .unwrap(),
+        )
+            .into_response();
+    }
+
+    if params.timestamp_ms > section_end_ms {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::to_string(&EstimateSegmentError {
+                error: format!(
+                    "Timestamp {} is after section end ({})",
+                    params.timestamp_ms, section_end_ms
+                ),
+                section_start_ms: Some(section_start_ms),
+                section_end_ms: Some(section_end_ms),
+            })
+            .unwrap(),
+        )
+            .into_response();
+    }
+
+    // Calculate estimated segment ID using linear interpolation
+    let offset_ms = params.timestamp_ms - section_start_ms;
+    let fraction = offset_ms as f64 / total_duration_ms as f64;
+    let segment_range = end_id - start_id;
+    let estimated_segment_id = start_id + (fraction * segment_range as f64).round() as i64;
+
+    // Clamp to valid range
+    let estimated_segment_id = estimated_segment_id.max(start_id).min(end_id);
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&EstimateSegmentResponse {
+            section_id,
+            estimated_segment_id,
+            timestamp_ms: params.timestamp_ms,
+        })
+        .unwrap(),
+    )
+        .into_response()
+}
+
 #[cfg(debug_assertions)]
 async fn proxy_to_vite(path: &str) -> Response {
     const VITE_DEV_SERVER: &str = "http://localhost:21173";
@@ -1249,6 +1404,10 @@ pub fn receiver_audio(
             .route(
                 "/api/show/{show_name}/segments/range",
                 get(receiver_show_segments_range_handler),
+            )
+            .route(
+                "/api/show/{show_name}/session/{section_id}/estimate_segment",
+                get(receiver_estimate_segment_handler),
             )
             // HLS routes for selected show
             .route(
@@ -2160,6 +2319,154 @@ async fn receiver_trigger_sync_handler(
         serde_json::to_string(&SyncTriggerResponse {
             message: "Sync started".to_string(),
             already_in_progress: false,
+        })
+        .unwrap(),
+    )
+        .into_response()
+}
+
+/// Estimate segment ID from timestamp for a given section (receiver mode - PostgreSQL)
+async fn receiver_estimate_segment_handler(
+    State(state): State<StdArc<ReceiverAppState>>,
+    Path((show_name, section_id)): Path<(String, i64)>,
+    Query(params): Query<EstimateSegmentParams>,
+) -> impl IntoResponse {
+    let pool = match open_show_pg_pool(&state, &show_name).await {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to open database for show '{}': {}", show_name, e);
+            return (
+                StatusCode::NOT_FOUND,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&EstimateSegmentError {
+                    error: format!("Show not found: {}", e),
+                    section_start_ms: None,
+                    section_end_ms: None,
+                })
+                .unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    // Get sample rate for duration calculation
+    let sql = metadata::select_by_key_pg("sample_rate");
+    let sample_rate: f64 = match sqlx::query_scalar::<_, String>(&sql).fetch_one(&pool).await {
+        Ok(val) => val.parse().unwrap_or(48000.0),
+        Err(_) => 48000.0,
+    };
+
+    // Get section info with segment bounds and total duration
+    let sql = segments::select_section_info_by_id_pg(section_id);
+    let row = match sqlx::query(&sql).fetch_optional(&pool).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&EstimateSegmentError {
+                    error: format!("Section {} not found", section_id),
+                    section_start_ms: None,
+                    section_end_ms: None,
+                })
+                .unwrap(),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!("Failed to query section info: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&EstimateSegmentError {
+                    error: format!("Database error: {}", e),
+                    section_start_ms: None,
+                    section_end_ms: None,
+                })
+                .unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    let section_start_ms: i64 = row.get(1);
+    let start_segment_id: Option<i64> = row.get(2);
+    let end_segment_id: Option<i64> = row.get(3);
+    let total_duration_samples: Option<i64> = row.get(4);
+
+    // Check if section has any segments
+    let (start_id, end_id, total_samples) = match (start_segment_id, end_segment_id, total_duration_samples) {
+        (Some(s), Some(e), Some(d)) => (s, e, d),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&EstimateSegmentError {
+                    error: format!("Section {} has no segments", section_id),
+                    section_start_ms: Some(section_start_ms),
+                    section_end_ms: None,
+                })
+                .unwrap(),
+            )
+                .into_response();
+        }
+    };
+
+    // Calculate total duration in milliseconds
+    let total_duration_ms = (total_samples as f64 / sample_rate * 1000.0) as i64;
+    let section_end_ms = section_start_ms + total_duration_ms;
+
+    // Check if timestamp is within bounds
+    if params.timestamp_ms < section_start_ms {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::to_string(&EstimateSegmentError {
+                error: format!(
+                    "Timestamp {} is before section start ({})",
+                    params.timestamp_ms, section_start_ms
+                ),
+                section_start_ms: Some(section_start_ms),
+                section_end_ms: Some(section_end_ms),
+            })
+            .unwrap(),
+        )
+            .into_response();
+    }
+
+    if params.timestamp_ms > section_end_ms {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::to_string(&EstimateSegmentError {
+                error: format!(
+                    "Timestamp {} is after section end ({})",
+                    params.timestamp_ms, section_end_ms
+                ),
+                section_start_ms: Some(section_start_ms),
+                section_end_ms: Some(section_end_ms),
+            })
+            .unwrap(),
+        )
+            .into_response();
+    }
+
+    // Calculate estimated segment ID using linear interpolation
+    let offset_ms = params.timestamp_ms - section_start_ms;
+    let fraction = offset_ms as f64 / total_duration_ms as f64;
+    let segment_range = end_id - start_id;
+    let estimated_segment_id = start_id + (fraction * segment_range as f64).round() as i64;
+
+    // Clamp to valid range
+    let estimated_segment_id = estimated_segment_id.max(start_id).min(end_id);
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&EstimateSegmentResponse {
+            section_id,
+            estimated_segment_id,
+            timestamp_ms: params.timestamp_ms,
         })
         .unwrap(),
     )

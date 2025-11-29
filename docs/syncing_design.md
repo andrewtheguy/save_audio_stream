@@ -128,6 +128,65 @@ Cannot record to a recipient database. This database is configured for syncing o
 
 ## API Endpoints
 
+> **Note:** For a consolidated API reference covering all modes (Inspect, Receiver, Record), see the [README.md API section](../README.md#available-endpoints).
+
+### Receiver Mode (Playback Server) Endpoints
+
+The receiver exposes these endpoints for web playback and show browsing:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/mode` | Returns `{"mode": "receiver"}` |
+| `GET /api/shows` | List all synced shows |
+| `GET /api/show/{show_name}/format` | Get audio format for a show |
+| `GET /api/show/{show_name}/metadata` | Get show metadata (format, bitrate, sample rate, etc.) |
+| `GET /api/show/{show_name}/sessions` | List recording sessions for a show |
+| `GET /api/show/{show_name}/segments/range` | Get min/max segment IDs for a show |
+| `GET /api/show/{show_name}/session/{section_id}/estimate_segment?timestamp_ms=N` | Estimate segment ID from timestamp |
+| `GET /show/{show_name}/opus-playlist.m3u8` | HLS playlist for Opus shows |
+| `GET /show/{show_name}/opus-segment/{id}.m4s` | fMP4 audio segment for Opus |
+| `GET /show/{show_name}/playlist.m3u8` | HLS playlist for AAC shows |
+| `GET /show/{show_name}/aac-segment/{id}.aac` | AAC audio segment |
+| `GET /api/sync/status` | Check if background sync is in progress |
+| `POST /api/sync` | Trigger manual sync |
+
+#### Estimate Segment Endpoint
+
+The estimate segment endpoint calculates which segment corresponds to a given timestamp within a session.
+
+**Request:** `GET /api/show/{show_name}/session/{section_id}/estimate_segment?timestamp_ms=1700000000000`
+
+**Success Response (200):**
+```json
+{
+  "section_id": 1,
+  "estimated_segment_id": 150,
+  "timestamp_ms": 1700000000000
+}
+```
+
+**Error Response (400 - timestamp out of bounds):**
+```json
+{
+  "error": "Timestamp 1700000000000 is before section start (1700000100000)",
+  "section_start_ms": 1700000100000,
+  "section_end_ms": 1700003700000
+}
+```
+
+**Error Response (404 - section not found):**
+```json
+{
+  "error": "Section 123 not found",
+  "section_start_ms": null,
+  "section_end_ms": null
+}
+```
+
+The estimation uses linear interpolation based on total session duration, assuming segments are roughly equal length.
+
+### Sender Mode (Recording Server) Endpoints
+
 The sender (recording server) exposes these endpoints for synchronization and audio export:
 
 | Endpoint | Description |
