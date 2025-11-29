@@ -287,6 +287,16 @@ function ShowDetail({
     setPrevSyncStatus(syncStatus);
   }, [syncStatus, prevSyncStatus, decodedShowName, lastKnownEndId, loading, dateFilter]);
 
+  // Use shared navigation hook (must be called before any conditional returns)
+  const { handleGoToActiveSession } = useSessionNavigation({
+    activeSession,
+    sessions: data?.sessions || [],
+    dateFilter,
+    pageSize,
+    setDateFilter,
+    setCurrentPage,
+  });
+
   const handleReloadSessions = async () => {
     if (isReloading) return;
 
@@ -344,16 +354,6 @@ function ShowDetail({
     setDateFilter("");
     setCurrentPage(1);
   };
-
-  // Use shared navigation hook
-  const { handleGoToActiveSession } = useSessionNavigation({
-    activeSession,
-    sessions: data?.sessions || [],
-    dateFilter,
-    pageSize,
-    setDateFilter,
-    setCurrentPage,
-  });
 
   return (
     <div id="app">
