@@ -54,6 +54,9 @@ jobs:
         with:
           deno-version: v2.x
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Install dependencies
         run: |
           sudo apt-get install -y cmake pkg-config
@@ -98,6 +101,9 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Install dependencies via vcpkg
         run: |
