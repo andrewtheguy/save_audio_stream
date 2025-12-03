@@ -893,6 +893,8 @@ async fn metadata_handler(State(state): State<StdArc<AppState>>) -> impl IntoRes
 struct InspectSessionsQueryParams {
     start_ts: Option<i64>,
     end_ts: Option<i64>,
+    #[serde(default)]
+    sort_desc: bool,
 }
 
 async fn sessions_handler(
@@ -933,7 +935,7 @@ async fn sessions_handler(
     // or schedule breaks.
 
     // Get all sections with their start id, timestamp, and total duration samples, optionally filtered by date range
-    let sql = segments::select_sessions_with_join_filtered(params.start_ts, params.end_ts);
+    let sql = segments::select_sessions_with_join_filtered(params.start_ts, params.end_ts, params.sort_desc);
     let rows = match sqlx::query(&sql).fetch_all(pool).await {
         Ok(r) => r,
         Err(e) => {
@@ -1622,6 +1624,8 @@ async fn receiver_show_format_handler(
 struct SessionsQueryParams {
     start_ts: Option<i64>,
     end_ts: Option<i64>,
+    #[serde(default)]
+    sort_desc: bool,
 }
 
 async fn receiver_show_sessions_handler(
@@ -1659,7 +1663,7 @@ async fn receiver_show_sessions_handler(
     };
 
     // Get all sections with their start id, timestamp, and total duration samples, optionally filtered by date range
-    let sql = segments::select_sessions_with_join_pg_filtered(params.start_ts, params.end_ts);
+    let sql = segments::select_sessions_with_join_pg_filtered(params.start_ts, params.end_ts, params.sort_desc);
     let rows = match sqlx::query(&sql).fetch_all(&pool).await {
         Ok(r) => r,
         Err(e) => {

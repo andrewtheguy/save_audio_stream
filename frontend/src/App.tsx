@@ -193,9 +193,9 @@ function ShowDetail({
   const [pageSize] = useState(20);
   const [dateFilter, setDateFilter] = useState<string>("");
 
-  // Helper to build sessions URL with optional date filter
+  // Helper to build sessions URL with optional date filter (sorted descending by default)
   const buildSessionsUrl = (filterDate: string) => {
-    let url = `/api/show/${decodedShowName}/sessions`;
+    let url = `/api/show/${decodedShowName}/sessions?sort_desc=true`;
     if (filterDate) {
       // Parse date string as local time (YYYY-MM-DD format)
       // Note: new Date("YYYY-MM-DD") parses as UTC, so we split and construct manually
@@ -205,7 +205,7 @@ function ShowDetail({
       // Calculate 12am of next day
       const endOfDay = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
       const endTs = endOfDay.getTime();
-      url += `?start_ts=${startTs}&end_ts=${endTs}`;
+      url += `&start_ts=${startTs}&end_ts=${endTs}`;
     }
     return url;
   };
@@ -485,9 +485,9 @@ function InspectView() {
   const [pageSize] = useState(20);
   const [dateFilter, setDateFilter] = useState<string>("");
 
-  // Helper to build sessions URL with optional date filter
+  // Helper to build sessions URL with optional date filter (sorted descending by default)
   const buildSessionsUrl = (filterDate: string) => {
-    let url = "/api/sessions";
+    let url = "/api/sessions?sort_desc=true";
     if (filterDate) {
       // Parse date string as local time (YYYY-MM-DD format)
       // Note: new Date("YYYY-MM-DD") parses as UTC, so we split and construct manually
@@ -497,7 +497,7 @@ function InspectView() {
       // Calculate 12am of next day
       const endOfDay = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
       const endTs = endOfDay.getTime();
-      url += `?start_ts=${startTs}&end_ts=${endTs}`;
+      url += `&start_ts=${startTs}&end_ts=${endTs}`;
     }
     return url;
   };

@@ -212,8 +212,12 @@ pub fn select_sessions_with_join() -> String {
 /// LEFT JOIN segments seg ON s.id = seg.section_id
 /// WHERE s.start_timestamp_ms >= start_ts AND s.start_timestamp_ms < end_ts (optional)
 /// GROUP BY s.id
-/// ORDER BY s.start_timestamp_ms - SQLite with optional timestamp filtering
-pub fn select_sessions_with_join_filtered(start_ts: Option<i64>, end_ts: Option<i64>) -> String {
+/// ORDER BY s.start_timestamp_ms [ASC|DESC] - SQLite with optional timestamp filtering and sort order
+pub fn select_sessions_with_join_filtered(
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+    sort_desc: bool,
+) -> String {
     let mut query = Query::select();
     query
         .column((Sections::Table, Sections::Id))
@@ -245,9 +249,10 @@ pub fn select_sessions_with_join_filtered(start_ts: Option<i64>, end_ts: Option<
         query.and_where(Expr::col((Sections::Table, Sections::StartTimestampMs)).lt(end));
     }
 
+    let order = if sort_desc { Order::Desc } else { Order::Asc };
     query
         .group_by_col((Sections::Table, Sections::Id))
-        .order_by((Sections::Table, Sections::StartTimestampMs), Order::Asc)
+        .order_by((Sections::Table, Sections::StartTimestampMs), order)
         .to_string(SqliteQueryBuilder)
 }
 
@@ -450,8 +455,12 @@ pub fn select_sessions_with_join_pg() -> String {
 /// LEFT JOIN segments seg ON s.id = seg.section_id
 /// WHERE s.start_timestamp_ms >= start_ts AND s.start_timestamp_ms < end_ts (optional)
 /// GROUP BY s.id
-/// ORDER BY s.start_timestamp_ms - PostgreSQL with optional timestamp filtering
-pub fn select_sessions_with_join_pg_filtered(start_ts: Option<i64>, end_ts: Option<i64>) -> String {
+/// ORDER BY s.start_timestamp_ms [ASC|DESC] - PostgreSQL with optional timestamp filtering and sort order
+pub fn select_sessions_with_join_pg_filtered(
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+    sort_desc: bool,
+) -> String {
     let mut query = Query::select();
     query
         .column((Sections::Table, Sections::Id))
@@ -484,9 +493,10 @@ pub fn select_sessions_with_join_pg_filtered(start_ts: Option<i64>, end_ts: Opti
         query.and_where(Expr::col((Sections::Table, Sections::StartTimestampMs)).lt(end));
     }
 
+    let order = if sort_desc { Order::Desc } else { Order::Asc };
     query
         .group_by_col((Sections::Table, Sections::Id))
-        .order_by((Sections::Table, Sections::StartTimestampMs), Order::Asc)
+        .order_by((Sections::Table, Sections::StartTimestampMs), order)
         .to_string(PostgresQueryBuilder)
 }
 
