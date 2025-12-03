@@ -320,6 +320,7 @@ async fn hls_playlist_handler(
         segment_durations.push((seg_id, duration));
     }
 
+    playlist.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
     playlist.push_str(&format!(
         "#EXT-X-TARGETDURATION:{}\n",
         max_duration.ceil() as u64
@@ -501,6 +502,7 @@ async fn opus_hls_playlist_handler(
     }
 
     playlist.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", start_id));
+    playlist.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
     playlist.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
     playlist.push_str(&format!(
         "#EXT-X-TARGETDURATION:{}\n",
@@ -1897,6 +1899,7 @@ async fn receiver_opus_playlist_handler(
         .fold(0.0, f64::max);
 
     playlist.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", start_id));
+    playlist.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
     playlist.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
     playlist.push_str(&format!(
         "#EXT-X-TARGETDURATION:{}\n",
@@ -2132,6 +2135,7 @@ async fn receiver_aac_playlist_handler(
         .map(|(_, d)| *d as f64 / sample_rate as f64)
         .fold(0.0, f64::max);
 
+    playlist.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
     playlist.push_str(&format!(
         "#EXT-X-TARGETDURATION:{}\n",
         max_duration.ceil() as u64
