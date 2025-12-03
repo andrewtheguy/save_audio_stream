@@ -56,40 +56,6 @@ pub struct MultiSessionConfig {
     /// Global API server port for all sessions (default: 17000)
     #[serde(default = "default_api_port")]
     pub api_port: u16,
-    /// Export configuration (maps to [export] section in TOML)
-    pub export: Option<ExportConfig>,
-    /// SFTP configuration (maps to [sftp] section in TOML)
-    pub sftp: Option<SftpExportConfig>,
-}
-
-/// Export configuration (maps to [export] section in TOML)
-#[derive(Debug, Clone, Deserialize)]
-pub struct ExportConfig {
-    /// Export destination for /api/sync/shows/{name}/sections/{id}/export endpoint:
-    /// - true: upload to SFTP server (requires [sftp] config)
-    /// - false: save to local file in output_dir
-    #[serde(default)]
-    pub to_sftp: bool,
-    /// Periodic export behavior (requires to_sftp = true):
-    /// - true: automatically export new sections every hour
-    /// - false: export only when requested via API call
-    #[serde(default)]
-    pub periodically: bool,
-}
-
-/// SFTP export configuration (maps to [sftp] section in TOML)
-#[derive(Debug, Clone, Deserialize)]
-pub struct SftpExportConfig {
-    /// SFTP server hostname or IP address
-    pub host: String,
-    /// SFTP server port (default: 22)
-    pub port: u16,
-    /// SFTP username for authentication
-    pub username: String,
-    /// Credential profile name to look up password from ~/.config/save_audio_stream/credentials
-    pub credential_profile: String,
-    /// Remote directory path where files will be uploaded (e.g., /uploads/audio)
-    pub remote_dir: String,
 }
 
 fn default_receiver_port() -> u16 {
@@ -177,37 +143,3 @@ pub struct SessionConfig {
     pub output_dir: Option<PathBuf>,
 }
 
-impl MultiSessionConfig {
-    /// Check if SFTP export is enabled
-    pub fn export_to_sftp(&self) -> bool {
-        self.export.as_ref().map(|e| e.to_sftp).unwrap_or(false)
-    }
-
-    /// Check if periodic export is enabled
-    pub fn export_periodically(&self) -> bool {
-        self.export.as_ref().map(|e| e.periodically).unwrap_or(false)
-    }
-
-    /// Validate SFTP configuration
-    ///
-    /// If `export.to_sftp` is true, ensures that the `sftp` configuration section exists.
-    /// If `export.periodically` is true, ensures that `export.to_sftp` is also true.
-    pub fn validate_sftp(&self) -> Result<(), String> {
-        if self.export_to_sftp() {
-            if self.sftp.is_none() {
-                return Err(
-                    "[export] to_sftp is enabled but [sftp] section is missing in config".to_string(),
-                );
-            }
-        }
-
-        // Validate that periodic export requires SFTP export to be enabled
-        if self.export_periodically() && !self.export_to_sftp() {
-            return Err(
-                "[export] periodically requires to_sftp to be true".to_string(),
-            );
-        }
-
-        Ok(())
-    }
-}

@@ -36,9 +36,8 @@ This tool is designed for scenarios where you need to:
 
 **Data Flow:**
 - **Receiver pulls data** from recording server via HTTP (sync API) and stores in PostgreSQL - for live playback
-- **SFTP receives exported audio files** pushed from recording server (optional) - for long-term archive
 
-**Use Case**: Record radio streams on a cloud server with reliable connectivity. Receivers (home server, NAS) pull recordings whenever they're online. Optionally archive completed sessions to SFTP storage for long-term backup.
+**Use Case**: Record radio streams on a cloud server with reliable connectivity. Receivers (home server, NAS) pull recordings whenever they're online.
 
 ## Features
 
@@ -505,9 +504,9 @@ These endpoints are available for browsing and playing back recorded audio. The 
 | AAC playlist | `GET /playlist.m3u8?start_id=N&end_id=N` | `GET /show/{show}/playlist.m3u8?...` | HLS playlist for AAC |
 | AAC segment | `GET /aac-segment/{id}.aac` | `GET /show/{show}/aac-segment/{id}.aac` | AAC audio segment |
 
-#### Record Command API (Sync & Export)
+#### Record Command API (Sync)
 
-When running `record` command, an API server provides synchronization and audio export endpoints:
+When running `record` command, an API server provides synchronization endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
@@ -515,7 +514,6 @@ When running `record` command, an API server provides synchronization and audio 
 | `GET /api/sync/shows` | List available shows for syncing |
 | `GET /api/sync/shows/{show_name}/metadata` | Show metadata (format, bitrate, etc.) |
 | `GET /api/sync/shows/{show_name}/sections` | List all sections (recording sessions) |
-| `GET /api/sync/shows/{show_name}/sections/{section_id}/export` | Export section audio to file |
 | `GET /api/sync/shows/{show_name}/segments?start_id=N&end_id=N&limit=N` | Fetch segments for syncing |
 
 ### API Details
@@ -562,54 +560,6 @@ curl "http://localhost:16000/api/session/1737550800000000/estimate_segment?times
   "section_end_ms": 1737554400000
 }
 ```
-
-#### Exporting Audio Sections
-
-The export API allows you to export individual recording sections (sessions) as audio files without re-encoding.
-
-**Endpoint:** `GET /api/sync/shows/{show_name}/sections/{section_id}/export`
-
-**Features:**
-- **No re-encoding**: Direct export from database to file or SFTP
-- **Format-specific output**: Opus → `.ogg` file, AAC → `.aac` file
-- **Smart filename**: `{showname}_{yyyymmdd_hhmmss}_{hex_section_id}.{ext}`
-- **Concurrent safety**: File locking prevents multiple simultaneous exports
-- **Export destinations**: Local files (`tmp/`) or SFTP (see config)
-
-**SFTP Export Configuration:**
-
-When SFTP export is configured, audio sections stream directly to the remote server without local temp files. See [`config/record_with_export.example.toml`](config/record_with_export.example.toml) for configuration.
-
-**Example Usage:**
-
-```bash
-# List sections for a show
-curl http://localhost:17000/api/sync/shows/am1430/sections
-
-# Export a section
-curl http://localhost:17000/api/sync/shows/am1430/sections/1737550800000000/export
-
-# Response (SFTP):
-{
-  "remote_path": "sftp://sftp.example.com/uploads/radio/am1430_20250122_143000_62c4b12369400.ogg",
-  "section_id": 1737550800000000,
-  "format": "opus",
-  "duration_seconds": 3600.0
-}
-
-# Response (local file):
-{
-  "file_path": "tmp/am1430_20250122_143000_62c4b12369400.ogg",
-  "section_id": 1737550800000000,
-  "format": "opus",
-  "duration_seconds": 3600.0
-}
-```
-
-**Error Responses:**
-- `404 Not Found`: Show or section doesn't exist
-- `409 Conflict`: Export already in progress for this section
-- `500 Internal Server Error`: Database, file system, or SFTP error
 
 ### Development Workflow
 

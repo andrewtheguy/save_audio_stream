@@ -14,7 +14,6 @@ pub enum Sections {
     Table,
     Id,
     StartTimestampMs,
-    IsExportedToRemote,
 }
 
 /// Segments table - individual audio chunks

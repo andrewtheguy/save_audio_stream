@@ -118,26 +118,6 @@ impl SftpConfig {
             auth: SftpAuth::KeyFile(key_path, passphrase),
         }
     }
-
-    /// Create an SFTP configuration from the config file structure
-    /// Resolves the password from the credentials file using the credential_profile
-    pub fn from_export_config(
-        config: &crate::config::SftpExportConfig,
-        credentials: &Option<crate::credentials::Credentials>,
-    ) -> std::result::Result<Self, String> {
-        let password = crate::credentials::get_password(
-            credentials,
-            crate::credentials::CredentialType::Sftp,
-            &config.credential_profile,
-        )?;
-
-        Ok(Self::with_password(
-            config.host.clone(),
-            config.port,
-            config.username.clone(),
-            password,
-        ))
-    }
 }
 
 /// Options for file upload

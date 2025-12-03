@@ -1276,85 +1276,12 @@ pub fn run_multi_session(
     use std::thread;
     use std::time::Duration;
 
-    // Validate SFTP configuration if enabled
-    if let Err(e) = multi_config.validate_sftp() {
-        return Err(format!("SFTP configuration error: {}", e).into());
-    }
-
-    // Load credentials file if SFTP export is enabled
-    let credentials = if multi_config.export_to_sftp() {
-        println!(
-            "Loading credentials from {}...",
-            crate::credentials::get_credentials_path().display()
-        );
-        match crate::credentials::load_credentials() {
-            Ok(creds) => creds,
-            Err(e) => {
-                return Err(format!("Failed to load credentials: {}", e).into());
-            }
-        }
-    } else {
-        None
-    };
-
     // Determine output directory and API port
     let output_dir_path = multi_config
         .output_dir
         .clone()
         .unwrap_or_else(|| PathBuf::from("tmp"));
     let api_port = port_override.unwrap_or(multi_config.api_port);
-
-    // Extract SFTP config for API server
-    let sftp_config = if multi_config.export_to_sftp() {
-        multi_config.sftp.clone()
-    } else {
-        None
-    };
-
-    // begin testing, don't start until all checks pass
-
-    // Test SFTP connection if enabled
-    if let Some(ref config) = sftp_config {
-        use crate::sftp::{SftpClient, SftpConfig};
-
-        println!(
-            "Testing SFTP connection to {}:{}...",
-            config.host, config.port
-        );
-
-        let sftp_test_config = SftpConfig::from_export_config(config, &credentials)
-            .map_err(|e| format!("Failed to create SFTP config: {}", e))?;
-
-        let client = SftpClient::connect(&sftp_test_config)
-            .map_err(|e| format!("Failed to connect to SFTP server: {}", e))?;
-
-        // Try to write a test file
-        let test_filename = format!("test_connection_{}.txt", chrono::Utc::now().timestamp());
-        let test_path = std::path::Path::new(&config.remote_dir).join(&test_filename);
-        let test_data = b"SFTP connection test";
-
-        println!("Writing test file to {}...", test_path.display());
-        let mut cursor = std::io::Cursor::new(test_data);
-        let options = crate::sftp::UploadOptions::default();
-
-        client
-            .upload_stream(&mut cursor, &test_path, test_data.len() as u64, &options)
-            .map_err(|e| format!("Failed to write test file to SFTP: {}", e))?;
-
-        println!("Successfully wrote test file, cleaning up...");
-
-        // Clean up test file
-        if let Err(e) = client.remove_file(&test_path) {
-            println!(
-                "Warning: Failed to remove test file {}: {}",
-                test_path.display(),
-                e
-            );
-        }
-
-        let _ = client.disconnect();
-        println!("SFTP connection test: PASSED");
-    }
 
     // Test all stream URLs for decode capability
     println!("Testing stream URLs for decode capability...");
@@ -1369,21 +1296,11 @@ pub fn run_multi_session(
     }
     println!("All stream URLs tested successfully");
 
-    // Extract periodic export flag
-    let export_to_remote_periodically = multi_config.export_periodically();
-
-    // Extract session names for periodic export
-    let session_names: Vec<String> = multi_config
-        .sessions
-        .iter()
-        .map(|s| s.name.clone())
-        .collect();
-
     // Create output directory if it doesn't exist
     std::fs::create_dir_all(&output_dir_path)?;
     println!("Output directory: {}", output_dir_path.display());
 
-    // Create shared locks for coordinating export and cleanup operations
+    // Create shared locks for coordinating cleanup operations
     let show_locks: ShowLocks = Arc::new(DashMap::new());
     let locks_for_server = show_locks.clone();
     let locks_for_recording = show_locks.clone();
@@ -1436,12 +1353,8 @@ pub fn run_multi_session(
         if let Err(e) = crate::serve_record::serve_for_sync(
             output_dir_path_for_server,
             api_port,
-            sftp_config,
-            export_to_remote_periodically,
-            session_names,
-            credentials,
-            locks_for_server,    // Pass locks to API server
-            db_paths_for_server, // Pass pre-initialized db paths
+            locks_for_server,
+            db_paths_for_server,
         ) {
             eprintln!("API server failed: {}", e);
             std::process::exit(1);

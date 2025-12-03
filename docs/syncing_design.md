@@ -9,14 +9,12 @@ This document describes the synchronization system that enables the relay archit
 **Key Design Goals:**
 - **Recording server** runs on stable infrastructure with scheduled daily recording windows (required break prevents drift)
 - **Receiver pulls data** from recording server via HTTP and stores in PostgreSQL - for live playback, can have intermittent connectivity
-- **SFTP push** (optional) - recording server exports and pushes audio files for long-term archive
 - **Resumable transfers** - interrupted syncs resume from last successful segment
 
 ## Use Case
 
 Record radio streams on a cloud server (stable connection, limited storage), then:
 - **Receivers** (home server, NAS) pull recordings to PostgreSQL whenever they're online
-- **SFTP storage** receives archived sessions pushed from recording server (optional long-term backup)
 
 ## Architecture
 
@@ -187,14 +185,13 @@ The estimation uses linear interpolation based on total session duration, assumi
 
 ### Sender Mode (Recording Server) Endpoints
 
-The sender (recording server) exposes these endpoints for synchronization and audio export:
+The sender (recording server) exposes these endpoints for synchronization:
 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/sync/shows` | List all available shows (databases) |
 | `GET /api/sync/shows/:name/metadata` | Get show metadata and segment range |
 | `GET /api/sync/shows/:name/sections` | Get sections metadata (id, start_timestamp_ms) |
-| `GET /api/sync/shows/:name/sections/:section_id/export` | **Export section audio to file** (Opus→.ogg, AAC→.aac) |
 | `GET /api/sync/shows/:name/segments?start_id=N&end_id=N&limit=N` | Fetch segment batch |
 
 ### Metadata Response
@@ -227,23 +224,6 @@ The sender (recording server) exposes these endpoints for synchronization and au
   ...
 ]
 ```
-
-### Export Response
-
-```json
-{
-  "file_path": "tmp/am1430_20250122_143000_62c4b12369400.ogg",
-  "section_id": 1737550800000000,
-  "format": "opus",
-  "duration_seconds": 3600.0
-}
-```
-
-**Export Features:**
-- No re-encoding (direct database to file)
-- Filename format: `{showname}_{yyyymmdd_hhmmss}_{hex_section_id}.{ext}`
-- Concurrent safety via file locking (returns 409 Conflict if export in progress)
-- Saved to `tmp/` directory
 
 ## Implementation Details
 

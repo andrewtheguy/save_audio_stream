@@ -213,11 +213,6 @@ pub fn inspect_audio(
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })
 }
-// Export-related functions moved to serve_record.rs
-// (map_to_io_error, write_ogg_stream, export_opus_section, export_aac_section,
-// health_handler, ExportSectionPath, ExportResponse, upload_to_sftp,
-// spawn_periodic_export_task, to_url_safe_base64, generate_export_filename,
-// export_section, export_section_handler)
 
 #[derive(Serialize)]
 struct SegmentRange {
@@ -231,7 +226,7 @@ struct SessionInfo {
     start_id: i64,
     end_id: i64,
     timestamp_ms: i64,
-    duration_seconds: f64,
+    duration_ms: i64,
 }
 
 #[derive(Serialize)]
@@ -958,13 +953,13 @@ async fn sessions_handler(
             let total_duration_samples: Option<i64> = row.get(4);
             match (start_segment_id, end_segment_id, total_duration_samples) {
                 (Some(start_id), Some(end_id), Some(samples)) => {
-                    let duration_seconds = samples as f64 / sample_rate;
+                    let duration_ms = (samples as f64 / sample_rate * 1000.0) as i64;
                     Some(SessionInfo {
                         section_id,
                         start_id,
                         end_id,
                         timestamp_ms,
-                        duration_seconds,
+                        duration_ms,
                     })
                 }
                 _ => None,
@@ -1686,13 +1681,13 @@ async fn receiver_show_sessions_handler(
             let total_duration_samples: Option<i64> = row.get(4);
             match (start_segment_id, end_segment_id, total_duration_samples) {
                 (Some(start_id), Some(end_id), Some(samples)) => {
-                    let duration_seconds = samples as f64 / sample_rate;
+                    let duration_ms = (samples as f64 / sample_rate * 1000.0) as i64;
                     Some(SessionInfo {
                         section_id,
                         start_id,
                         end_id,
                         timestamp_ms,
-                        duration_seconds,
+                        duration_ms,
                     })
                 }
                 _ => None,

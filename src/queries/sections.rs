@@ -60,65 +60,12 @@ pub fn select_all_after_cutoff(cutoff_ms: i64) -> String {
         .to_string(SqliteQueryBuilder)
 }
 
-/// SELECT id, start_timestamp_ms, is_exported_to_remote FROM sections WHERE id = ?
+/// SELECT id, start_timestamp_ms FROM sections WHERE id = ?
 pub fn select_by_id(id: i64) -> String {
-    Query::select()
-        .columns([
-            Sections::Id,
-            Sections::StartTimestampMs,
-            Sections::IsExportedToRemote,
-        ])
-        .from(Sections::Table)
-        .and_where(Expr::col(Sections::Id).eq(id))
-        .to_string(SqliteQueryBuilder)
-}
-
-/// UPDATE sections SET is_exported_to_remote = 1 WHERE id = ?
-pub fn mark_exported(id: i64) -> String {
-    Query::update()
-        .table(Sections::Table)
-        .value(Sections::IsExportedToRemote, 1)
-        .and_where(Expr::col(Sections::Id).eq(id))
-        .to_string(SqliteQueryBuilder)
-}
-
-/// SELECT id, start_timestamp_ms FROM sections WHERE is_exported_to_remote IS NULL OR is_exported_to_remote = 0
-pub fn select_unexported() -> String {
     Query::select()
         .columns([Sections::Id, Sections::StartTimestampMs])
         .from(Sections::Table)
-        .cond_where(
-            Expr::col(Sections::IsExportedToRemote)
-                .is_null()
-                .or(Expr::col(Sections::IsExportedToRemote).eq(0)),
-        )
-        .to_string(SqliteQueryBuilder)
-}
-
-/// SELECT id FROM sections WHERE (is_exported_to_remote IS NULL OR is_exported_to_remote = 0) AND id != ?
-pub fn select_unexported_excluding(exclude_id: i64) -> String {
-    Query::select()
-        .column(Sections::Id)
-        .from(Sections::Table)
-        .cond_where(
-            Expr::col(Sections::IsExportedToRemote)
-                .is_null()
-                .or(Expr::col(Sections::IsExportedToRemote).eq(0)),
-        )
-        .and_where(Expr::col(Sections::Id).ne(exclude_id))
-        .to_string(SqliteQueryBuilder)
-}
-
-/// SELECT id FROM sections WHERE is_exported_to_remote IS NULL OR is_exported_to_remote = 0
-pub fn select_unexported_ids() -> String {
-    Query::select()
-        .column(Sections::Id)
-        .from(Sections::Table)
-        .cond_where(
-            Expr::col(Sections::IsExportedToRemote)
-                .is_null()
-                .or(Expr::col(Sections::IsExportedToRemote).eq(0)),
-        )
+        .and_where(Expr::col(Sections::Id).eq(id))
         .to_string(SqliteQueryBuilder)
 }
 
@@ -174,14 +121,10 @@ pub fn select_all_pg() -> String {
         .to_string(PostgresQueryBuilder)
 }
 
-/// SELECT id, start_timestamp_ms, is_exported_to_remote FROM sections WHERE id = ? - PostgreSQL
+/// SELECT id, start_timestamp_ms FROM sections WHERE id = ? - PostgreSQL
 pub fn select_by_id_pg(id: i64) -> String {
     Query::select()
-        .columns([
-            Sections::Id,
-            Sections::StartTimestampMs,
-            Sections::IsExportedToRemote,
-        ])
+        .columns([Sections::Id, Sections::StartTimestampMs])
         .from(Sections::Table)
         .and_where(Expr::col(Sections::Id).eq(id))
         .to_string(PostgresQueryBuilder)

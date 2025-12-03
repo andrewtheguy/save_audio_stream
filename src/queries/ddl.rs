@@ -16,8 +16,7 @@ pub fn create_metadata_table() -> String {
 
 /// CREATE TABLE IF NOT EXISTS sections (
 ///     id INTEGER PRIMARY KEY,
-///     start_timestamp_ms INTEGER NOT NULL,
-///     is_exported_to_remote INTEGER
+///     start_timestamp_ms INTEGER NOT NULL
 /// )
 pub fn create_sections_table() -> String {
     Table::create()
@@ -29,7 +28,6 @@ pub fn create_sections_table() -> String {
                 .big_integer()
                 .not_null(),
         )
-        .col(ColumnDef::new(Sections::IsExportedToRemote).integer())
         .to_string(SqliteQueryBuilder)
 }
 
@@ -134,7 +132,6 @@ pub fn create_sections_table_pg() -> String {
                 .big_integer()
                 .not_null(),
         )
-        .col(ColumnDef::new(Sections::IsExportedToRemote).integer())
         .to_string(PostgresQueryBuilder)
 }
 
