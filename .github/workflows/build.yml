@@ -125,52 +125,8 @@ jobs:
           docker build --target runtime-prebuilt -t ${{ env.GHCR_IMAGE }}:${TAG}-${{ matrix.arch }} .
           docker push ${{ env.GHCR_IMAGE }}:${TAG}-${{ matrix.arch }}
 
-  build-windows:
-    needs: prepare
-    runs-on: windows-latest
-    permissions:
-      actions: read
-      contents: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.sha }}
-
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Restore vcpkg cache
-        id: vcpkg-cache
-        uses: TAServers/vcpkg-cache@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install dependencies via vcpkg
-        env:
-          VCPKG_FEATURE_FLAGS: "binarycaching"
-          VCPKG_BINARY_SOURCES: "clear;files,${{ steps.vcpkg-cache.outputs.path }},readwrite"
-        run: vcpkg install fdk-aac:x64-windows opus:x64-windows
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Rename binary
-        run: mv target/release/save_audio_stream.exe target/release/save_audio_stream-windows-x86_64.exe
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: save_audio_stream-windows-x86_64
-          path: target/release/save_audio_stream-windows-x86_64.exe
-
   release:
-    needs: [prepare, build-linux, build-windows]
+    needs: [prepare, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -212,3 +168,50 @@ jobs:
             ${{ env.GHCR_IMAGE }}:${TAG}-x86_64 \
             ${{ env.GHCR_IMAGE }}:${TAG}-arm64
           docker manifest push ${{ env.GHCR_IMAGE }}:latest
+
+  # Windows build is separate and creates its own prerelease with -windows suffix
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Restore vcpkg cache
+        id: vcpkg-cache
+        uses: TAServers/vcpkg-cache@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies via vcpkg
+        env:
+          VCPKG_FEATURE_FLAGS: "binarycaching"
+          VCPKG_BINARY_SOURCES: "clear;files,${{ steps.vcpkg-cache.outputs.path }},readwrite"
+        run: vcpkg install fdk-aac:x64-windows opus:x64-windows
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Rename binary
+        run: mv target/release/save_audio_stream.exe target/release/save_audio_stream-windows-x86_64.exe
+
+      - name: Create Windows prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}-windows
+          name: ${{ needs.prepare.outputs.tag }}-windows
+          files: target/release/save_audio_stream-windows-x86_64.exe
+          prerelease: true
