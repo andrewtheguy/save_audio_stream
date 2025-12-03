@@ -6,11 +6,26 @@ config_type = 'receiver'
 # Required: URL of remote recording server
 remote_url = 'http://recording-server:17000'
 
-# Optional settings
-#shows = ['show1', 'show2']  # Whitelist shows to sync (omit to sync all)
+# Optional global settings
 chunk_size = 100             # Batch size for fetching segments
 port = 18000                 # HTTP server port for web UI
 sync_interval_seconds = 60   # Seconds between automatic syncs
+
+# Per-show configuration with optional retention
+# When retention_hours is set:
+#   - Sync skips fetching segments older than retention period (saves bandwidth)
+#   - After sync, deletes local sections older than retention (saves disk)
+#   - Keeps at least one complete section at boundary (minimum retention)
+#
+# Omit [[shows]] entirely to sync all shows from remote without retention limits.
+
+[[shows]]
+name = 'show1'
+retention_hours = 168  # Keep 1 week, skip syncing older data
+
+[[shows]]
+name = 'show2'
+# No retention_hours = keep forever, sync all available data
 
 # PostgreSQL database configuration
 [database]

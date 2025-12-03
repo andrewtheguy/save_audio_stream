@@ -72,7 +72,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use save_audio_stream::config::{ConfigType, DatabaseConfig, SyncConfig};
+use save_audio_stream::config::{ConfigType, DatabaseConfig, ShowConfig, SyncConfig};
 use save_audio_stream::db_postgres::{self, GLOBAL_DATABASE_NAME};
 use save_audio_stream::queries::{metadata, sections, segments};
 use save_audio_stream::segment_wire::{self, WireSegment};
@@ -99,7 +99,15 @@ fn create_test_sync_config(
             credential_profile: "test".to_string(),
             prefix: TEST_DATABASE_PREFIX.to_string(),
         },
-        shows,
+        shows: shows.map(|names| {
+            names
+                .into_iter()
+                .map(|name| ShowConfig {
+                    name,
+                    retention_hours: None,
+                })
+                .collect()
+        }),
         chunk_size: Some(chunk_size),
         port: 8080,
         sync_interval_seconds: 60,

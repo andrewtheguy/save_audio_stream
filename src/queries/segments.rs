@@ -132,6 +132,32 @@ pub fn select_range_with_limit(start_id: i64, end_id: i64, limit: u64) -> String
         .to_string(SqliteQueryBuilder)
 }
 
+/// SELECT id, timestamp_ms, is_timestamp_from_source, audio_data, section_id, duration_samples
+/// FROM segments WHERE id >= ? AND id <= ? AND timestamp_ms >= ? ORDER BY id LIMIT ?
+pub fn select_range_with_limit_and_cutoff(
+    start_id: i64,
+    end_id: i64,
+    limit: u64,
+    cutoff_ts: i64,
+) -> String {
+    Query::select()
+        .columns([
+            Segments::Id,
+            Segments::TimestampMs,
+            Segments::IsTimestampFromSource,
+            Segments::AudioData,
+            Segments::SectionId,
+            Segments::DurationSamples,
+        ])
+        .from(Segments::Table)
+        .and_where(Expr::col(Segments::Id).gte(start_id))
+        .and_where(Expr::col(Segments::Id).lte(end_id))
+        .and_where(Expr::col(Segments::TimestampMs).gte(cutoff_ts))
+        .order_by(Segments::Id, Order::Asc)
+        .limit(limit)
+        .to_string(SqliteQueryBuilder)
+}
+
 /// SELECT id, audio_data FROM segments WHERE section_id = ? ORDER BY id
 pub fn select_by_section_id(section_id: i64) -> String {
     Query::select()

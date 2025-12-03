@@ -57,6 +57,47 @@ pub enum SyncResult {
     Skipped,
 }
 
+/// Get retention hours for a show from config (None if not configured)
+fn get_show_retention_hours(config: &SyncConfig, show_name: &str) -> Option<i64> {
+    config.shows.as_ref().and_then(|shows| {
+        shows
+            .iter()
+            .find(|s| s.name == show_name)
+            .and_then(|s| s.retention_hours)
+    })
+}
+
+/// Clean up old sections with minimum retention guarantee (keeper section)
+///
+/// This ensures at least one complete section is preserved at the retention boundary.
+/// Returns the number of sections deleted.
+fn cleanup_show_retention_pg(
+    db: &SyncDbPg,
+    show_name: &str,
+    retention_hours: i64,
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    let now = chrono::Utc::now();
+    let cutoff = now - chrono::Duration::try_hours(retention_hours).expect("Valid hours");
+    let cutoff_ms = cutoff.timestamp_millis();
+
+    // Find keeper section (latest section before cutoff - ensures minimum retention)
+    let keeper_section_id =
+        crate::db_postgres::get_latest_section_before_cutoff_pg_sync(db, cutoff_ms)?;
+
+    if let Some(keeper_id) = keeper_section_id {
+        let deleted = crate::db_postgres::delete_old_sections_pg_sync(db, cutoff_ms, keeper_id)?;
+        if deleted > 0 {
+            println!(
+                "[{}] Cleaned up {} old sections (retention: {}h, keeper: {})",
+                show_name, deleted, retention_hours, keeper_id
+            );
+        }
+        Ok(deleted)
+    } else {
+        Ok(0)
+    }
+}
+
 /// Main entry point for syncing multiple shows (PostgreSQL version)
 /// Handles lease acquisition, renewal, and release internally.
 /// Returns SyncResult::Skipped if another instance is already syncing.
@@ -185,9 +226,12 @@ fn sync_shows_internal(
 
     // Determine which shows to sync
     let show_names: Vec<String> = match &config.shows {
-        Some(whitelist) => {
+        Some(show_configs) => {
+            // Extract names from ShowConfig
+            let names: Vec<String> = show_configs.iter().map(|c| c.name.clone()).collect();
+
             // Validate that all whitelisted shows exist on remote
-            let missing_shows: Vec<String> = whitelist
+            let missing_shows: Vec<String> = names
                 .iter()
                 .filter(|name| !available_shows.contains(*name))
                 .cloned()
@@ -201,8 +245,8 @@ fn sync_shows_internal(
                 .into());
             }
 
-            println!("Using whitelist: {} show(s)", whitelist.len());
-            whitelist.clone()
+            println!("Using whitelist: {} show(s)", names.len());
+            names
         }
         None => {
             // Sync all available shows
@@ -221,11 +265,17 @@ fn sync_shows_internal(
 
     // Process each show sequentially
     for (idx, show_name) in show_names.iter().enumerate() {
+        // Get retention hours for this show (None if not configured)
+        let retention_hours = get_show_retention_hours(config, show_name);
+
         println!(
-            "\n[{}/{}] Syncing show: {}",
+            "\n[{}/{}] Syncing show: {}{}",
             idx + 1,
             show_names.len(),
-            show_name
+            show_name,
+            retention_hours
+                .map(|h| format!(" (retention: {}h)", h))
+                .unwrap_or_default()
         );
 
         // Sync single show - exit immediately on any error
@@ -236,7 +286,26 @@ fn sync_shows_internal(
             show_name,
             chunk_size,
             &config.database.prefix,
+            retention_hours,
         )?;
+
+        // Run retention cleanup if configured
+        if let Some(hours) = retention_hours {
+            let database_name = get_pg_database_name(&config.database.prefix, show_name);
+            match SyncDbPg::connect(&config.database.url, password, &database_name) {
+                Ok(db) => {
+                    if let Err(e) = cleanup_show_retention_pg(&db, show_name, hours) {
+                        eprintln!("[{}] Warning: Retention cleanup failed: {}", show_name, e);
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[{}] Warning: Could not connect to database for cleanup: {}",
+                        show_name, e
+                    );
+                }
+            }
+        }
 
         println!(
             "[{}/{}] ✓ Show '{}' synced successfully",
@@ -258,8 +327,16 @@ fn sync_single_show(
     show_name: &str,
     chunk_size: u64,
     database_prefix: &str,
+    retention_hours: Option<i64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
+
+    // Calculate cutoff timestamp if retention is configured
+    // This is used to skip fetching old data that will be deleted anyway
+    let cutoff_ts = retention_hours.map(|hours| {
+        let cutoff = chrono::Utc::now() - chrono::Duration::try_hours(hours).expect("Valid hours");
+        cutoff.timestamp_millis()
+    });
 
     // Fetch remote metadata (no retry on network error)
     println!("[{}]   Fetching metadata from remote...", show_name);
@@ -398,7 +475,13 @@ fn sync_single_show(
 
     // Sync sections table first
     println!("[{}]   Syncing sections metadata...", show_name);
-    let sections_url = format!("{}/api/sync/shows/{}/sections", remote_url, show_name);
+    let sections_url = match cutoff_ts {
+        Some(ts) => format!(
+            "{}/api/sync/shows/{}/sections?cutoff_ts={}",
+            remote_url, show_name, ts
+        ),
+        None => format!("{}/api/sync/shows/{}/sections", remote_url, show_name),
+    };
     let remote_sections: Vec<SectionData> = client
         .get(&sections_url)
         .send()
@@ -440,10 +523,16 @@ fn sync_single_show(
         let end_id = std::cmp::min(current_id + chunk_size as i64 - 1, target_max_id);
 
         // Fetch segments as binary (no retry on network error)
-        let segments_url = format!(
-            "{}/api/sync/shows/{}/segments?start_id={}&end_id={}&limit={}",
-            remote_url, show_name, current_id, end_id, chunk_size
-        );
+        let segments_url = match cutoff_ts {
+            Some(ts) => format!(
+                "{}/api/sync/shows/{}/segments?start_id={}&end_id={}&limit={}&cutoff_ts={}",
+                remote_url, show_name, current_id, end_id, chunk_size, ts
+            ),
+            None => format!(
+                "{}/api/sync/shows/{}/segments?start_id={}&end_id={}&limit={}",
+                remote_url, show_name, current_id, end_id, chunk_size
+            ),
+        };
 
         let response = client
             .get(&segments_url)
@@ -474,6 +563,12 @@ fn sync_single_show(
             .map_err(|e| format!("Failed to decode segments: {}", e))?;
 
         if segments.is_empty() {
+            if cutoff_ts.is_some() {
+                // With cutoff filtering, empty segments is valid (all filtered out)
+                // Just advance to next chunk
+                current_id = end_id + 1;
+                continue;
+            }
             return Err(format!("No segments returned for range {}-{}", current_id, end_id).into());
         }
 
