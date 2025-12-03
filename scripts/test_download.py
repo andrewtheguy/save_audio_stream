@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import json
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -28,7 +29,23 @@ def parse_args():
     parser.add_argument("--end", required=True, help="End time in HH:MM format")
     parser.add_argument("--output", "-o", help="Output filename (auto-generated if not specified)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without downloading")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Print API requests and responses")
     return parser.parse_args()
+
+
+def api_get(url: str, verbose: bool = False) -> dict:
+    """Make a GET request and return JSON response, with optional verbose logging."""
+    if verbose:
+        print(f"  -> GET {url}")
+
+    resp = requests.get(url)
+    resp.raise_for_status()
+    data = resp.json()
+
+    if verbose:
+        print(f"  <- {resp.status_code} {json.dumps(data, indent=2)}")
+
+    return data
 
 
 def to_timestamp_ms(date_str: str, time_str: str) -> int:
@@ -64,9 +81,7 @@ def main():
     # Step 1: Get sessions
     print("\n=== Fetching sessions ===")
     sessions_url = f"{args.server}/api/show/{args.show}/sessions"
-    resp = requests.get(sessions_url)
-    resp.raise_for_status()
-    data = resp.json()
+    data = api_get(sessions_url, args.verbose)
     sessions = data.get("sessions", [])
 
     print(f"Found {len(sessions)} sessions")
@@ -90,17 +105,13 @@ def main():
     # Step 2: Estimate segment IDs
     print("\n=== Estimating start segment ===")
     start_url = f"{args.server}/api/show/{args.show}/session/{section_id}/estimate_segment?timestamp_ms={start_ms}"
-    resp = requests.get(start_url)
-    resp.raise_for_status()
-    start_data = resp.json()
+    start_data = api_get(start_url, args.verbose)
     start_segment = start_data["estimated_segment_id"]
     print(f"Start segment: {start_segment}")
 
     print("\n=== Estimating end segment ===")
     end_url = f"{args.server}/api/show/{args.show}/session/{section_id}/estimate_segment?timestamp_ms={end_ms}"
-    resp = requests.get(end_url)
-    resp.raise_for_status()
-    end_data = resp.json()
+    end_data = api_get(end_url, args.verbose)
     end_segment = end_data["estimated_segment_id"]
     print(f"End segment: {end_segment}")
 
@@ -110,10 +121,9 @@ def main():
     print(f"Total segments: {end_segment - start_segment + 1}")
 
     # Step 3: Get audio format
+    print("\n=== Fetching audio format ===")
     format_url = f"{args.server}/api/show/{args.show}/format"
-    resp = requests.get(format_url)
-    resp.raise_for_status()
-    format_data = resp.json()
+    format_data = api_get(format_url, args.verbose)
     audio_format = format_data.get("audio_format") or format_data.get("format") or "aac"
     print(f"Audio format: {audio_format}")
 

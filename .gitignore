@@ -6,6 +6,11 @@
 *.wav
 *.aac
 *.ogg
+*.mka
+*.mkv
+*.m4a
+*.mp4
+*.log
 tmp/
 frontend/node_modules/
 frontend/dist/
