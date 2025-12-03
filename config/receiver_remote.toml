@@ -19,6 +19,10 @@ port = 18000
 # Optional: Seconds between automatic syncs (default: 60)
 sync_interval_seconds = 60
 
+[[shows]]
+name = 'knx_news'
+retention_hours = 24  # Keep 1 day, skip syncing older data
+
 # PostgreSQL database configuration
 [database]
 # Required: PostgreSQL connection URL (without password)

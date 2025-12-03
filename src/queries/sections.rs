@@ -50,6 +50,16 @@ pub fn select_all() -> String {
         .to_string(SqliteQueryBuilder)
 }
 
+/// SELECT id, start_timestamp_ms FROM sections WHERE start_timestamp_ms >= ? ORDER BY id
+pub fn select_all_after_cutoff(cutoff_ms: i64) -> String {
+    Query::select()
+        .columns([Sections::Id, Sections::StartTimestampMs])
+        .from(Sections::Table)
+        .and_where(Expr::col(Sections::StartTimestampMs).gte(cutoff_ms))
+        .order_by(Sections::Id, Order::Asc)
+        .to_string(SqliteQueryBuilder)
+}
+
 /// SELECT id, start_timestamp_ms, is_exported_to_remote FROM sections WHERE id = ?
 pub fn select_by_id(id: i64) -> String {
     Query::select()

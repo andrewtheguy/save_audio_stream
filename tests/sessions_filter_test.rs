@@ -91,7 +91,7 @@ async fn query_sessions_filtered(
     end_ts: Option<i64>,
 ) -> Vec<(i64, i64)> {
     // Returns (section_id, timestamp_ms) pairs
-    let sql = segments::select_sessions_with_join_filtered(start_ts, end_ts);
+    let sql = segments::select_sessions_with_join_filtered(start_ts, end_ts, false);
     let rows = sqlx::query(&sql).fetch_all(pool).await.unwrap();
 
     rows.iter()
@@ -665,7 +665,7 @@ async fn test_sessions_handler(
             .unwrap_or(48000.0);
 
     // Get sessions with optional filtering
-    let sql = segments::select_sessions_with_join_filtered(params.start_ts, params.end_ts);
+    let sql = segments::select_sessions_with_join_filtered(params.start_ts, params.end_ts, false);
     let rows = sqlx::query(&sql).fetch_all(pool).await.unwrap();
 
     let sessions: Vec<SessionInfo> = rows

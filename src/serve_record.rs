@@ -174,6 +174,8 @@ pub struct SyncSegmentsQuery {
     pub start_id: i64,
     pub end_id: i64,
     pub limit: Option<u64>,
+    /// Skip segments with timestamp_ms < cutoff_ts (for retention-based sync)
+    pub cutoff_ts: Option<i64>,
 }
 
 
@@ -472,9 +474,16 @@ pub async fn sync_show_metadata_handler(
     (StatusCode::OK, axum::Json(metadata_response)).into_response()
 }
 
+#[derive(Deserialize)]
+pub struct SyncSectionsQuery {
+    /// Only return sections with start_timestamp_ms >= cutoff_ts
+    pub cutoff_ts: Option<i64>,
+}
+
 pub async fn db_sections_handler(
     State(state): State<StdArc<AppState>>,
     Path(name): Path<String>,
+    Query(query): Query<SyncSectionsQuery>,
 ) -> impl IntoResponse {
     // Get database path from pre-initialized HashMap
     let path = match state.db_paths.get(&name) {
@@ -513,8 +522,12 @@ pub async fn db_sections_handler(
         }
     };
 
-    // Fetch all sections
-    let rows = match sqlx::query(&sections::select_all()).fetch_all(&pool).await {
+    // Fetch sections (optionally filtered by cutoff timestamp)
+    let sql = match query.cutoff_ts {
+        Some(cutoff) => sections::select_all_after_cutoff(cutoff),
+        None => sections::select_all(),
+    };
+    let rows = match sqlx::query(&sql).fetch_all(&pool).await {
         Ok(rows) => rows,
         Err(e) => {
             return (
@@ -599,16 +612,15 @@ pub async fn sync_show_segments_handler(
         }
     }
 
-    // Fetch segments
+    // Fetch segments (optionally filtered by cutoff timestamp)
     let limit = query.limit.unwrap_or(100);
-    let rows = match sqlx::query(&segments::select_range_with_limit(
-        query.start_id,
-        query.end_id,
-        limit,
-    ))
-    .fetch_all(&pool)
-    .await
-    {
+    let sql = match query.cutoff_ts {
+        Some(cutoff) => {
+            segments::select_range_with_limit_and_cutoff(query.start_id, query.end_id, limit, cutoff)
+        }
+        None => segments::select_range_with_limit(query.start_id, query.end_id, limit),
+    };
+    let rows = match sqlx::query(&sql).fetch_all(&pool).await {
         Ok(rows) => rows,
         Err(e) => {
             return (

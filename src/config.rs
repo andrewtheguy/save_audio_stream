@@ -118,6 +118,17 @@ pub struct DatabaseConfig {
     pub prefix: String,
 }
 
+/// Per-show configuration for receiver mode
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShowConfig {
+    /// Show name to sync
+    pub name: String,
+    /// Retention period in hours (None = no cleanup, sync all data)
+    /// When set, sync skips fetching segments older than retention period
+    /// and deletes local sections older than retention after sync
+    pub retention_hours: Option<i64>,
+}
+
 /// Sync configuration file structure (used by receiver command)
 #[derive(Debug, Deserialize, Clone)]
 pub struct SyncConfig {
@@ -127,8 +138,9 @@ pub struct SyncConfig {
     pub remote_url: String,
     /// PostgreSQL database configuration
     pub database: DatabaseConfig,
-    /// Show names to sync (optional - if not specified, sync all shows from remote)
-    pub shows: Option<Vec<String>>,
+    /// Show configurations to sync (optional - if not specified, sync all shows from remote)
+    /// Each show can have its own retention policy
+    pub shows: Option<Vec<ShowConfig>>,
     /// Chunk size for batch fetching (default: 100)
     pub chunk_size: Option<u64>,
     /// Port for the receiver HTTP server (default: 18000)

@@ -1502,7 +1502,7 @@ async fn receiver_shows_handler(
 
     // If we have a whitelist, use it. Otherwise query the remote for available shows
     let show_names: Vec<String> = if let Some(ref filter) = state.config.shows {
-        filter.clone()
+        filter.iter().map(|s| s.name.clone()).collect()
     } else {
         // Query remote server for available shows (same as sync does)
         let client = reqwest::Client::new();
