@@ -9,9 +9,10 @@ Usage:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 
 import requests
 
@@ -151,15 +152,30 @@ def main():
         print("\n[Dry run - not downloading]")
         return
 
-    # Download using ffmpeg
-    cmd = ["ffmpeg", "-i", playlist_url, "-c", "copy", output_file, "-loglevel", "error"]
+    # Download to temporary file first (use same extension so ffmpeg knows the format)
+    temp_file = f"{output_file}.download.{ext}"
+    print(f"Downloading to temporary file: {temp_file}")
+    cmd = ["ffmpeg", "-y", "-i", playlist_url, "-c", "copy", temp_file, "-loglevel", "error"]
     result = subprocess.run(cmd)
+
+    if result.returncode != 0:
+        print(f"\n=== Error: ffmpeg download failed with code {result.returncode} ===")
+        sys.exit(result.returncode)
+
+    # Post-process: remux to fix duration/seeking metadata
+    print(f"Post-processing: remuxing to fix seeking metadata...")
+    remux_cmd = ["ffmpeg", "-y", "-i", temp_file, "-c", "copy", output_file, "-loglevel", "error"]
+    result = subprocess.run(remux_cmd)
+
+    # Clean up temp file
+    if os.path.exists(temp_file):
+        os.remove(temp_file)
 
     if result.returncode == 0:
         print(f"\n=== Done! ===")
         print(f"Output saved to: {output_file}")
     else:
-        print(f"\n=== Error: ffmpeg exited with code {result.returncode} ===")
+        print(f"\n=== Error: ffmpeg remux failed with code {result.returncode} ===")
         sys.exit(result.returncode)
 
 

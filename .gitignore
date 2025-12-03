@@ -11,6 +11,7 @@
 *.m4a
 *.mp4
 *.log
+*.tmp
 tmp/
 frontend/node_modules/
 frontend/dist/
