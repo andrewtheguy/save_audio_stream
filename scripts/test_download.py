@@ -44,7 +44,8 @@ def api_get(url: str, verbose: bool = False) -> dict:
     data = resp.json()
 
     if verbose:
-        print(f"  <- {resp.status_code} {json.dumps(data, indent=2)}")
+        print(f"  <- {resp.status_code}")
+        print(json.dumps(data, indent=2))
 
     return data
 
