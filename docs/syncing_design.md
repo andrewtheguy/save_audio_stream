@@ -11,10 +11,16 @@ This document describes the synchronization system that enables the relay archit
 - **Receiver pulls data** from recording server via HTTP and stores in PostgreSQL - for live playback, can have intermittent connectivity
 - **Resumable transfers** - interrupted syncs resume from last successful segment
 
+**Design Philosophy:**
+- **Single responsibility**: Recording server focuses solely on capturing streams and serving sync API. It does not handle exports or long-term storage.
+- **Receiver as the hub**: The receiver server is the authoritative source for playback and audio export. All data download/export operations should be performed against the receiver.
+- **Temporary vs permanent storage**: SQLite on recording server is temporary (retention-based cleanup). PostgreSQL on receiver is permanent storage.
+
 ## Use Case
 
 Record radio streams on a cloud server (stable connection, limited storage), then:
 - **Receivers** (home server, NAS) pull recordings to PostgreSQL whenever they're online
+- **Export audio** from the receiver for archival, processing, or offline use
 
 ## Architecture
 
@@ -22,12 +28,15 @@ Record radio streams on a cloud server (stable connection, limited storage), the
 - Records audio streams to SQLite databases
 - Exposes HTTP API endpoints for listing shows and fetching segments
 - Each database has `is_recipient = false` in metadata (allows recording)
+- **Temporary storage**: Data is automatically cleaned up based on retention settings
 
 ### Receiver (Sync Client)
 - Syncs show data from remote sender to local PostgreSQL databases
 - Creates PostgreSQL databases named `save_audio_{prefix}_{show_name}` with `is_recipient = true` in metadata (default prefix: `show`)
 - Prevents accidental recording to sync target databases
 - Requires PostgreSQL server with CREATE DATABASE privileges
+- **Permanent storage**: Data persists until manually deleted
+- **Export point**: Use receiver APIs or tools to download/export audio
 
 ## Receiver Mode
 

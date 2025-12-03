@@ -24,20 +24,24 @@ This tool is designed for scenarios where you need to:
 │   (Stable Network)  │             │  Web Playback UI    │
 ├─────────────────────┤             │  - Can be offline   │
 │                     │             │  - Pulls on demand  │
-│  Internet Radio ──► │             └─────────────────────┘
-│  Stream Recording   │             ┌─────────────────────┐
-│                     │    push     │   SFTP Storage      │
-│  - Scheduled daily  │ ──────────► │   (Optional)        │
-│  - Serves sync API  │ audio files │  - Long-term backup │
-└─────────────────────┘             └─────────────────────┘
+│  Internet Radio ──► │             │  - Export audio     │
+│  Stream Recording   │             └─────────────────────┘
+│                     │
+│  - Scheduled daily  │
+│  - Serves sync API  │
+└─────────────────────┘
 ```
 
 **Note:** Recording runs on a daily schedule (e.g., 9am-5pm) with a required break each day to prevent timestamp drift.
 
-**Data Flow:**
-- **Receiver pulls data** from recording server via HTTP (sync API) and stores in PostgreSQL - for live playback
+**Design Philosophy:**
+- **Recording server** has a single responsibility: capture streams and serve sync API. It stores data temporarily in SQLite with automatic retention-based cleanup.
+- **Receiver server** is the long-term storage and playback hub. Audio data should be exported/downloaded from the receiver, not the recording server.
 
-**Use Case**: Record radio streams on a cloud server with reliable connectivity. Receivers (home server, NAS) pull recordings whenever they're online.
+**Data Flow:**
+- **Receiver pulls data** from recording server via HTTP (sync API) and stores in PostgreSQL for permanent storage and playback
+
+**Use Case**: Record radio streams on a cloud server with reliable connectivity. Receivers (home server, NAS) pull recordings whenever they're online. Export or download audio from the receiver for archival or processing.
 
 ## Features
 
