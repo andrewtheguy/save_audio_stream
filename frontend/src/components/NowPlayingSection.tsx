@@ -39,7 +39,7 @@ export function NowPlayingSection({
     );
   }
 
-  const endTimestampMs = activeSession.timestamp_ms + activeSession.duration_seconds * 1000;
+  const endTimestampMs = activeSession.timestamp_ms + activeSession.duration_ms;
   const fullHlsUrl = window.location.origin + getHlsUrl(activeSession);
 
   return (
@@ -50,7 +50,7 @@ export function NowPlayingSection({
           {formatDateWithTimeRange(activeSession.timestamp_ms, endTimestampMs)}
         </span>
         <span className="now-playing-duration">
-          Duration: {formatDuration(activeSession.duration_seconds)}
+          Duration: {formatDuration(activeSession.duration_ms / 1000)}
         </span>
         <button
           className="go-to-session-btn"

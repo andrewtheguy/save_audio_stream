@@ -5,7 +5,7 @@ interface SessionInfo {
   start_id: number;
   end_id: number;
   timestamp_ms: number;
-  duration_seconds: number;
+  duration_ms: number;
 }
 
 interface SessionCardProps {
@@ -29,7 +29,7 @@ export function SessionCard({
   formatDateWithTimeRange,
   formatPosition,
 }: SessionCardProps) {
-  const endTimestampMs = session.timestamp_ms + session.duration_seconds * 1000;
+  const endTimestampMs = session.timestamp_ms + session.duration_ms;
 
   return (
     <div
@@ -41,7 +41,7 @@ export function SessionCard({
           {formatDateWithTimeRange(session.timestamp_ms, endTimestampMs)}
         </span>
         <span className="session-duration">
-          Duration: {formatDuration(session.duration_seconds)}
+          Duration: {formatDuration(session.duration_ms / 1000)}
         </span>
         <span className="session-position">
           Position: {formatPosition(savedPosition)}

@@ -6,7 +6,7 @@ interface SessionInfo {
   start_id: number;
   end_id: number;
   timestamp_ms: number;
-  duration_seconds: number;
+  duration_ms: number;
 }
 
 interface UseSessionNavigationProps {
