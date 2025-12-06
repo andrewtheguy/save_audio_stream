@@ -38,6 +38,28 @@ struct SectionData {
     start_timestamp_ms: i64,
 }
 
+/// Response from find_by_timestamp endpoint
+#[derive(Debug, Deserialize)]
+struct SectionMatch {
+    id: i64,
+    start_timestamp_ms: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct FindSectionResponse {
+    after_section: Option<SectionMatch>,
+    before_or_equal_section: Option<SectionMatch>,
+    source_unique_id: String,
+    min_id: i64,
+    max_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SectionSegmentRange {
+    min_id: Option<i64>,
+    max_id: Option<i64>,
+}
+
 /// Get the PostgreSQL database name for a show
 /// Pattern: save_audio_{prefix}_{show_name}
 /// Default prefix is "show", resulting in "save_audio_show_{show_name}"
@@ -55,6 +77,23 @@ pub enum SyncResult {
     Completed,
     /// Sync was skipped because another instance holds the lease
     Skipped,
+}
+
+/// Result of replace_source operation
+#[derive(Debug)]
+pub enum ReplaceSourceResult {
+    /// Successfully replaced source, ready to sync from matched section
+    Replaced {
+        old_source_id: String,
+        new_source_id: String,
+        matched_section_id: i64,
+        matched_section_timestamp_ms: i64,
+        resume_from_segment_id: i64,
+    },
+    /// Skipped because another operation holds the lease
+    Skipped,
+    /// No existing data in receiver - will start fresh from new source
+    FreshStart { new_source_id: String },
 }
 
 /// Get retention hours for a show from config (None if not configured)
@@ -194,6 +233,258 @@ pub fn sync_shows(
     // Return the sync result
     sync_result?;
     Ok(SyncResult::Completed)
+}
+
+/// Replace the source database for an existing receiver
+///
+/// This operation:
+/// 1. Acquires the sync lease (prevents concurrent sync/replace)
+/// 2. Gets the receiver's current latest section timestamp
+/// 3. Queries the new source for a matching section
+/// 4. Updates source_unique_id and last_synced_id atomically
+pub fn replace_source(
+    config: &SyncConfig,
+    password: &str,
+    global_pool: &PgPool,
+    show_name: &str,
+) -> Result<ReplaceSourceResult, Box<dyn std::error::Error + Send + Sync>> {
+    let remote_url = &config.remote_url;
+
+    // Generate unique holder ID for this operation
+    let holder_id = format!(
+        "replace-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    // Use custom lease name from config if provided, otherwise use default
+    let lease_name = config.lease_name.as_deref().unwrap_or(SYNC_LEASE_NAME);
+    let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
+
+    // Try to acquire the lease
+    let rt = tokio::runtime::Runtime::new()?;
+    let acquired = rt.block_on(async {
+        db_postgres::try_acquire_lease_pg(global_pool, lease_name, &holder_id, lease_duration_ms)
+            .await
+    })?;
+
+    if !acquired {
+        println!("[ReplaceSource] Lease held by another instance, skipping");
+        return Ok(ReplaceSourceResult::Skipped);
+    }
+
+    println!("[ReplaceSource] Acquired sync lease");
+
+    // Run the replace operation
+    let result = replace_source_internal(config, password, show_name, remote_url);
+
+    // Release the lease
+    let _ = rt.block_on(async {
+        db_postgres::release_lease_pg(global_pool, lease_name, &holder_id).await
+    });
+    println!("[ReplaceSource] Released sync lease");
+
+    result
+}
+
+/// Internal implementation of replace_source (without lease handling)
+fn replace_source_internal(
+    config: &SyncConfig,
+    password: &str,
+    show_name: &str,
+    remote_url: &str,
+) -> Result<ReplaceSourceResult, Box<dyn std::error::Error + Send + Sync>> {
+    let client = Client::new();
+
+    // Connect to receiver's PostgreSQL database
+    let database_name = get_pg_database_name(&config.database.prefix, show_name);
+    println!(
+        "[ReplaceSource] Connecting to PostgreSQL database '{}'...",
+        database_name
+    );
+
+    let db = SyncDbPg::connect(&config.database.url, password, &database_name).map_err(|e| {
+        format!(
+            "Failed to connect to PostgreSQL database '{}': {}",
+            database_name, e
+        )
+    })?;
+
+    // Check if receiver has any sections
+    let receiver_max_timestamp = db_postgres::get_max_section_timestamp_pg_sync(&db)?;
+
+    // Get current source_unique_id (if any)
+    let old_source_id: Option<String> =
+        db_postgres::query_metadata_pg_sync(&db, "source_unique_id")?;
+
+    // If receiver has no sections, it's a fresh start - just validate and update source_unique_id
+    let receiver_max_ts = match receiver_max_timestamp {
+        Some(ts) => ts,
+        None => {
+            println!("[ReplaceSource] Receiver has no sections, fetching new source metadata...");
+
+            // Fetch new source metadata to get unique_id
+            let metadata_url = format!("{}/api/sync/shows/{}/metadata", remote_url, show_name);
+            let metadata: ShowMetadata = client
+                .get(&metadata_url)
+                .send()
+                .map_err(|e| format!("Network error fetching metadata: {}", e))?
+                .json()
+                .map_err(|e| format!("Failed to parse metadata JSON: {}", e))?;
+
+            // Validate version
+            if metadata.version != EXPECTED_DB_VERSION {
+                return Err(format!(
+                    "Remote database has unsupported schema version '{}' (expected '{}')",
+                    metadata.version, EXPECTED_DB_VERSION
+                )
+                .into());
+            }
+
+            // Update source_unique_id
+            if old_source_id.is_some() {
+                db_postgres::upsert_metadata_pg_sync(&db, "source_unique_id", &metadata.unique_id)?;
+            }
+
+            println!(
+                "[ReplaceSource] Receiver has no data, will start fresh from source '{}'",
+                metadata.unique_id
+            );
+            return Ok(ReplaceSourceResult::FreshStart {
+                new_source_id: metadata.unique_id,
+            });
+        }
+    };
+
+    println!(
+        "[ReplaceSource] Receiver latest section timestamp: {}",
+        receiver_max_ts
+    );
+
+    // Query new source for section matching
+    let find_url = format!(
+        "{}/api/sync/shows/{}/sections/find_by_timestamp?timestamp_ms={}",
+        remote_url, show_name, receiver_max_ts
+    );
+    println!("[ReplaceSource] Querying new source for matching section...");
+
+    let find_response: FindSectionResponse = client
+        .get(&find_url)
+        .send()
+        .map_err(|e| format!("Network error querying source: {}", e))?
+        .json()
+        .map_err(|e| format!("Failed to parse find_by_timestamp response: {}", e))?;
+
+    let new_source_id = find_response.source_unique_id.clone();
+    println!("[ReplaceSource] New source unique_id: {}", new_source_id);
+
+    // Determine matched section
+    let matched_section = if let Some(after) = &find_response.after_section {
+        println!(
+            "[ReplaceSource] Found section after timestamp: id={}, ts={}",
+            after.id, after.start_timestamp_ms
+        );
+        after
+    } else if let Some(before) = &find_response.before_or_equal_section {
+        println!(
+            "[ReplaceSource] Found section before/equal to timestamp: id={}, ts={}",
+            before.id, before.start_timestamp_ms
+        );
+        before
+    } else {
+        // Check if source has any data at all
+        if find_response.min_id > find_response.max_id {
+            // Source is empty
+            println!("[ReplaceSource] New source has no data, will start fresh");
+
+            // Update metadata
+            db.block_on(async {
+                let sql = metadata::update_pg("source_unique_id", &new_source_id);
+                sqlx::query(&sql).execute(db.pool()).await?;
+
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            })?;
+
+            return Ok(ReplaceSourceResult::FreshStart {
+                new_source_id,
+            });
+        }
+
+        return Err(format!(
+            "No matching section found on new source. Receiver timestamp: {}, \
+             Source has sections but none match. This may indicate the new source \
+             is too far behind in time.",
+            receiver_max_ts
+        )
+        .into());
+    };
+
+    // Get min segment ID for the matched section
+    let segment_range_url = format!(
+        "{}/api/sync/shows/{}/sections/{}/segment_range",
+        remote_url, show_name, matched_section.id
+    );
+
+    let segment_range: SectionSegmentRange = client
+        .get(&segment_range_url)
+        .send()
+        .map_err(|e| format!("Network error querying segment range: {}", e))?
+        .json()
+        .map_err(|e| format!("Failed to parse segment_range response: {}", e))?;
+
+    let resume_from_segment_id = match segment_range.min_id {
+        Some(min_id) => min_id,
+        None => {
+            return Err(format!(
+                "Matched section {} has no segments on new source",
+                matched_section.id
+            )
+            .into());
+        }
+    };
+
+    println!(
+        "[ReplaceSource] Will resume from segment {} (section {} starts at ts={})",
+        resume_from_segment_id, matched_section.id, matched_section.start_timestamp_ms
+    );
+
+    // Get old source_id for return value
+    let old_source_id_for_return = old_source_id.unwrap_or_else(|| "none".to_string());
+
+    // Update metadata atomically
+    db.block_on(async {
+        let mut tx = db.pool().begin().await?;
+
+        // Update source_unique_id
+        let sql = metadata::update_pg("source_unique_id", &new_source_id);
+        sqlx::query(&sql).execute(&mut *tx).await?;
+
+        // Set last_synced_id to resume_from_segment_id - 1
+        // This way the next sync will start from resume_from_segment_id
+        let last_synced = (resume_from_segment_id - 1).to_string();
+        let sql = metadata::update_pg("last_synced_id", &last_synced);
+        sqlx::query(&sql).execute(&mut *tx).await?;
+
+        tx.commit().await?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })?;
+
+    println!(
+        "[ReplaceSource] Successfully replaced source: {} -> {}",
+        old_source_id_for_return, new_source_id
+    );
+    println!("[ReplaceSource] Run 'sync' command to continue syncing from new source");
+
+    Ok(ReplaceSourceResult::Replaced {
+        old_source_id: old_source_id_for_return,
+        new_source_id,
+        matched_section_id: matched_section.id,
+        matched_section_timestamp_ms: matched_section.start_timestamp_ms,
+        resume_from_segment_id,
+    })
 }
 
 /// Internal sync implementation (without lease handling)
@@ -435,14 +726,6 @@ fn sync_single_show(
                 .map(|v| v.parse().unwrap_or(0))
                 .unwrap_or(0);
 
-        // Ensure last_boundary_end_id exists (for older databases that don't have it)
-        let has_boundary_end =
-            crate::db_postgres::metadata_exists_pg_sync(&db, "last_boundary_end_id")?;
-
-        if !has_boundary_end {
-            crate::db_postgres::insert_metadata_pg_sync(&db, "last_boundary_end_id", "0")?;
-        }
-
         println!(
             "[{}]   Resuming from segment {}",
             show_name,
@@ -468,7 +751,6 @@ fn sync_single_show(
         crate::db_postgres::insert_metadata_pg_sync(&db, "is_recipient", "true")?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "source_unique_id", &metadata.unique_id)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "last_synced_id", "0")?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "last_boundary_end_id", "0")?;
 
         metadata.min_id
     };
@@ -573,26 +855,8 @@ fn sync_single_show(
         }
 
         // Insert segments into local database (all operations in one transaction)
-        let mut last_boundary_end_id: Option<i64> = None;
-
-        // Track section boundaries
-        let mut prev_section_id: Option<i64> = None;
-        let mut prev_id: Option<i64> = None;
-        for segment in &segments {
-            if let Some(prev_sec_id) = prev_section_id {
-                if segment.section_id != prev_sec_id {
-                    if let Some(prev) = prev_id {
-                        last_boundary_end_id = Some(prev);
-                    }
-                }
-            }
-            prev_section_id = Some(segment.section_id);
-            prev_id = Some(segment.id);
-        }
-
         let last_id = segments.last().unwrap().id;
         let segments_ref = &segments;
-        let boundary_end = last_boundary_end_id;
 
         db.block_on(async {
             let mut tx = db
@@ -622,15 +886,6 @@ fn sync_single_show(
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-
-            // Update last_boundary_end_id if we found a new boundary in this batch
-            if let Some(boundary) = boundary_end {
-                let sql = metadata::update_pg("last_boundary_end_id", &boundary.to_string());
-                sqlx::query(&sql)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            }
 
             tx.commit()
                 .await

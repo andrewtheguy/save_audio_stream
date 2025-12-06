@@ -630,3 +630,15 @@ pub async fn is_lease_held_pg(pool: &PgPool, name: &str) -> Result<bool, DynErro
 
     Ok(result)
 }
+
+/// Get the maximum section timestamp from the receiver database
+pub async fn get_max_section_timestamp_pg(pool: &PgPool) -> Result<Option<i64>, DynError> {
+    let sql = sections::select_max_timestamp_pg();
+    let result: Option<i64> = sqlx::query_scalar(&sql).fetch_one(pool).await?;
+    Ok(result)
+}
+
+/// Sync wrapper: Get maximum section timestamp (PostgreSQL)
+pub fn get_max_section_timestamp_pg_sync(db: &SyncDbPg) -> Result<Option<i64>, DynError> {
+    db.block_on(get_max_section_timestamp_pg(db.pool()))
+}

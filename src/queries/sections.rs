@@ -129,3 +129,35 @@ pub fn select_by_id_pg(id: i64) -> String {
         .and_where(Expr::col(Sections::Id).eq(id))
         .to_string(PostgresQueryBuilder)
 }
+
+/// SELECT id, start_timestamp_ms FROM sections
+/// WHERE start_timestamp_ms > ? ORDER BY start_timestamp_ms ASC LIMIT 1
+pub fn select_first_after_timestamp(timestamp_ms: i64) -> String {
+    Query::select()
+        .columns([Sections::Id, Sections::StartTimestampMs])
+        .from(Sections::Table)
+        .and_where(Expr::col(Sections::StartTimestampMs).gt(timestamp_ms))
+        .order_by(Sections::StartTimestampMs, Order::Asc)
+        .limit(1)
+        .to_string(SqliteQueryBuilder)
+}
+
+/// SELECT id, start_timestamp_ms FROM sections
+/// WHERE start_timestamp_ms <= ? ORDER BY start_timestamp_ms DESC LIMIT 1
+pub fn select_latest_before_or_equal_timestamp(timestamp_ms: i64) -> String {
+    Query::select()
+        .columns([Sections::Id, Sections::StartTimestampMs])
+        .from(Sections::Table)
+        .and_where(Expr::col(Sections::StartTimestampMs).lte(timestamp_ms))
+        .order_by(Sections::StartTimestampMs, Order::Desc)
+        .limit(1)
+        .to_string(SqliteQueryBuilder)
+}
+
+/// SELECT MAX(start_timestamp_ms) FROM sections - PostgreSQL
+pub fn select_max_timestamp_pg() -> String {
+    Query::select()
+        .expr(sea_query::Func::max(Expr::col(Sections::StartTimestampMs)))
+        .from(Sections::Table)
+        .to_string(PostgresQueryBuilder)
+}
