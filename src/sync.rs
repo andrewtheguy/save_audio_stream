@@ -381,45 +381,38 @@ fn replace_source_internal(
     let new_source_id = find_response.source_unique_id.clone();
     println!("[ReplaceSource] New source unique_id: {}", new_source_id);
 
-    // Determine matched section
-    let matched_section = if let Some(after) = &find_response.after_section {
-        println!(
-            "[ReplaceSource] Found section after timestamp: id={}, ts={}",
-            after.id, after.start_timestamp_ms
-        );
-        after
-    } else if let Some(before) = &find_response.before_or_equal_section {
-        println!(
-            "[ReplaceSource] Found section before/equal to timestamp: id={}, ts={}",
-            before.id, before.start_timestamp_ms
-        );
-        before
-    } else {
-        // Check if source has any data at all
-        if find_response.min_id > find_response.max_id {
-            // Source is empty
-            println!("[ReplaceSource] New source has no data, will start fresh");
-
-            // Update metadata
-            db.block_on(async {
-                let sql = metadata::update_pg("source_unique_id", &new_source_id);
-                sqlx::query(&sql).execute(db.pool()).await?;
-
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-            })?;
-
-            return Ok(ReplaceSourceResult::FreshStart {
-                new_source_id,
-            });
+    // Determine matched section - only allow forward match
+    let matched_section = match &find_response.after_section {
+        Some(after) => {
+            // Forward match - the only valid case
+            println!(
+                "[ReplaceSource] Found section after timestamp: id={}, ts={}",
+                after.id, after.start_timestamp_ms
+            );
+            after
         }
-
-        return Err(format!(
-            "No matching section found on new source. Receiver timestamp: {}, \
-             Source has sections but none match. This may indicate the new source \
-             is too far behind in time.",
-            receiver_max_ts
-        )
-        .into());
+        None => {
+            // No section after receiver's timestamp - reject
+            if find_response.min_id > find_response.max_id {
+                // Source is empty
+                return Err(
+                    "New source has no data. Cannot verify it is a valid continuation.".into(),
+                );
+            } else {
+                // Source has data but all sections are before receiver's timestamp
+                let source_latest_ts = find_response
+                    .before_or_equal_section
+                    .as_ref()
+                    .map(|s| s.start_timestamp_ms)
+                    .unwrap_or(0);
+                return Err(format!(
+                    "New source's latest section (ts={}) is before receiver's current position (ts={}). \
+                     This may indicate an old/stale source database.",
+                    source_latest_ts, receiver_max_ts
+                )
+                .into());
+            }
+        }
     };
 
     // Get min segment ID for the matched section

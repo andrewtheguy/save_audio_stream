@@ -1349,10 +1349,10 @@ async fn test_replace_source_with_forward_match() {
 
 #[tokio::test]
 #[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
-async fn test_replace_source_with_backward_match() {
+async fn test_replace_source_rejects_backward_match() {
     // Test scenario: new source has NO section after receiver's max timestamp
     // but has sections before it
-    // Expected: should match the closest previous section
+    // Expected: should ERROR (source may be old/stale)
 
     let (postgres_url, password) = get_test_postgres_config()
         .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
@@ -1398,7 +1398,7 @@ async fn test_replace_source_with_backward_match() {
 
     // Create NEW source with sections BEFORE receiver's max timestamp
     // Sections at: 1500, 2500, 2800 - all before 3000
-    // Should match 2800 (closest before/equal to 3000)
+    // Should be REJECTED because source is behind receiver
     let (new_source_db, _guard2) = create_source_database_with_timestamps(
         show_name,
         "new_source_def",
@@ -1411,7 +1411,7 @@ async fn test_replace_source_with_backward_match() {
     new_databases.insert(show_name.to_string(), new_source_db);
     let (new_server_url, _handle2) = start_test_server(new_databases).await;
 
-    // Replace source
+    // Replace source - should fail
     let config = create_test_sync_config(
         new_server_url,
         postgres_url.clone(),
@@ -1429,18 +1429,15 @@ async fn test_replace_source_with_backward_match() {
     .await
     .unwrap();
 
-    match result {
-        Ok(ReplaceSourceResult::Replaced {
-            new_source_id,
-            matched_section_timestamp_ms,
-            ..
-        }) => {
-            assert_eq!(new_source_id, "new_source_def");
-            // Should match section at 2800 (latest before/equal to 3000)
-            assert_eq!(matched_section_timestamp_ms, 2800);
-        }
-        other => panic!("Expected Replaced result, got: {:?}", other),
-    }
+    // Should be an error because new source is behind receiver
+    assert!(result.is_err(), "Expected error but got: {:?}", result);
+    let err_msg = result.err().unwrap();
+    assert!(
+        err_msg.contains("before receiver's current position")
+            || err_msg.contains("old/stale"),
+        "Error should mention source is behind receiver, got: {}",
+        err_msg
+    );
 
     // Cleanup
     drop_test_database(&postgres_url, &password, show_name).await;
@@ -1537,6 +1534,117 @@ async fn test_replace_source_empty_receiver() {
         }
         other => panic!("Expected FreshStart result, got: {:?}", other),
     }
+
+    // Cleanup
+    drop_test_database(&postgres_url, &password, show_name).await;
+}
+
+#[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
+async fn test_replace_source_rejects_empty_source() {
+    // Test scenario: receiver has data, new source is empty
+    // Expected: should ERROR (can't verify continuation)
+
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+
+    let show_name = "test_replace_empty_src";
+
+    // Clean up any existing test database
+    drop_test_database(&postgres_url, &password, show_name).await;
+
+    // Create global pool for lease management
+    let global_pool = create_global_pool(&postgres_url, &password).await;
+
+    // Create initial source and sync
+    let (source_db, _guard1) = create_source_database_with_timestamps(
+        show_name,
+        "old_source_xyz",
+        &[1000, 2000, 3000],
+        5,
+    )
+    .await;
+
+    let mut databases = HashMap::new();
+    databases.insert(show_name.to_string(), source_db);
+    let (server_url, _handle) = start_test_server(databases).await;
+
+    // Initial sync to populate receiver
+    let config = create_test_sync_config(
+        server_url,
+        postgres_url.clone(),
+        None,
+        100,
+        "test_replace_empty_src",
+    );
+    let password_clone = password.clone();
+    let global_pool_clone = global_pool.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+    assert!(result.is_ok());
+
+    // Create NEW source that is EMPTY (no sections, no segments)
+    let (empty_source_db, _guard2) =
+        save_audio_stream::db::create_test_connection_in_temporary_file()
+            .await
+            .unwrap();
+    save_audio_stream::db::init_database_schema(&empty_source_db)
+        .await
+        .unwrap();
+
+    // Insert minimal metadata for the empty source
+    let sql = metadata::insert("version", save_audio_stream::EXPECTED_DB_VERSION);
+    sqlx::query(&sql).execute(&empty_source_db).await.unwrap();
+    let sql = metadata::insert("unique_id", "empty_source_123");
+    sqlx::query(&sql).execute(&empty_source_db).await.unwrap();
+    let sql = metadata::insert("name", show_name);
+    sqlx::query(&sql).execute(&empty_source_db).await.unwrap();
+    let sql = metadata::insert("audio_format", "opus");
+    sqlx::query(&sql).execute(&empty_source_db).await.unwrap();
+    let sql = metadata::insert("split_interval", "300");
+    sqlx::query(&sql).execute(&empty_source_db).await.unwrap();
+    let sql = metadata::insert("bitrate", "16");
+    sqlx::query(&sql).execute(&empty_source_db).await.unwrap();
+    let sql = metadata::insert("sample_rate", "48000");
+    sqlx::query(&sql).execute(&empty_source_db).await.unwrap();
+
+    let mut new_databases = HashMap::new();
+    new_databases.insert(show_name.to_string(), empty_source_db);
+    let (new_server_url, _handle2) = start_test_server(new_databases).await;
+
+    // Replace source - should fail because new source is empty
+    let config = create_test_sync_config(
+        new_server_url,
+        postgres_url.clone(),
+        Some(vec![show_name.to_string()]),
+        100,
+        "test_replace_empty_src",
+    );
+    let password_clone = password.clone();
+    let global_pool_clone = global_pool.clone();
+    let show_name_clone = show_name.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    // Should be an error because new source has no data or is behind receiver
+    // (Either message is acceptable - both indicate the source is rejected)
+    assert!(result.is_err(), "Expected error but got: {:?}", result);
+    let err_msg = result.err().unwrap();
+    assert!(
+        err_msg.contains("no data")
+            || err_msg.contains("Cannot verify")
+            || err_msg.contains("before receiver's current position")
+            || err_msg.contains("old/stale"),
+        "Error should indicate source is invalid, got: {}",
+        err_msg
+    );
 
     // Cleanup
     drop_test_database(&postgres_url, &password, show_name).await;
