@@ -458,7 +458,7 @@ fn replace_source_internal(
         // Set last_synced_source_id to resume_from_segment_id - 1
         // This way the next sync will start from resume_from_segment_id
         let last_synced = (resume_from_segment_id - 1).to_string();
-        let sql = metadata::update_pg("last_synced_source_id", &last_synced);
+        let sql = metadata::upsert_pg("last_synced_source_id", &last_synced);
         sqlx::query(&sql).execute(&mut *tx).await?;
 
         tx.commit().await?;
@@ -872,8 +872,8 @@ fn sync_single_show(
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
 
-            // Update last_synced_source_id (in same transaction)
-            let sql = metadata::update_pg("last_synced_source_id", &last_id.to_string());
+            // Upsert last_synced_source_id (in same transaction)
+            let sql = metadata::upsert_pg("last_synced_source_id", &last_id.to_string());
             sqlx::query(&sql)
                 .execute(&mut *tx)
                 .await
