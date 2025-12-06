@@ -350,6 +350,34 @@ pub fn insert_with_id_pg(
         .to_string(PostgresQueryBuilder)
 }
 
+/// INSERT INTO segments with auto-generated ID - PostgreSQL
+/// Used for sync where receiver generates its own IDs
+pub fn insert_pg(
+    timestamp_ms: i64,
+    is_timestamp_from_source: i32,
+    section_id: i64,
+    audio_data: &[u8],
+    duration_samples: i64,
+) -> String {
+    Query::insert()
+        .into_table(Segments::Table)
+        .columns([
+            Segments::TimestampMs,
+            Segments::IsTimestampFromSource,
+            Segments::SectionId,
+            Segments::AudioData,
+            Segments::DurationSamples,
+        ])
+        .values_panic([
+            timestamp_ms.into(),
+            is_timestamp_from_source.into(),
+            section_id.into(),
+            audio_data.to_vec().into(),
+            duration_samples.into(),
+        ])
+        .to_string(PostgresQueryBuilder)
+}
+
 /// SELECT EXISTS(SELECT 1 FROM segments WHERE section_id = ?) - PostgreSQL
 pub fn exists_for_section_pg(section_id: i64) -> String {
     let subquery = Query::select()

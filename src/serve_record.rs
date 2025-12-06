@@ -69,6 +69,14 @@ pub fn serve_for_sync(
                 get(db_sections_handler),
             )
             .route(
+                "/api/sync/shows/{show_name}/sections/find_by_timestamp",
+                get(find_section_by_timestamp_handler),
+            )
+            .route(
+                "/api/sync/shows/{show_name}/sections/{section_id}/segment_range",
+                get(section_segment_range_handler),
+            )
+            .route(
                 "/api/sync/shows/{show_name}/segments",
                 get(sync_show_segments_handler),
             );
@@ -130,6 +138,38 @@ pub struct SyncSegmentsQuery {
     pub limit: Option<u64>,
     /// Skip segments with timestamp_ms < cutoff_ts (for retention-based sync)
     pub cutoff_ts: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct FindSectionByTimestampQuery {
+    /// Timestamp to find sections around
+    pub timestamp_ms: i64,
+}
+
+#[derive(Serialize)]
+struct SectionMatch {
+    id: i64,
+    start_timestamp_ms: i64,
+}
+
+#[derive(Serialize)]
+struct FindSectionResponse {
+    /// First section with start_timestamp_ms > timestamp_ms
+    after_section: Option<SectionMatch>,
+    /// Latest section with start_timestamp_ms <= timestamp_ms
+    before_or_equal_section: Option<SectionMatch>,
+    /// Source database unique ID
+    source_unique_id: String,
+    /// Minimum segment ID in source
+    min_id: i64,
+    /// Maximum segment ID in source
+    max_id: i64,
+}
+
+#[derive(Serialize)]
+struct SectionSegmentRange {
+    min_id: Option<i64>,
+    max_id: Option<i64>,
 }
 
 
@@ -610,4 +650,228 @@ pub async fn sync_show_segments_handler(
         body,
     )
         .into_response()
+}
+
+/// Find sections by timestamp proximity for replace-source operation
+pub async fn find_section_by_timestamp_handler(
+    State(state): State<StdArc<AppState>>,
+    Path(show_name): Path<String>,
+    Query(query): Query<FindSectionByTimestampQuery>,
+) -> impl IntoResponse {
+    // Get database path from pre-initialized HashMap
+    let path = match state.db_paths.get(&show_name) {
+        Some(p) => p.as_path(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
+            )
+                .into_response();
+        }
+    };
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
+        )
+            .into_response();
+    }
+
+    // Open database
+    let pool = match crate::db::open_readonly_connection(path).await {
+        Ok(p) => p,
+        Err(e) => {
+            error!(
+                "Failed to open readonly database connection at '{}': {}",
+                path.display(),
+                e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Check is_recipient flag - reject if true
+    let is_recipient: Option<String> =
+        sqlx::query_scalar::<_, String>(&metadata::select_by_key("is_recipient"))
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
+
+    if let Some(is_recipient) = &is_recipient {
+        if is_recipient == "true" {
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error": "Cannot query a recipient database"})),
+            )
+                .into_response();
+        }
+    }
+
+    // Get source unique_id
+    let source_unique_id: String =
+        match sqlx::query_scalar::<_, String>(&metadata::select_by_key("unique_id"))
+            .fetch_one(&pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to query unique_id metadata: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
+
+    // Get min/max segment IDs
+    let (min_id, max_id): (i64, i64) = match sqlx::query(&segments::select_min_max_id())
+        .fetch_optional(&pool)
+        .await
+    {
+        Ok(Some(row)) => {
+            let min: Option<i64> = row.get(0);
+            let max: Option<i64> = row.get(1);
+            match (min, max) {
+                (Some(min), Some(max)) => (min, max),
+                _ => (0, -1), // Indicates empty database
+            }
+        }
+        Ok(None) => (0, -1), // Indicates empty database
+        Err(e) => {
+            error!("Failed to query min/max segment IDs: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Find section after timestamp
+    let after_section: Option<SectionMatch> =
+        match sqlx::query(&sections::select_first_after_timestamp(query.timestamp_ms))
+            .fetch_optional(&pool)
+            .await
+        {
+            Ok(Some(row)) => Some(SectionMatch {
+                id: row.get(0),
+                start_timestamp_ms: row.get(1),
+            }),
+            Ok(None) => None,
+            Err(e) => {
+                error!("Failed to query section after timestamp: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
+
+    // Find section before or equal to timestamp
+    let before_or_equal_section: Option<SectionMatch> =
+        match sqlx::query(&sections::select_latest_before_or_equal_timestamp(query.timestamp_ms))
+            .fetch_optional(&pool)
+            .await
+        {
+            Ok(Some(row)) => Some(SectionMatch {
+                id: row.get(0),
+                start_timestamp_ms: row.get(1),
+            }),
+            Ok(None) => None,
+            Err(e) => {
+                error!("Failed to query section before timestamp: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
+
+    let response = FindSectionResponse {
+        after_section,
+        before_or_equal_section,
+        source_unique_id,
+        min_id,
+        max_id,
+    };
+
+    (StatusCode::OK, axum::Json(response)).into_response()
+}
+
+/// Get segment ID range for a specific section
+pub async fn section_segment_range_handler(
+    State(state): State<StdArc<AppState>>,
+    Path((show_name, section_id)): Path<(String, i64)>,
+) -> impl IntoResponse {
+    // Get database path from pre-initialized HashMap
+    let path = match state.db_paths.get(&show_name) {
+        Some(p) => p.as_path(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
+            )
+                .into_response();
+        }
+    };
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": format!("Show '{}' not found", show_name)})),
+        )
+            .into_response();
+    }
+
+    // Open database
+    let pool = match crate::db::open_readonly_connection(path).await {
+        Ok(p) => p,
+        Err(e) => {
+            error!(
+                "Failed to open readonly database connection at '{}': {}",
+                path.display(),
+                e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Failed to open database: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Get min/max segment IDs for the section
+    let response: SectionSegmentRange =
+        match sqlx::query(&segments::select_min_max_id_for_section(section_id))
+            .fetch_optional(&pool)
+            .await
+        {
+            Ok(Some(row)) => SectionSegmentRange {
+                min_id: row.get(0),
+                max_id: row.get(1),
+            },
+            Ok(None) => SectionSegmentRange {
+                min_id: None,
+                max_id: None,
+            },
+            Err(e) => {
+                error!("Failed to query segment range for section: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
+
+    (StatusCode::OK, axum::Json(response)).into_response()
 }

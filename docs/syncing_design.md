@@ -104,6 +104,77 @@ See [`config/user/credentials.example.toml`](../config/user/credentials.example.
 | `database.credential_profile` | Profile name in credentials.toml `[postgres.<profile>]` | Required |
 | `database.prefix` | Prefix in database name (`save_audio_{prefix}_{show}`) | `show` |
 
+## Replace Source
+
+When the recording server is restarted or the source database is replaced (e.g., due to server migration, database corruption, or disk failure), the source's `unique_id` changes. The receiver will refuse to sync because the `source_unique_id` in its metadata no longer matches the new source.
+
+The `replace-source` command allows the receiver to switch to a new source by finding a common point in time where both databases have data, then updating the receiver's tracking metadata to continue syncing from that point.
+
+### Command Syntax
+
+```bash
+save_audio_stream replace-source --config <CONFIG_FILE> --show <SHOW_NAME>
+```
+
+### How It Works
+
+1. **Query receiver state**: Get the latest section timestamp from the receiver's PostgreSQL database
+2. **Query new source**: Call the source's `find_by_timestamp` API with the receiver's timestamp
+3. **Validate continuation**: The new source must have a section **after** the receiver's current position
+4. **Update metadata**: Atomically update `source_unique_id` and `last_synced_id` to resume from the matched point
+
+### Validation Rules
+
+The replace-source operation enforces strict validation to prevent accidentally replacing with an old or unrelated database:
+
+| Scenario | Result |
+|----------|--------|
+| Source has section **after** receiver's timestamp | ✅ **Success** - valid continuation |
+| Source has only sections **before** receiver's timestamp | ❌ **Error** - source may be old/stale |
+| Source is empty (no sections) | ❌ **Error** - cannot verify continuation |
+| Receiver is empty (no sections) | ✅ **FreshStart** - will start from beginning |
+
+### Error Messages
+
+**Source is behind receiver:**
+```
+New source's latest section (ts=1700000000000) is before receiver's current position (ts=1700001000000).
+This may indicate an old/stale source database.
+```
+
+**Source has no data:**
+```
+New source has no data. Cannot verify it is a valid continuation.
+```
+
+### Result Types
+
+| Result | Description |
+|--------|-------------|
+| `Replaced` | Successfully found matching point and updated metadata |
+| `Skipped` | Another sync/replace operation holds the lease |
+| `FreshStart` | Receiver has no existing data, will sync from beginning |
+
+### Example Usage
+
+```bash
+# After recording server restart with new database
+save_audio_stream replace-source -c receiver.toml --show myradio
+
+# Output on success:
+# Source replaced successfully!
+#   Old source: db_abc123
+#   New source: db_xyz789
+#   Matched section: 1700001000000000 (timestamp: 1700001000000)
+#   Will resume from segment: 150
+#
+# Run 'receiver --sync-only' or 'receiver' to continue syncing from new source.
+```
+
+### Lease Coordination
+
+Replace-source uses the same lease mechanism as regular sync to prevent concurrent operations. If another sync or replace-source is in progress, the command will be skipped.
+
 ## Sync Behavior
 
 Each sync operation (whether periodic or via `--sync-only`):
