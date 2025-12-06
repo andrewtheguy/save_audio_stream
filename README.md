@@ -260,6 +260,21 @@ save_audio_stream receiver -c config/receiver.toml
 save_audio_stream receiver -c config/receiver.toml --sync-only
 ```
 
+### Replace Source Command
+
+Switch a receiver show to a new source database when the source unique_id changes:
+
+```bash
+save_audio_stream replace-source -c config/receiver.toml --show myradio
+```
+
+**CLI Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-c, --config` | Path to receiver config file (required) |
+| `--show` | Name of the show to replace source for (required) |
+
 ### Inspect Command (Single Database)
 
 The inspect command is for inspecting individual SQLite database files directly:
@@ -449,6 +464,18 @@ Each show is stored in a separate PostgreSQL database named `save_audio_{prefix}
 - REST API endpoints for show listing and segment fetching
 
 📖 **For detailed documentation, see [docs/syncing_design.md](docs/syncing_design.md)**
+
+### Replace Source Command
+
+When the recording server's source database changes (restart, migration, disk failure), the receiver needs to switch to the new source. The `replace-source` command finds a matching point between the receiver and new source, then updates tracking metadata to continue syncing.
+
+```bash
+save_audio_stream replace-source -c receiver.toml --show myradio
+```
+
+The command validates that the new source is a valid continuation (has data after the receiver's current position) to prevent accidentally replacing with an old/stale database.
+
+📖 **See [Replace Source documentation](docs/syncing_design.md#replace-source) for details.**
 
 ## Supported Input Formats
 

@@ -1491,7 +1491,7 @@ async fn test_replace_source_empty_receiver() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO metadata (key, value) VALUES ('last_synced_id', '0')")
+    sqlx::query("INSERT INTO metadata (key, value) VALUES ('last_synced_source_id', '0')")
         .execute(&pool)
         .await
         .unwrap();

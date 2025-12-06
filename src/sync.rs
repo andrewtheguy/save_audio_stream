@@ -241,7 +241,7 @@ pub fn sync_shows(
 /// 1. Acquires the sync lease (prevents concurrent sync/replace)
 /// 2. Gets the receiver's current latest section timestamp
 /// 3. Queries the new source for a matching section
-/// 4. Updates source_unique_id and last_synced_id atomically
+/// 4. Updates source_unique_id and last_synced_source_id atomically
 pub fn replace_source(
     config: &SyncConfig,
     password: &str,
@@ -455,10 +455,10 @@ fn replace_source_internal(
         let sql = metadata::update_pg("source_unique_id", &new_source_id);
         sqlx::query(&sql).execute(&mut *tx).await?;
 
-        // Set last_synced_id to resume_from_segment_id - 1
+        // Set last_synced_source_id to resume_from_segment_id - 1
         // This way the next sync will start from resume_from_segment_id
         let last_synced = (resume_from_segment_id - 1).to_string();
-        let sql = metadata::update_pg("last_synced_id", &last_synced);
+        let sql = metadata::update_pg("last_synced_source_id", &last_synced);
         sqlx::query(&sql).execute(&mut *tx).await?;
 
         tx.commit().await?;
@@ -713,18 +713,18 @@ fn sync_single_show(
         // Validate metadata matches
         validate_metadata(&db, &metadata)?;
 
-        // Get last synced ID
-        let last_synced_id: i64 =
-            crate::db_postgres::query_metadata_pg_sync(&db, "last_synced_id")?
+        // Get last synced source ID
+        let last_synced_source_id: i64 =
+            crate::db_postgres::query_metadata_pg_sync(&db, "last_synced_source_id")?
                 .map(|v| v.parse().unwrap_or(0))
                 .unwrap_or(0);
 
         println!(
             "[{}]   Resuming from segment {}",
             show_name,
-            last_synced_id + 1
+            last_synced_source_id + 1
         );
-        last_synced_id + 1
+        last_synced_source_id + 1
     } else {
         // New database - initialize
         let target_unique_id = crate::constants::generate_db_unique_id();
@@ -743,7 +743,7 @@ fn sync_single_show(
         crate::db_postgres::insert_metadata_pg_sync(&db, "sample_rate", &metadata.sample_rate)?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "is_recipient", "true")?;
         crate::db_postgres::insert_metadata_pg_sync(&db, "source_unique_id", &metadata.unique_id)?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "last_synced_id", "0")?;
+        crate::db_postgres::insert_metadata_pg_sync(&db, "last_synced_source_id", "0")?;
 
         metadata.min_id
     };
@@ -859,12 +859,11 @@ fn sync_single_show(
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
             for segment in segments_ref {
-                let sql = segments::insert_with_id_pg(
-                    segment.id,
+                let sql = segments::insert_pg(
                     segment.timestamp_ms,
                     segment.is_timestamp_from_source,
-                    &segment.audio_data,
                     segment.section_id,
+                    &segment.audio_data,
                     segment.duration_samples,
                 );
                 sqlx::query(&sql)
@@ -873,8 +872,8 @@ fn sync_single_show(
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
 
-            // Update last_synced_id (in same transaction)
-            let sql = metadata::update_pg("last_synced_id", &last_id.to_string());
+            // Update last_synced_source_id (in same transaction)
+            let sql = metadata::update_pg("last_synced_source_id", &last_id.to_string());
             sqlx::query(&sql)
                 .execute(&mut *tx)
                 .await
