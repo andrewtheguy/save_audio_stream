@@ -1246,10 +1246,12 @@ pub fn record(
         println!("[{}] Cleanup lock acquired", name);
 
         // Run cleanup of old sections - recreate connection for cleanup
-        if let Ok(cleanup_db) = crate::db::SyncDb::connect(&db_path)
-            && let Err(e) = cleanup_old_sections_with_retention(&cleanup_db, retention_hours) {
-                eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e);
+        if let Ok(cleanup_db) = crate::db::SyncDb::connect(&db_path) {
+            match cleanup_old_sections_with_retention(&cleanup_db, retention_hours) {
+                Ok(()) => println!("[{}] Cleanup completed (retention: {}h)", name, retention_hours),
+                Err(e) => eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e),
             }
+        }
 
         // Lock automatically released when _cleanup_guard drops
         drop(_cleanup_guard);
