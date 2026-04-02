@@ -1,8 +1,7 @@
-import { React } from "../../deps.ts";
-const { useState } = React;
-import { AudioPlayer } from "./AudioPlayer.tsx";
-import { HlsUrlModal } from "./HlsUrlModal.tsx";
-import type { SessionInfo } from "./SessionCard.tsx";
+import { useState } from "react";
+import { AudioPlayer } from "./AudioPlayer";
+import { HlsUrlModal } from "./HlsUrlModal";
+import type { SessionInfo } from "./SessionCard";
 
 interface NowPlayingSectionProps {
   activeSession: SessionInfo | null;

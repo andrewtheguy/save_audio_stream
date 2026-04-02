@@ -8,17 +8,17 @@ fn main() {
     if profile == "release" {
         println!("cargo:warning=Building frontend assets for release...");
 
-        // Check if deno is available
-        let deno_check = Command::new("deno").arg("--version").output();
+        // Check if bun is available
+        let bun_check = Command::new("bun").arg("--version").output();
 
-        if deno_check.is_err() {
-            panic!("deno not found. Install Deno to build frontend assets: https://deno.land");
+        if bun_check.is_err() {
+            panic!("bun not found. Install Bun to build frontend assets: https://bun.sh");
         }
 
-        // Run deno task build
-        let build_status = Command::new("deno")
+        // Run bun run build
+        let build_status = Command::new("bun")
             .current_dir("frontend")
-            .arg("task")
+            .arg("run")
             .arg("build")
             .status();
 
@@ -34,7 +34,7 @@ fn main() {
                 panic!("Frontend build failed");
             }
             Err(e) => {
-                println!("cargo:warning=Failed to run deno build: {}", e);
+                println!("cargo:warning=Failed to run bun build: {}", e);
                 panic!("Frontend build failed: {}", e);
             }
         }

@@ -1,5 +1,4 @@
 use axum::{
-    body::Body,
     extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
@@ -7,14 +6,9 @@ use axum::{
     Router,
 };
 use log::error;
-#[cfg(debug_assertions)]
-use log::warn;
 
 #[cfg(not(debug_assertions))]
-use axum::response::Response;
-
-#[cfg(debug_assertions)]
-use axum::response::Response;
+use axum::{body::Body, response::Response};
 use serde::Serialize;
 use sqlx::postgres::PgPool;
 use sqlx::sqlite::SqlitePool;
@@ -138,11 +132,11 @@ pub fn inspect_audio(
         println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
         println!("Endpoints:");
         if audio_format == "opus" {
-            println!("  GET /opus-playlist.m3u8?start_id=<N>&end_id=<N>  - HLS/fMP4 playlist");
-            println!("  GET /opus-segment/:id.m4s  - fMP4 audio segment");
+            println!("  GET /api/opus-playlist.m3u8?start_id=<N>&end_id=<N>  - HLS/fMP4 playlist");
+            println!("  GET /api/opus-segment/:id.m4s  - fMP4 audio segment");
         } else if audio_format == "aac" {
-            println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
-            println!("  GET /aac-segment/:id.aac  - AAC audio segment");
+            println!("  GET /api/playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
+            println!("  GET /api/aac-segment/:id.aac  - AAC audio segment");
         } else {
             return Err("Unsupported audio format in database".into());
         }
@@ -176,25 +170,16 @@ pub fn inspect_audio(
         // Add format-specific routes
         if audio_format == "opus" {
             api_routes = api_routes
-                .route("/opus-playlist.m3u8", get(opus_hls_playlist_handler))
-                .route("/opus-segment/{filename}", get(opus_segment_handler));
+                .route("/api/opus-playlist.m3u8", get(opus_hls_playlist_handler))
+                .route("/api/opus-segment/{filename}", get(opus_segment_handler));
         } else if audio_format == "aac" {
             api_routes = api_routes
-                .route("/playlist.m3u8", get(hls_playlist_handler))
-                .route("/aac-segment/{filename}", get(aac_segment_handler));
+                .route("/api/playlist.m3u8", get(hls_playlist_handler))
+                .route("/api/aac-segment/{filename}", get(aac_segment_handler));
         }
 
         #[cfg(debug_assertions)]
-        let app = api_routes
-            .route("/", get(index_handler))
-            .route("/assets/{*path}", get(vite_assets_handler))
-            .route("/src/{*path}", get(vite_src_handler))
-            .route("/@vite/client", get(vite_client_handler))
-            .route("/@react-refresh", get(vite_react_refresh_handler))
-            .route("/@id/{*path}", get(vite_id_handler))
-            .route("/node_modules/{*path}", get(vite_node_modules_handler))
-            .layer(cors)
-            .with_state(app_state);
+        let app = api_routes.layer(cors).with_state(app_state);
 
         #[cfg(not(debug_assertions))]
         let app = api_routes
@@ -328,7 +313,7 @@ async fn hls_playlist_handler(
 
     for (seg_id, duration) in segment_durations {
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        playlist.push_str(&format!("/aac-segment/{}.aac\n", seg_id));
+        playlist.push_str(&format!("/api/aac-segment/{}.aac\n", seg_id));
     }
 
     playlist.push_str("#EXT-X-ENDLIST\n");
@@ -373,9 +358,9 @@ async fn aac_segment_handler(
     let total_len = audio_data.len() as u64;
 
     // Handle Range requests
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if let Some(range) = range_str.strip_prefix("bytes=") {
+    if let Some(range_header) = headers.get(header::RANGE)
+        && let Ok(range_str) = range_header.to_str()
+            && let Some(range) = range_str.strip_prefix("bytes=") {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
@@ -410,8 +395,6 @@ async fn aac_segment_handler(
                     }
                 }
             }
-        }
-    }
 
     // Return full segment
     (
@@ -508,11 +491,11 @@ async fn opus_hls_playlist_handler(
         "#EXT-X-TARGETDURATION:{}\n",
         max_duration.ceil() as u64
     ));
-    playlist.push_str("#EXT-X-MAP:URI=\"/opus-segment/init.mp4\"\n");
+    playlist.push_str("#EXT-X-MAP:URI=\"/api/opus-segment/init.mp4\"\n");
 
     for (seg_id, duration) in segment_durations {
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        playlist.push_str(&format!("/opus-segment/{}.m4s\n", seg_id));
+        playlist.push_str(&format!("/api/opus-segment/{}.m4s\n", seg_id));
     }
 
     playlist.push_str("#EXT-X-ENDLIST\n");
@@ -630,9 +613,9 @@ async fn opus_segment_handler(
     let total_len = media_segment.len() as u64;
 
     // Handle Range requests
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if let Some(range) = range_str.strip_prefix("bytes=") {
+    if let Some(range_header) = headers.get(header::RANGE)
+        && let Ok(range_str) = range_header.to_str()
+            && let Some(range) = range_str.strip_prefix("bytes=") {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
@@ -667,8 +650,6 @@ async fn opus_segment_handler(
                     }
                 }
             }
-        }
-    }
 
     // Return full segment
     (
@@ -1181,99 +1162,6 @@ async fn estimate_segment_handler(
         .into_response()
 }
 
-#[cfg(debug_assertions)]
-async fn proxy_to_vite(path: &str) -> Response {
-    const VITE_DEV_SERVER: &str = "http://localhost:21173";
-    let vite_url = format!("{}{}", VITE_DEV_SERVER, path);
-
-    match reqwest::get(&vite_url).await {
-        Ok(resp) => {
-            let status_code = resp.status().as_u16();
-            let headers = resp.headers().clone();
-
-            match resp.bytes().await {
-                Ok(body) => {
-                    let mut response = Response::new(Body::from(body));
-
-                    if let Ok(status) = StatusCode::from_u16(status_code) {
-                        *response.status_mut() = status;
-                    }
-
-                    for (name, value) in headers.iter() {
-                        let name_str = name.as_str();
-                        if name_str != "transfer-encoding" {
-                            if let Ok(value_str) = value.to_str() {
-                                if let Ok(header_value) = HeaderValue::from_str(value_str) {
-                                    if let Ok(header_name) =
-                                        header::HeaderName::from_bytes(name_str.as_bytes())
-                                    {
-                                        response.headers_mut().insert(header_name, header_value);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    response
-                }
-                Err(e) => {
-                    warn!("Failed to read response from dev server: {}", e);
-                    (
-                        StatusCode::BAD_GATEWAY,
-                        "Failed to read response from dev server",
-                    )
-                        .into_response()
-                }
-            }
-        }
-        Err(e) => {
-            warn!(
-                "Failed to connect to dev server at {}: {}",
-                VITE_DEV_SERVER, e
-            );
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("Failed to connect to dev server at {}. Make sure to run 'deno task dev' in the frontend/ directory.", VITE_DEV_SERVER)
-            ).into_response()
-        }
-    }
-}
-
-#[cfg(debug_assertions)]
-async fn index_handler() -> Response {
-    proxy_to_vite("/").await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_assets_handler(Path(path): Path<String>) -> Response {
-    proxy_to_vite(&format!("/assets/{}", path)).await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_src_handler(Path(path): Path<String>) -> Response {
-    proxy_to_vite(&format!("/src/{}", path)).await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_client_handler() -> Response {
-    proxy_to_vite("/@vite/client").await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_react_refresh_handler() -> Response {
-    proxy_to_vite("/@react-refresh").await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_id_handler(Path(path): Path<String>) -> Response {
-    proxy_to_vite(&format!("/@id/{}", path)).await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_node_modules_handler(Path(path): Path<String>) -> Response {
-    proxy_to_vite(&format!("/node_modules/{}", path)).await
-}
-
 #[cfg(not(debug_assertions))]
 async fn index_handler_release() -> Response {
     let mut response = Response::new(Body::from(INDEX_HTML));
@@ -1410,19 +1298,19 @@ pub fn receiver_audio(
             )
             // HLS routes for selected show
             .route(
-                "/show/{show_name}/opus-playlist.m3u8",
+                "/api/show/{show_name}/opus-playlist.m3u8",
                 get(receiver_opus_playlist_handler),
             )
             .route(
-                "/show/{show_name}/opus-segment/{filename}",
+                "/api/show/{show_name}/opus-segment/{filename}",
                 get(receiver_opus_segment_handler),
             )
             .route(
-                "/show/{show_name}/playlist.m3u8",
+                "/api/show/{show_name}/playlist.m3u8",
                 get(receiver_aac_playlist_handler),
             )
             .route(
-                "/show/{show_name}/aac-segment/{filename}",
+                "/api/show/{show_name}/aac-segment/{filename}",
                 get(receiver_aac_segment_handler),
             )
             // Sync control
@@ -1430,16 +1318,7 @@ pub fn receiver_audio(
             .route("/api/sync/status", get(receiver_sync_status_handler));
 
         #[cfg(debug_assertions)]
-        let app = api_routes
-            .route("/", get(index_handler))
-            .route("/assets/{*path}", get(vite_assets_handler))
-            .route("/src/{*path}", get(vite_src_handler))
-            .route("/@vite/client", get(vite_client_handler))
-            .route("/@react-refresh", get(vite_react_refresh_handler))
-            .route("/@id/{*path}", get(vite_id_handler))
-            .route("/node_modules/{*path}", get(vite_node_modules_handler))
-            .layer(cors)
-            .with_state(app_state);
+        let app = api_routes.layer(cors).with_state(app_state);
 
         #[cfg(not(debug_assertions))]
         let app = api_routes
@@ -1906,7 +1785,7 @@ async fn receiver_opus_playlist_handler(
         max_duration.ceil() as u64
     ));
     playlist.push_str(&format!(
-        "#EXT-X-MAP:URI=\"/show/{}/opus-segment/init.mp4\"\n",
+        "#EXT-X-MAP:URI=\"/api/show/{}/opus-segment/init.mp4\"\n",
         show_name
     ));
 
@@ -1914,7 +1793,7 @@ async fn receiver_opus_playlist_handler(
         let duration = duration_samples as f64 / sample_rate as f64;
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
         playlist.push_str(&format!(
-            "/show/{}/opus-segment/{}.m4s\n",
+            "/api/show/{}/opus-segment/{}.m4s\n",
             show_name, seg_id
         ));
     }
@@ -2024,9 +1903,9 @@ async fn receiver_opus_segment_handler(
     let total_len = media_segment.len() as u64;
 
     // Handle Range requests
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if let Some(range) = range_str.strip_prefix("bytes=") {
+    if let Some(range_header) = headers.get(header::RANGE)
+        && let Ok(range_str) = range_header.to_str()
+            && let Some(range) = range_str.strip_prefix("bytes=") {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
@@ -2060,8 +1939,6 @@ async fn receiver_opus_segment_handler(
                     }
                 }
             }
-        }
-    }
 
     (
         StatusCode::OK,
@@ -2144,7 +2021,7 @@ async fn receiver_aac_playlist_handler(
     for (seg_id, duration_samples) in segment_list {
         let duration = duration_samples as f64 / sample_rate as f64;
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        playlist.push_str(&format!("/show/{}/aac-segment/{}.aac\n", show_name, seg_id));
+        playlist.push_str(&format!("/api/show/{}/aac-segment/{}.aac\n", show_name, seg_id));
     }
 
     playlist.push_str("#EXT-X-ENDLIST\n");
@@ -2193,9 +2070,9 @@ async fn receiver_aac_segment_handler(
     let total_len = audio_data.len() as u64;
 
     // Handle Range requests
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if let Some(range) = range_str.strip_prefix("bytes=") {
+    if let Some(range_header) = headers.get(header::RANGE)
+        && let Ok(range_str) = range_header.to_str()
+            && let Some(range) = range_str.strip_prefix("bytes=") {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
@@ -2229,8 +2106,6 @@ async fn receiver_aac_segment_handler(
                     }
                 }
             }
-        }
-    }
 
     (
         StatusCode::OK,

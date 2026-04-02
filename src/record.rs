@@ -243,7 +243,7 @@ pub fn cleanup_old_sections_with_params(
     reference_time: Option<DateTime<Utc>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Calculate cutoff timestamp (reference_time or current time - retention_hours)
-    let now = reference_time.unwrap_or_else(|| Utc::now());
+    let now = reference_time.unwrap_or_else(Utc::now);
     let cutoff = now - chrono::Duration::try_hours(retention_hours).expect("Valid hours");
     let cutoff_ms = cutoff.timestamp_millis();
 
@@ -365,11 +365,10 @@ fn run_connection_loop(
         }
 
         // Check if this is a recipient database (sync target)
-        if let Some(is_recipient) = existing_is_recipient {
-            if is_recipient == "true" {
+        if let Some(is_recipient) = existing_is_recipient
+            && is_recipient == "true" {
                 return Err("Cannot record to a recipient database. This database is configured for syncing only.".into());
             }
-        }
 
         // Existing database must have all required metadata
         let db_unique_id = existing_unique_id.ok_or("Database is missing unique_id in metadata")?;
@@ -436,8 +435,8 @@ fn run_connection_loop(
                 transport: fdk_aac::enc::Transport::Adts,
                 audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
             };
-            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params) {
-                if let Ok(info) = encoder.info() {
+            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params)
+                && let Ok(info) = encoder.info() {
                     if let Some(db_delay) = db_encoder_delay {
                         let db_delay_val: u32 = db_delay.parse().unwrap_or(0);
                         if db_delay_val != info.nDelay {
@@ -457,7 +456,6 @@ fn run_connection_loop(
                         }
                     }
                 }
-            }
         }
 
         println!("[{}] Session ID existing db: {}", name, db_unique_id);
@@ -498,12 +496,11 @@ fn run_connection_loop(
                 transport: fdk_aac::enc::Transport::Adts,
                 audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
             };
-            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params) {
-                if let Ok(info) = encoder.info() {
+            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params)
+                && let Ok(info) = encoder.info() {
                     db::insert_metadata_sync(&db, "aac_encoder_delay", &info.nDelay.to_string())?;
                     db::insert_metadata_sync(&db, "aac_frame_size", &info.frameLength.to_string())?;
                 }
-            }
         }
 
         println!("[{}] Session ID new db: {}", name, session_unique_id);
@@ -1028,7 +1025,7 @@ fn run_connection_loop(
 
                             packets_decoded += 1;
 
-                            if packets_decoded % 100 == 0 {
+                            if packets_decoded.is_multiple_of(100) {
                                 let duration_secs = total_input_samples as f64
                                     / (src_sample_rate as f64 * src_channels as f64);
                                 debug!("Decoded {:.1}s of audio...", duration_secs);
@@ -1063,22 +1060,20 @@ fn run_connection_loop(
             match audio_format {
                 AudioFormat::Aac => {
                     mono_buffer.resize(frame_size, 0);
-                    if let Some(ref encoder) = aac_encoder {
-                        if let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {
+                    if let Some(ref encoder) = aac_encoder
+                        && let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {
                             total_output_samples += frame_size as u64;
                             segment_buffer.extend_from_slice(&encode_output[..info.output_size]);
                         }
-                    }
                 }
                 AudioFormat::Opus => {
                     mono_buffer.resize(frame_size, 0);
-                    if let Some(ref mut encoder) = opus_encoder {
-                        if let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output) {
+                    if let Some(ref mut encoder) = opus_encoder
+                        && let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output) {
                             total_output_samples += frame_size as u64;
                             segment_buffer.extend_from_slice(&(len as u16).to_le_bytes());
                             segment_buffer.extend_from_slice(&encode_output[..len]);
                         }
-                    }
                 }
                 AudioFormat::Wav => {
                     for sample in &mono_buffer {
@@ -1252,8 +1247,9 @@ pub fn record(
 
         // Run cleanup of old sections - recreate connection for cleanup
         if let Ok(cleanup_db) = crate::db::SyncDb::connect(&db_path) {
-            if let Err(e) = cleanup_old_sections_with_retention(&cleanup_db, retention_hours) {
-                eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e);
+            match cleanup_old_sections_with_retention(&cleanup_db, retention_hours) {
+                Ok(()) => println!("[{}] Cleanup completed (retention: {}h)", name, retention_hours),
+                Err(e) => eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e),
             }
         }
 
@@ -1372,7 +1368,7 @@ pub fn run_multi_session(
 
     // Perform healthcheck to verify API server is responding
     println!("Performing API server healthcheck...");
-    let healthcheck_url = format!("http://localhost:{}/health", api_port);
+    let healthcheck_url = format!("http://localhost:{}/api/health", api_port);
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -1422,7 +1418,7 @@ pub fn run_multi_session(
 
     // Now spawn recording session threads (they run in background with supervision)
     let mut recording_handles = Vec::new();
-    for (_session_idx, mut session_config) in multi_config.sessions.into_iter().enumerate() {
+    for mut session_config in multi_config.sessions.into_iter() {
         // Copy global output_dir to session config
         session_config.output_dir = Some(output_dir_path.clone());
 

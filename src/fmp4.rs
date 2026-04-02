@@ -155,7 +155,7 @@ fn write_dref(writer: &mut Vec<u8>) -> io::Result<()> {
 
 /// Write dinf box (data information)
 fn write_dinf(writer: &mut Vec<u8>) -> io::Result<()> {
-    write_box(writer, b"dinf", |w| write_dref(w))
+    write_box(writer, b"dinf", write_dref)
 }
 
 /// Write dOps box (Opus Specific Box)
@@ -189,7 +189,7 @@ fn write_opus_sample_entry(
         write_u16_be(w, 16); // Sample size (16 bits)
         write_u16_be(w, 0); // Pre-defined
         write_u16_be(w, 0); // Reserved
-        write_u32_be(w, (sample_rate as u32) << 16); // Sample rate (16.16 fixed point)
+        write_u32_be(w, sample_rate << 16); // Sample rate (16.16 fixed point)
 
         // Opus specific box
         write_dops(w, channel_count as u8, sample_rate)?;

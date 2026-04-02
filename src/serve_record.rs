@@ -37,7 +37,7 @@ pub fn serve_for_sync(
     println!("Output directory: {}", output_dir.display());
     println!("Listening on: http://[::]{} (IPv4 + IPv6)", port);
     println!("Endpoints:");
-    println!("  GET /health  - Health check");
+    println!("  GET /api/health  - Health check");
     println!("  GET /api/sync/shows  - List available shows");
     println!("  GET /api/sync/shows/:name/metadata  - Show metadata");
     println!("  GET /api/sync/shows/:name/sections  - Show sections metadata");
@@ -58,7 +58,7 @@ pub fn serve_for_sync(
             .allow_headers(Any);
 
         let api_routes = Router::new()
-            .route("/health", get(health_handler))
+            .route("/api/health", get(health_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route(
                 "/api/sync/shows/{show_name}/metadata",
@@ -241,11 +241,10 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
                 .ok()
                 .flatten();
 
-        if let Some(is_recipient) = is_recipient {
-            if is_recipient == "true" {
+        if let Some(is_recipient) = is_recipient
+            && is_recipient == "true" {
                 continue; // Skip recipient databases
             }
-        }
 
         // Get name from metadata
         let name: Option<String> =
@@ -333,15 +332,14 @@ pub async fn sync_show_metadata_handler(
             .ok()
             .flatten();
 
-    if let Some(is_recipient) = &is_recipient {
-        if is_recipient == "true" {
+    if let Some(is_recipient) = &is_recipient
+        && is_recipient == "true" {
             return (
                 StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({"error": "Cannot sync from a recipient database"})),
             )
                 .into_response();
         }
-    }
 
     // Fetch all required metadata
     let unique_id: String =
@@ -596,15 +594,14 @@ pub async fn sync_show_segments_handler(
             .ok()
             .flatten();
 
-    if let Some(is_recipient) = is_recipient {
-        if is_recipient == "true" {
+    if let Some(is_recipient) = is_recipient
+        && is_recipient == "true" {
             return (
                 StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({"error": "Cannot sync from a recipient database"})),
             )
                 .into_response();
         }
-    }
 
     // Fetch segments (optionally filtered by cutoff timestamp)
     let limit = query.limit.unwrap_or(100);
@@ -703,15 +700,14 @@ pub async fn find_section_by_timestamp_handler(
             .ok()
             .flatten();
 
-    if let Some(is_recipient) = &is_recipient {
-        if is_recipient == "true" {
+    if let Some(is_recipient) = &is_recipient
+        && is_recipient == "true" {
             return (
                 StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({"error": "Cannot query a recipient database"})),
             )
                 .into_response();
         }
-    }
 
     // Get source unique_id
     let source_unique_id: String =

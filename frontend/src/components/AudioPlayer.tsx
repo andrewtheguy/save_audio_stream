@@ -1,5 +1,5 @@
-import { React, Hls } from "../../deps.ts";
-const { useEffect, useRef, useState, useMemo } = React;
+import React, { useEffect, useRef, useState, useMemo } from "react";
+import Hls from "hls.js";
 
 interface AudioPlayerProps {
   format: string;
@@ -185,7 +185,7 @@ export function AudioPlayer({ format, startId, endId, sessionTimestamp, dbUnique
   };
 
   // Construct stream URL based on whether we're in receiver mode (showName provided) or inspect mode
-  const basePath = showName ? `/show/${showName}` : "";
+  const basePath = showName ? `/api/show/${showName}` : "/api";
   const streamUrl =
     format === "aac"
       ? `${basePath}/playlist.m3u8?start_id=${startId}&end_id=${endId}`

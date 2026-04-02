@@ -1,4 +1,4 @@
-import { React } from "../../deps.ts";
+import React from "react";
 
 interface SessionInfo {
   section_id: number;

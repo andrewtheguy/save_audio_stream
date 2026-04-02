@@ -221,10 +221,10 @@ The receiver exposes these endpoints for web playback and show browsing:
 | `GET /api/show/{show_name}/sessions` | List recording sessions for a show |
 | `GET /api/show/{show_name}/segments/range` | Get min/max segment IDs for a show |
 | `GET /api/show/{show_name}/session/{section_id}/estimate_segment?timestamp_ms=N` | Estimate segment ID from timestamp |
-| `GET /show/{show_name}/opus-playlist.m3u8` | HLS playlist for Opus shows |
-| `GET /show/{show_name}/opus-segment/{id}.m4s` | fMP4 audio segment for Opus |
-| `GET /show/{show_name}/playlist.m3u8` | HLS playlist for AAC shows |
-| `GET /show/{show_name}/aac-segment/{id}.aac` | AAC audio segment |
+| `GET /api/show/{show_name}/opus-playlist.m3u8` | HLS playlist for Opus shows |
+| `GET /api/show/{show_name}/opus-segment/{id}.m4s` | fMP4 audio segment for Opus |
+| `GET /api/show/{show_name}/playlist.m3u8` | HLS playlist for AAC shows |
+| `GET /api/show/{show_name}/aac-segment/{id}.aac` | AAC audio segment |
 | `GET /api/sync/status` | Check if background sync is in progress |
 | `POST /api/sync` | Trigger manual sync |
 

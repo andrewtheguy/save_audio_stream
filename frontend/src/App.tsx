@@ -1,10 +1,10 @@
-import { React, Routes, Route, useParams, Link } from "../deps.ts";
-const { useEffect, useState } = React;
-import { SessionCard, type SessionInfo } from "./components/SessionCard.tsx";
-import { NowPlayingSection } from "./components/NowPlayingSection.tsx";
-import { PaginationControls } from "./components/PaginationControls.tsx";
-import { DateFilterControls } from "./components/DateFilterControls.tsx";
-import { useSessionNavigation } from "./hooks/useSessionNavigation.ts";
+import { useEffect, useState } from "react";
+import { Routes, Route, useParams, Link } from "react-router-dom";
+import { SessionCard, type SessionInfo } from "./components/SessionCard";
+import { NowPlayingSection } from "./components/NowPlayingSection";
+import { PaginationControls } from "./components/PaginationControls";
+import { DateFilterControls } from "./components/DateFilterControls";
+import { useSessionNavigation } from "./hooks/useSessionNavigation";
 
 interface SessionsResponse {
   name: string;
@@ -327,8 +327,8 @@ function ShowDetail({
 
   const getHlsUrl = (session: SessionInfo): string => {
     return audioFormat === "aac"
-      ? `/show/${decodedShowName}/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
-      : `/show/${decodedShowName}/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
+      ? `/api/show/${decodedShowName}/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
+      : `/api/show/${decodedShowName}/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
   };
 
   if (loading) {
@@ -605,8 +605,8 @@ function InspectView() {
 
   const getHlsUrl = (session: SessionInfo): string => {
     return audioFormat === "aac"
-      ? `/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
-      : `/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
+      ? `/api/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
+      : `/api/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
   };
 
   if (loading) {

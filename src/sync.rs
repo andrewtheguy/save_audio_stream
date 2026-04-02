@@ -57,6 +57,7 @@ struct FindSectionResponse {
 #[derive(Debug, Deserialize)]
 struct SectionSegmentRange {
     min_id: Option<i64>,
+    #[allow(dead_code)]
     max_id: Option<i64>,
 }
 
@@ -685,7 +686,7 @@ fn sync_single_show(
 
         // Validate local version matches expected version
         let local_version: String = crate::db_postgres::query_metadata_pg_sync(&db, "version")?
-            .ok_or_else(|| "Failed to read version from local database: key not found")?;
+            .ok_or("Failed to read version from local database: key not found")?;
 
         if local_version != EXPECTED_DB_VERSION {
             return Err(format!(
@@ -698,9 +699,8 @@ fn sync_single_show(
 
         // Validate source_unique_id matches remote unique_id
         let source_unique_id: String =
-            crate::db_postgres::query_metadata_pg_sync(&db, "source_unique_id")?.ok_or_else(
-                || "Failed to read source_unique_id from local database: key not found",
-            )?;
+            crate::db_postgres::query_metadata_pg_sync(&db, "source_unique_id")?
+                .ok_or("Failed to read source_unique_id from local database: key not found")?;
 
         if source_unique_id != metadata.unique_id {
             return Err(format!(
@@ -914,7 +914,7 @@ fn validate_metadata(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Validate version
     let local_version: String = crate::db_postgres::query_metadata_pg_sync(db, "version")?
-        .ok_or_else(|| "Failed to read version from local database: key not found")?;
+        .ok_or("Failed to read version from local database: key not found")?;
     if local_version != remote.version {
         return Err(format!(
             "Version mismatch: local='{}', remote='{}'. Cannot sync between different schema versions.",
@@ -925,7 +925,7 @@ fn validate_metadata(
 
     // Validate audio_format
     let local_format: String = crate::db_postgres::query_metadata_pg_sync(db, "audio_format")?
-        .ok_or_else(|| "Failed to read audio_format from local database: key not found")?;
+        .ok_or("Failed to read audio_format from local database: key not found")?;
     if local_format != remote.audio_format {
         return Err(format!(
             "Audio format mismatch: local='{}', remote='{}'",
@@ -936,7 +936,7 @@ fn validate_metadata(
 
     // Validate bitrate
     let local_bitrate: String = crate::db_postgres::query_metadata_pg_sync(db, "bitrate")?
-        .ok_or_else(|| "Failed to read bitrate from local database: key not found")?;
+        .ok_or("Failed to read bitrate from local database: key not found")?;
     if local_bitrate != remote.bitrate {
         return Err(format!(
             "Bitrate mismatch: local='{}', remote='{}'",
