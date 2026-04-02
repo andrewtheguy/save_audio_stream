@@ -725,22 +725,21 @@ function App() {
   // Detect mode on mount
   useEffect(() => {
     fetch("/api/mode")
-      .then((r) => {
-        if (r.ok) return r.json();
-        return { mode: "inspect" };
-      })
+      .then((r) => r.json())
       .then((modeData: ModeResponse) => {
         if (modeData.mode === "receiver") {
           setMode("receiver");
           loadShows();
-        } else {
+        } else if (modeData.mode === "inspect") {
           setMode("inspect");
           setLoading(false);
+        } else {
+          throw new Error(`Unrecognized mode: ${modeData.mode}`);
         }
       })
       .catch((err) => {
         console.error("Failed to detect mode:", err);
-        setMode("inspect");
+        setError(`Failed to detect mode: ${err instanceof Error ? err.message : String(err)}`);
         setLoading(false);
       });
   }, []);
