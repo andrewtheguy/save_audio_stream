@@ -327,8 +327,8 @@ function ShowDetail({
 
   const getHlsUrl = (session: SessionInfo): string => {
     return audioFormat === "aac"
-      ? `/show/${decodedShowName}/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
-      : `/show/${decodedShowName}/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
+      ? `/api/show/${decodedShowName}/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
+      : `/api/show/${decodedShowName}/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
   };
 
   if (loading) {
@@ -605,8 +605,8 @@ function InspectView() {
 
   const getHlsUrl = (session: SessionInfo): string => {
     return audioFormat === "aac"
-      ? `/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
-      : `/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
+      ? `/api/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
+      : `/api/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
   };
 
   if (loading) {

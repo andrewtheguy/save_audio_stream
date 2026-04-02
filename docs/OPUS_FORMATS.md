@@ -2,7 +2,7 @@
 
 For Opus-encoded audio, the server provides HLS (HTTP Live Streaming) format for maximum compatibility across different clients and use cases.
 
-## HLS with Opus - `/opus-playlist.m3u8`
+## HLS with Opus - `/api/opus-playlist.m3u8`
 
 - **Best Compatibility**: Works universally across most modern media players and browsers
 - **Non-Standard but Practical**: While HLS with Opus is not officially part of the HLS specification, it has excellent real-world compatibility

@@ -37,7 +37,7 @@ pub fn serve_for_sync(
     println!("Output directory: {}", output_dir.display());
     println!("Listening on: http://[::]{} (IPv4 + IPv6)", port);
     println!("Endpoints:");
-    println!("  GET /health  - Health check");
+    println!("  GET /api/health  - Health check");
     println!("  GET /api/sync/shows  - List available shows");
     println!("  GET /api/sync/shows/:name/metadata  - Show metadata");
     println!("  GET /api/sync/shows/:name/sections  - Show sections metadata");
@@ -58,7 +58,7 @@ pub fn serve_for_sync(
             .allow_headers(Any);
 
         let api_routes = Router::new()
-            .route("/health", get(health_handler))
+            .route("/api/health", get(health_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route(
                 "/api/sync/shows/{show_name}/metadata",

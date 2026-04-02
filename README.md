@@ -530,10 +530,10 @@ These endpoints are available for browsing and playing back recorded audio. The 
 
 | Audio Format | Inspect Mode | Receiver Mode | Description |
 |--------------|--------------|---------------|-------------|
-| Opus playlist | `GET /opus-playlist.m3u8?start_id=N&end_id=N` | `GET /show/{show}/opus-playlist.m3u8?...` | HLS playlist for Opus |
-| Opus segment | `GET /opus-segment/{id}.m4s` | `GET /show/{show}/opus-segment/{id}.m4s` | fMP4 audio segment |
-| AAC playlist | `GET /playlist.m3u8?start_id=N&end_id=N` | `GET /show/{show}/playlist.m3u8?...` | HLS playlist for AAC |
-| AAC segment | `GET /aac-segment/{id}.aac` | `GET /show/{show}/aac-segment/{id}.aac` | AAC audio segment |
+| Opus playlist | `GET /api/opus-playlist.m3u8?start_id=N&end_id=N` | `GET /api/show/{show}/opus-playlist.m3u8?...` | HLS playlist for Opus |
+| Opus segment | `GET /api/opus-segment/{id}.m4s` | `GET /api/show/{show}/opus-segment/{id}.m4s` | fMP4 audio segment |
+| AAC playlist | `GET /api/playlist.m3u8?start_id=N&end_id=N` | `GET /api/show/{show}/playlist.m3u8?...` | HLS playlist for AAC |
+| AAC segment | `GET /api/aac-segment/{id}.aac` | `GET /api/show/{show}/aac-segment/{id}.aac` | AAC audio segment |
 
 #### Record Command API (Sync)
 
@@ -541,7 +541,7 @@ When running `record` command, an API server provides synchronization endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Health check endpoint |
+| `GET /api/health` | Health check endpoint |
 | `GET /api/sync/shows` | List available shows for syncing |
 | `GET /api/sync/shows/{show_name}/metadata` | Show metadata (format, bitrate, etc.) |
 | `GET /api/sync/shows/{show_name}/sections` | List all sections (recording sessions) |
@@ -658,9 +658,9 @@ http://localhost:16000
 
 The web UI displays:
 - **For Opus databases:**
-  - HLS URL: `/opus-playlist.m3u8?start_id={min}&end_id={max}`
+  - HLS URL: `/api/opus-playlist.m3u8?start_id={min}&end_id={max}`
 - **For AAC databases:**
-  - HLS URL: `/playlist.m3u8?start_id={min}&end_id={max}`
+  - HLS URL: `/api/playlist.m3u8?start_id={min}&end_id={max}`
 - Current segment range from the database
 
 ## Releasing

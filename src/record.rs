@@ -243,7 +243,7 @@ pub fn cleanup_old_sections_with_params(
     reference_time: Option<DateTime<Utc>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Calculate cutoff timestamp (reference_time or current time - retention_hours)
-    let now = reference_time.unwrap_or_else(|| Utc::now());
+    let now = reference_time.unwrap_or_else(Utc::now);
     let cutoff = now - chrono::Duration::try_hours(retention_hours).expect("Valid hours");
     let cutoff_ms = cutoff.timestamp_millis();
 
@@ -1028,7 +1028,7 @@ fn run_connection_loop(
 
                             packets_decoded += 1;
 
-                            if packets_decoded % 100 == 0 {
+                            if packets_decoded.is_multiple_of(100) {
                                 let duration_secs = total_input_samples as f64
                                     / (src_sample_rate as f64 * src_channels as f64);
                                 debug!("Decoded {:.1}s of audio...", duration_secs);
@@ -1372,7 +1372,7 @@ pub fn run_multi_session(
 
     // Perform healthcheck to verify API server is responding
     println!("Performing API server healthcheck...");
-    let healthcheck_url = format!("http://localhost:{}/health", api_port);
+    let healthcheck_url = format!("http://localhost:{}/api/health", api_port);
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -1422,7 +1422,7 @@ pub fn run_multi_session(
 
     // Now spawn recording session threads (they run in background with supervision)
     let mut recording_handles = Vec::new();
-    for (_session_idx, mut session_config) in multi_config.sessions.into_iter().enumerate() {
+    for mut session_config in multi_config.sessions.into_iter() {
         // Copy global output_dir to session config
         session_config.output_dir = Some(output_dir_path.clone());
 

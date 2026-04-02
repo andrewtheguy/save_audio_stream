@@ -138,11 +138,11 @@ pub fn inspect_audio(
         println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
         println!("Endpoints:");
         if audio_format == "opus" {
-            println!("  GET /opus-playlist.m3u8?start_id=<N>&end_id=<N>  - HLS/fMP4 playlist");
-            println!("  GET /opus-segment/:id.m4s  - fMP4 audio segment");
+            println!("  GET /api/opus-playlist.m3u8?start_id=<N>&end_id=<N>  - HLS/fMP4 playlist");
+            println!("  GET /api/opus-segment/:id.m4s  - fMP4 audio segment");
         } else if audio_format == "aac" {
-            println!("  GET /playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
-            println!("  GET /aac-segment/:id.aac  - AAC audio segment");
+            println!("  GET /api/playlist.m3u8?start_id=<N>&end_id=<N>  - HLS playlist");
+            println!("  GET /api/aac-segment/:id.aac  - AAC audio segment");
         } else {
             return Err("Unsupported audio format in database".into());
         }
@@ -176,12 +176,12 @@ pub fn inspect_audio(
         // Add format-specific routes
         if audio_format == "opus" {
             api_routes = api_routes
-                .route("/opus-playlist.m3u8", get(opus_hls_playlist_handler))
-                .route("/opus-segment/{filename}", get(opus_segment_handler));
+                .route("/api/opus-playlist.m3u8", get(opus_hls_playlist_handler))
+                .route("/api/opus-segment/{filename}", get(opus_segment_handler));
         } else if audio_format == "aac" {
             api_routes = api_routes
-                .route("/playlist.m3u8", get(hls_playlist_handler))
-                .route("/aac-segment/{filename}", get(aac_segment_handler));
+                .route("/api/playlist.m3u8", get(hls_playlist_handler))
+                .route("/api/aac-segment/{filename}", get(aac_segment_handler));
         }
 
         #[cfg(debug_assertions)]
@@ -328,7 +328,7 @@ async fn hls_playlist_handler(
 
     for (seg_id, duration) in segment_durations {
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        playlist.push_str(&format!("/aac-segment/{}.aac\n", seg_id));
+        playlist.push_str(&format!("/api/aac-segment/{}.aac\n", seg_id));
     }
 
     playlist.push_str("#EXT-X-ENDLIST\n");
@@ -508,11 +508,11 @@ async fn opus_hls_playlist_handler(
         "#EXT-X-TARGETDURATION:{}\n",
         max_duration.ceil() as u64
     ));
-    playlist.push_str("#EXT-X-MAP:URI=\"/opus-segment/init.mp4\"\n");
+    playlist.push_str("#EXT-X-MAP:URI=\"/api/opus-segment/init.mp4\"\n");
 
     for (seg_id, duration) in segment_durations {
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        playlist.push_str(&format!("/opus-segment/{}.m4s\n", seg_id));
+        playlist.push_str(&format!("/api/opus-segment/{}.m4s\n", seg_id));
     }
 
     playlist.push_str("#EXT-X-ENDLIST\n");
@@ -1410,19 +1410,19 @@ pub fn receiver_audio(
             )
             // HLS routes for selected show
             .route(
-                "/show/{show_name}/opus-playlist.m3u8",
+                "/api/show/{show_name}/opus-playlist.m3u8",
                 get(receiver_opus_playlist_handler),
             )
             .route(
-                "/show/{show_name}/opus-segment/{filename}",
+                "/api/show/{show_name}/opus-segment/{filename}",
                 get(receiver_opus_segment_handler),
             )
             .route(
-                "/show/{show_name}/playlist.m3u8",
+                "/api/show/{show_name}/playlist.m3u8",
                 get(receiver_aac_playlist_handler),
             )
             .route(
-                "/show/{show_name}/aac-segment/{filename}",
+                "/api/show/{show_name}/aac-segment/{filename}",
                 get(receiver_aac_segment_handler),
             )
             // Sync control
@@ -1906,7 +1906,7 @@ async fn receiver_opus_playlist_handler(
         max_duration.ceil() as u64
     ));
     playlist.push_str(&format!(
-        "#EXT-X-MAP:URI=\"/show/{}/opus-segment/init.mp4\"\n",
+        "#EXT-X-MAP:URI=\"/api/show/{}/opus-segment/init.mp4\"\n",
         show_name
     ));
 
@@ -1914,7 +1914,7 @@ async fn receiver_opus_playlist_handler(
         let duration = duration_samples as f64 / sample_rate as f64;
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
         playlist.push_str(&format!(
-            "/show/{}/opus-segment/{}.m4s\n",
+            "/api/show/{}/opus-segment/{}.m4s\n",
             show_name, seg_id
         ));
     }
@@ -2144,7 +2144,7 @@ async fn receiver_aac_playlist_handler(
     for (seg_id, duration_samples) in segment_list {
         let duration = duration_samples as f64 / sample_rate as f64;
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        playlist.push_str(&format!("/show/{}/aac-segment/{}.aac\n", show_name, seg_id));
+        playlist.push_str(&format!("/api/show/{}/aac-segment/{}.aac\n", show_name, seg_id));
     }
 
     playlist.push_str("#EXT-X-ENDLIST\n");

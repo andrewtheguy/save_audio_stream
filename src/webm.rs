@@ -45,7 +45,7 @@ pub fn write_ebml_uint(buf: &mut Vec<u8>, id: u32, value: u64) {
     let bytes = if value == 0 {
         1
     } else {
-        ((64 - value.leading_zeros()) + 7) / 8
+        (64 - value.leading_zeros()).div_ceil(8)
     } as usize;
     write_ebml_size(buf, bytes as u64);
     for i in (0..bytes).rev() {
