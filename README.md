@@ -598,20 +598,20 @@ The server has two modes with different asset serving strategies:
 
 #### Debug Mode (Development)
 
-Run the Deno dev server and Axum server in separate terminals:
+Run the Vite dev server and Axum server in separate terminals:
 
 ```bash
-# Terminal 1: Start Deno dev server on port 21173
-cd app && deno task dev
+# Terminal 1: Install deps and start Vite dev server (proxies /api/ to backend)
+cd frontend && bun install && bun run dev
 
 # Terminal 2: Run the Axum server
 cargo run -- inspect database.sqlite -p 16000
 ```
 
-Visit `http://localhost:16000` to access the web UI. The Axum server proxies frontend requests to the dev server. The dev server watches for file changes and rebuilds automatically (manual browser refresh required).
+Visit `http://localhost:5173` to access the web UI. The Vite dev server serves frontend assets with HMR and proxies `/api/` requests to the Rust backend. Set `VITE_API_PORT` to override the default backend port (16000).
 
 **Prerequisites for development:**
-- Deno installed (https://deno.land)
+- Bun installed (https://bun.sh)
 
 #### Release Mode (Production)
 
@@ -626,7 +626,7 @@ cargo build --release
 ```
 
 In release mode:
-- Frontend assets are automatically built via `deno task build` during cargo build
+- Frontend assets are automatically built via `bun run build` during cargo build
 - Assets are embedded into the binary using `include_bytes!`
 - No separate dev server needed
 - Single binary deployment
@@ -635,8 +635,8 @@ In release mode:
 
 The `build.rs` script automatically:
 1. Detects release builds
-2. Checks for Deno availability
-3. Runs `deno task build` in the `frontend/` directory to compile frontend assets to `frontend/dist/`
+2. Checks for Bun availability
+3. Runs `bun run build` in the `frontend/` directory to compile frontend assets to `frontend/dist/`
 4. Embeds assets into the binary at compile time via `include_bytes!`
 
 ### Example Usage

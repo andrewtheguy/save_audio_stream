@@ -1,5 +1,4 @@
 use axum::{
-    body::Body,
     extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
@@ -7,14 +6,9 @@ use axum::{
     Router,
 };
 use log::error;
-#[cfg(debug_assertions)]
-use log::warn;
 
 #[cfg(not(debug_assertions))]
-use axum::response::Response;
-
-#[cfg(debug_assertions)]
-use axum::response::Response;
+use axum::{body::Body, response::Response};
 use serde::Serialize;
 use sqlx::postgres::PgPool;
 use sqlx::sqlite::SqlitePool;
@@ -185,16 +179,7 @@ pub fn inspect_audio(
         }
 
         #[cfg(debug_assertions)]
-        let app = api_routes
-            .route("/", get(index_handler))
-            .route("/assets/{*path}", get(vite_assets_handler))
-            .route("/src/{*path}", get(vite_src_handler))
-            .route("/@vite/client", get(vite_client_handler))
-            .route("/@react-refresh", get(vite_react_refresh_handler))
-            .route("/@id/{*path}", get(vite_id_handler))
-            .route("/node_modules/{*path}", get(vite_node_modules_handler))
-            .layer(cors)
-            .with_state(app_state);
+        let app = api_routes.layer(cors).with_state(app_state);
 
         #[cfg(not(debug_assertions))]
         let app = api_routes
@@ -1181,99 +1166,6 @@ async fn estimate_segment_handler(
         .into_response()
 }
 
-#[cfg(debug_assertions)]
-async fn proxy_to_vite(path: &str) -> Response {
-    const VITE_DEV_SERVER: &str = "http://localhost:21173";
-    let vite_url = format!("{}{}", VITE_DEV_SERVER, path);
-
-    match reqwest::get(&vite_url).await {
-        Ok(resp) => {
-            let status_code = resp.status().as_u16();
-            let headers = resp.headers().clone();
-
-            match resp.bytes().await {
-                Ok(body) => {
-                    let mut response = Response::new(Body::from(body));
-
-                    if let Ok(status) = StatusCode::from_u16(status_code) {
-                        *response.status_mut() = status;
-                    }
-
-                    for (name, value) in headers.iter() {
-                        let name_str = name.as_str();
-                        if name_str != "transfer-encoding" {
-                            if let Ok(value_str) = value.to_str() {
-                                if let Ok(header_value) = HeaderValue::from_str(value_str) {
-                                    if let Ok(header_name) =
-                                        header::HeaderName::from_bytes(name_str.as_bytes())
-                                    {
-                                        response.headers_mut().insert(header_name, header_value);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    response
-                }
-                Err(e) => {
-                    warn!("Failed to read response from dev server: {}", e);
-                    (
-                        StatusCode::BAD_GATEWAY,
-                        "Failed to read response from dev server",
-                    )
-                        .into_response()
-                }
-            }
-        }
-        Err(e) => {
-            warn!(
-                "Failed to connect to dev server at {}: {}",
-                VITE_DEV_SERVER, e
-            );
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("Failed to connect to dev server at {}. Make sure to run 'deno task dev' in the frontend/ directory.", VITE_DEV_SERVER)
-            ).into_response()
-        }
-    }
-}
-
-#[cfg(debug_assertions)]
-async fn index_handler() -> Response {
-    proxy_to_vite("/").await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_assets_handler(Path(path): Path<String>) -> Response {
-    proxy_to_vite(&format!("/assets/{}", path)).await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_src_handler(Path(path): Path<String>) -> Response {
-    proxy_to_vite(&format!("/src/{}", path)).await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_client_handler() -> Response {
-    proxy_to_vite("/@vite/client").await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_react_refresh_handler() -> Response {
-    proxy_to_vite("/@react-refresh").await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_id_handler(Path(path): Path<String>) -> Response {
-    proxy_to_vite(&format!("/@id/{}", path)).await
-}
-
-#[cfg(debug_assertions)]
-async fn vite_node_modules_handler(Path(path): Path<String>) -> Response {
-    proxy_to_vite(&format!("/node_modules/{}", path)).await
-}
-
 #[cfg(not(debug_assertions))]
 async fn index_handler_release() -> Response {
     let mut response = Response::new(Body::from(INDEX_HTML));
@@ -1430,16 +1322,7 @@ pub fn receiver_audio(
             .route("/api/sync/status", get(receiver_sync_status_handler));
 
         #[cfg(debug_assertions)]
-        let app = api_routes
-            .route("/", get(index_handler))
-            .route("/assets/{*path}", get(vite_assets_handler))
-            .route("/src/{*path}", get(vite_src_handler))
-            .route("/@vite/client", get(vite_client_handler))
-            .route("/@react-refresh", get(vite_react_refresh_handler))
-            .route("/@id/{*path}", get(vite_id_handler))
-            .route("/node_modules/{*path}", get(vite_node_modules_handler))
-            .layer(cors)
-            .with_state(app_state);
+        let app = api_routes.layer(cors).with_state(app_state);
 
         #[cfg(not(debug_assertions))]
         let app = api_routes

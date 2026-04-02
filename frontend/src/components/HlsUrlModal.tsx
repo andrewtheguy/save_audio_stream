@@ -1,5 +1,4 @@
-import { React } from "../../deps.ts";
-const { useState } = React;
+import React, { useState } from "react";
 
 interface HlsUrlModalProps {
   url: string;

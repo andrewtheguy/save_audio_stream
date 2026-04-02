@@ -1,5 +1,5 @@
-import { React, Hls } from "../../deps.ts";
-const { useEffect, useRef, useState, useMemo } = React;
+import React, { useEffect, useRef, useState, useMemo } from "react";
+import Hls from "hls.js";
 
 interface AudioPlayerProps {
   format: string;

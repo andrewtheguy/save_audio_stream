@@ -1,5 +1,4 @@
-import { React } from "../../deps.ts";
-const { useState, useEffect } = React;
+import { useState, useEffect } from "react";
 
 interface SessionInfo {
   section_id: number;
