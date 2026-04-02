@@ -365,11 +365,10 @@ fn run_connection_loop(
         }
 
         // Check if this is a recipient database (sync target)
-        if let Some(is_recipient) = existing_is_recipient {
-            if is_recipient == "true" {
+        if let Some(is_recipient) = existing_is_recipient
+            && is_recipient == "true" {
                 return Err("Cannot record to a recipient database. This database is configured for syncing only.".into());
             }
-        }
 
         // Existing database must have all required metadata
         let db_unique_id = existing_unique_id.ok_or("Database is missing unique_id in metadata")?;
@@ -436,8 +435,8 @@ fn run_connection_loop(
                 transport: fdk_aac::enc::Transport::Adts,
                 audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
             };
-            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params) {
-                if let Ok(info) = encoder.info() {
+            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params)
+                && let Ok(info) = encoder.info() {
                     if let Some(db_delay) = db_encoder_delay {
                         let db_delay_val: u32 = db_delay.parse().unwrap_or(0);
                         if db_delay_val != info.nDelay {
@@ -457,7 +456,6 @@ fn run_connection_loop(
                         }
                     }
                 }
-            }
         }
 
         println!("[{}] Session ID existing db: {}", name, db_unique_id);
@@ -498,12 +496,11 @@ fn run_connection_loop(
                 transport: fdk_aac::enc::Transport::Adts,
                 audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
             };
-            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params) {
-                if let Ok(info) = encoder.info() {
+            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params)
+                && let Ok(info) = encoder.info() {
                     db::insert_metadata_sync(&db, "aac_encoder_delay", &info.nDelay.to_string())?;
                     db::insert_metadata_sync(&db, "aac_frame_size", &info.frameLength.to_string())?;
                 }
-            }
         }
 
         println!("[{}] Session ID new db: {}", name, session_unique_id);
@@ -1063,22 +1060,20 @@ fn run_connection_loop(
             match audio_format {
                 AudioFormat::Aac => {
                     mono_buffer.resize(frame_size, 0);
-                    if let Some(ref encoder) = aac_encoder {
-                        if let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {
+                    if let Some(ref encoder) = aac_encoder
+                        && let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {
                             total_output_samples += frame_size as u64;
                             segment_buffer.extend_from_slice(&encode_output[..info.output_size]);
                         }
-                    }
                 }
                 AudioFormat::Opus => {
                     mono_buffer.resize(frame_size, 0);
-                    if let Some(ref mut encoder) = opus_encoder {
-                        if let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output) {
+                    if let Some(ref mut encoder) = opus_encoder
+                        && let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output) {
                             total_output_samples += frame_size as u64;
                             segment_buffer.extend_from_slice(&(len as u16).to_le_bytes());
                             segment_buffer.extend_from_slice(&encode_output[..len]);
                         }
-                    }
                 }
                 AudioFormat::Wav => {
                     for sample in &mono_buffer {
@@ -1251,11 +1246,10 @@ pub fn record(
         println!("[{}] Cleanup lock acquired", name);
 
         // Run cleanup of old sections - recreate connection for cleanup
-        if let Ok(cleanup_db) = crate::db::SyncDb::connect(&db_path) {
-            if let Err(e) = cleanup_old_sections_with_retention(&cleanup_db, retention_hours) {
+        if let Ok(cleanup_db) = crate::db::SyncDb::connect(&db_path)
+            && let Err(e) = cleanup_old_sections_with_retention(&cleanup_db, retention_hours) {
                 eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e);
             }
-        }
 
         // Lock automatically released when _cleanup_guard drops
         drop(_cleanup_guard);

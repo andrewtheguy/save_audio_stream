@@ -358,9 +358,9 @@ async fn aac_segment_handler(
     let total_len = audio_data.len() as u64;
 
     // Handle Range requests
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if let Some(range) = range_str.strip_prefix("bytes=") {
+    if let Some(range_header) = headers.get(header::RANGE)
+        && let Ok(range_str) = range_header.to_str()
+            && let Some(range) = range_str.strip_prefix("bytes=") {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
@@ -395,8 +395,6 @@ async fn aac_segment_handler(
                     }
                 }
             }
-        }
-    }
 
     // Return full segment
     (
@@ -615,9 +613,9 @@ async fn opus_segment_handler(
     let total_len = media_segment.len() as u64;
 
     // Handle Range requests
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if let Some(range) = range_str.strip_prefix("bytes=") {
+    if let Some(range_header) = headers.get(header::RANGE)
+        && let Ok(range_str) = range_header.to_str()
+            && let Some(range) = range_str.strip_prefix("bytes=") {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
@@ -652,8 +650,6 @@ async fn opus_segment_handler(
                     }
                 }
             }
-        }
-    }
 
     // Return full segment
     (
@@ -1907,9 +1903,9 @@ async fn receiver_opus_segment_handler(
     let total_len = media_segment.len() as u64;
 
     // Handle Range requests
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if let Some(range) = range_str.strip_prefix("bytes=") {
+    if let Some(range_header) = headers.get(header::RANGE)
+        && let Ok(range_str) = range_header.to_str()
+            && let Some(range) = range_str.strip_prefix("bytes=") {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
@@ -1943,8 +1939,6 @@ async fn receiver_opus_segment_handler(
                     }
                 }
             }
-        }
-    }
 
     (
         StatusCode::OK,
@@ -2076,9 +2070,9 @@ async fn receiver_aac_segment_handler(
     let total_len = audio_data.len() as u64;
 
     // Handle Range requests
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if let Some(range) = range_str.strip_prefix("bytes=") {
+    if let Some(range_header) = headers.get(header::RANGE)
+        && let Ok(range_str) = range_header.to_str()
+            && let Some(range) = range_str.strip_prefix("bytes=") {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() == 2 {
                     let start: u64 = parts[0].parse().unwrap_or(0);
@@ -2112,8 +2106,6 @@ async fn receiver_aac_segment_handler(
                     }
                 }
             }
-        }
-    }
 
     (
         StatusCode::OK,
