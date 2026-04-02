@@ -154,6 +154,7 @@ pub fn inspect_audio(
             .allow_headers(Any);
 
         let mut api_routes = Router::new()
+            .route("/api/mode", get(inspect_mode_handler))
             .route("/api/format", get(format_handler))
             .route("/api/segments/range", get(segments_range_handler))
             .route("/api/metadata", get(metadata_handler))
@@ -1162,6 +1163,17 @@ async fn estimate_segment_handler(
         .into_response()
 }
 
+async fn inspect_mode_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&ModeResponse {
+            mode: "inspect".to_string(),
+        })
+        .unwrap(),
+    )
+}
+
 #[cfg(not(debug_assertions))]
 async fn index_handler_release() -> Response {
     let mut response = Response::new(Body::from(INDEX_HTML));
@@ -1354,7 +1366,7 @@ struct ReceiverShowsResponse {
 }
 
 #[derive(Serialize)]
-struct ReceiverModeResponse {
+struct ModeResponse {
     mode: String,
 }
 
@@ -1362,7 +1374,7 @@ async fn receiver_mode_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&ReceiverModeResponse {
+        serde_json::to_string(&ModeResponse {
             mode: "receiver".to_string(),
         })
         .unwrap(),

@@ -37,6 +37,7 @@ pub fn serve_for_sync(
     println!("Output directory: {}", output_dir.display());
     println!("Listening on: http://[::]{} (IPv4 + IPv6)", port);
     println!("Endpoints:");
+    println!("  GET /api/mode    - Mode check (returns record)");
     println!("  GET /api/health  - Health check");
     println!("  GET /api/sync/shows  - List available shows");
     println!("  GET /api/sync/shows/:name/metadata  - Show metadata");
@@ -58,6 +59,7 @@ pub fn serve_for_sync(
             .allow_headers(Any);
 
         let api_routes = Router::new()
+            .route("/api/mode", get(record_mode_handler))
             .route("/api/health", get(health_handler))
             .route("/api/sync/shows", get(sync_shows_list_handler))
             .route(
@@ -90,6 +92,14 @@ pub fn serve_for_sync(
     });
 
     Ok(())
+}
+
+async fn record_mode_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        r#"{"mode":"record"}"#,
+    )
 }
 
 // Health check endpoint - returns 200 OK if server is running

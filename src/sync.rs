@@ -489,9 +489,29 @@ fn sync_shows_internal(
     let remote_url = &config.remote_url;
     let chunk_size = config.chunk_size.unwrap_or(100);
 
+    // Verify remote server is in record mode
+    let client = Client::new();
+    let mode_url = format!("{}/api/mode", remote_url);
+    let mode_resp: serde_json::Value = client
+        .get(&mode_url)
+        .send()
+        .map_err(|e| format!("Failed to connect to remote server: {}", e))?
+        .json()
+        .map_err(|e| format!("Failed to parse mode response: {}", e))?;
+    let mode = mode_resp
+        .get("mode")
+        .and_then(|m| m.as_str())
+        .unwrap_or("unknown");
+    if mode != "record" {
+        return Err(format!(
+            "Remote server is in '{}' mode, expected 'record'. URL: {}",
+            mode, remote_url
+        )
+        .into());
+    }
+
     // Fetch available shows from remote server
     println!("Fetching available shows from remote...");
-    let client = Client::new();
     let shows_url = format!("{}/api/sync/shows", remote_url);
 
     let shows_list: ShowsList = client

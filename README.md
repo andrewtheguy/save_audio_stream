@@ -515,7 +515,7 @@ These endpoints are available for browsing and playing back recorded audio. The 
 | Endpoint | Inspect Mode | Receiver Mode | Description |
 |----------|--------------|---------------|-------------|
 | Web UI | `GET /` | `GET /` | Web UI for browsing and playback |
-| Mode check | - | `GET /api/mode` | Returns `{"mode": "receiver"}` |
+| Mode check | `GET /api/mode` | `GET /api/mode` | Returns `{"mode": "inspect"}` or `{"mode": "receiver"}` |
 | Show list | - | `GET /api/shows` | List all synced shows |
 | Format | `GET /api/format` | `GET /api/show/{show}/format` | Audio format (opus/aac) |
 | Metadata | `GET /api/metadata` | `GET /api/show/{show}/metadata` | Show metadata (format, bitrate, sample rate) |
@@ -541,6 +541,7 @@ When running `record` command, an API server provides synchronization endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /api/mode` | Returns `{"mode": "record"}` |
 | `GET /api/health` | Health check endpoint |
 | `GET /api/sync/shows` | List available shows for syncing |
 | `GET /api/sync/shows/{show_name}/metadata` | Show metadata (format, bitrate, etc.) |
