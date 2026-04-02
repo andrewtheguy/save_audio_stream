@@ -1,20 +1,19 @@
-# Deno stage
-FROM denoland/deno:2.5.6 AS deno
-
 # Build stage
 FROM rust:1.91-slim-trixie AS builder
 ARG TARGETARCH
 
-# Copy Deno from official image
-COPY --from=deno /usr/bin/deno /usr/local/bin/deno
-
-# Install build dependencies
+# Install build dependencies and bun
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     libssl-dev \
     pkg-config \
+    curl \
+    unzip \
+    && curl -fsSL https://bun.sh/install | bash \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.bun/bin:${PATH}"
 
 # Set working directory
 WORKDIR /build
@@ -23,7 +22,7 @@ WORKDIR /build
 COPY . .
 
 # Build frontend first (outside of cargo cache to ensure it always exists)
-RUN cd frontend && deno task build
+RUN cd frontend && bun install --frozen-lockfile && bun run build
 
 # Build the release binary with architecture-specific cache mounts
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-v2-${TARGETARCH} \
