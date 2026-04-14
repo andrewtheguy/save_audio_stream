@@ -515,9 +515,6 @@ pub fn get_latest_section_before_cutoff_pg_sync(
 // Distributed locks using database table with expiration for crash recovery
 // ============================================================================
 
-/// Global database name for storing lease information
-pub const GLOBAL_DATABASE_NAME: &str = "save_audio_global";
-
 /// Default lease duration in milliseconds (10 minutes)
 pub const DEFAULT_LEASE_DURATION_MS: i64 = 600_000;
 

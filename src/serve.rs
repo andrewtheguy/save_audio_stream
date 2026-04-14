@@ -1213,8 +1213,8 @@ use serde::Deserialize;
 pub struct ReceiverAppState {
     pub config: crate::config::SyncConfig,
     pub password: String,
-    /// Connection pool to the global database (save_audio_global) for lease operations
-    pub global_pool: PgPool,
+    /// Whether a sync operation is currently in progress (for status/trigger endpoints)
+    pub sync_in_progress: std::sync::atomic::AtomicBool,
 }
 
 /// Receiver mode: serve frontend with show selection and background sync (PostgreSQL)
@@ -1230,52 +1230,38 @@ pub fn receiver_audio(
     println!("Sync interval: {} seconds", config.sync_interval_seconds);
     println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
 
-    // Create tokio runtime for global pool initialization
-    let init_rt = tokio::runtime::Runtime::new()?;
-
-    // Create global database and leases table
-    let global_pool = init_rt.block_on(async {
-        let pool = crate::db_postgres::open_postgres_connection_create_if_needed(
-            &config.database.url,
-            &password,
-            crate::db_postgres::GLOBAL_DATABASE_NAME,
-        )
-        .await?;
-        crate::db_postgres::create_leases_table_pg(&pool).await?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(pool)
-    })?;
-
     // Clone values for background sync thread
     let sync_config = config.clone();
     let sync_password = password.clone();
     let sync_interval = config.sync_interval_seconds;
-    let bg_global_pool = global_pool.clone();
 
-    // Spawn background sync thread (lease handling is inside sync_shows)
+    // Create shared state
+    let app_state = StdArc::new(ReceiverAppState {
+        config: config.clone(),
+        password: password.clone(),
+        sync_in_progress: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    // Spawn background sync thread (lease handling is per-show inside sync_single_show)
+    let bg_state = app_state.clone();
     std::thread::spawn(move || loop {
         println!("[Sync] Starting background sync...");
-        match crate::sync::sync_shows(&sync_config, &sync_password, &bg_global_pool) {
+        bg_state.sync_in_progress.store(true, std::sync::atomic::Ordering::SeqCst);
+        match crate::sync::sync_shows(&sync_config, &sync_password) {
             Ok(crate::sync::SyncResult::Completed) => {
                 println!("[Sync] Background sync completed successfully");
-            }
-            Ok(crate::sync::SyncResult::Skipped) => {
-                println!("[Sync] Background sync skipped (another instance is syncing)");
             }
             Err(e) => {
                 eprintln!("[Sync] Background sync error: {}", e);
             }
         }
+        bg_state.sync_in_progress.store(false, std::sync::atomic::Ordering::SeqCst);
         std::thread::sleep(std::time::Duration::from_secs(sync_interval));
     });
 
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let app_state = StdArc::new(ReceiverAppState {
-            config: config.clone(),
-            password: password.clone(),
-            global_pool,
-        });
 
         let cors = CorsLayer::new()
             .allow_origin(Any)
@@ -2143,10 +2129,7 @@ struct SyncStatusResponse {
 async fn receiver_sync_status_handler(
     State(state): State<StdArc<ReceiverAppState>>,
 ) -> impl IntoResponse {
-    let in_progress =
-        crate::db_postgres::is_lease_held_pg(&state.global_pool, crate::sync::SYNC_LEASE_NAME)
-            .await
-            .unwrap_or(false);
+    let in_progress = state.sync_in_progress.load(std::sync::atomic::Ordering::SeqCst);
 
     (
         StatusCode::OK,
@@ -2164,13 +2147,13 @@ struct SyncTriggerResponse {
 async fn receiver_trigger_sync_handler(
     State(state): State<StdArc<ReceiverAppState>>,
 ) -> impl IntoResponse {
-    // Check if sync is already in progress
-    let in_progress =
-        crate::db_postgres::is_lease_held_pg(&state.global_pool, crate::sync::SYNC_LEASE_NAME)
-            .await
-            .unwrap_or(false);
-
-    if in_progress {
+    // Atomically check-and-set to prevent double-triggering
+    if state.sync_in_progress.compare_exchange(
+        false,
+        true,
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+    ).is_err() {
         return (
             StatusCode::CONFLICT,
             [(header::CONTENT_TYPE, "application/json")],
@@ -2183,24 +2166,22 @@ async fn receiver_trigger_sync_handler(
             .into_response();
     }
 
-    // Spawn a new sync in a separate thread (lease handling is inside sync_shows)
+    // Spawn a new sync in a separate thread (lease handling is per-show)
     let sync_config = state.config.clone();
     let sync_password = state.password.clone();
-    let global_pool = state.global_pool.clone();
+    let trigger_state = state.clone();
 
     std::thread::spawn(move || {
         println!("[Sync] Manual sync triggered...");
-        match crate::sync::sync_shows(&sync_config, &sync_password, &global_pool) {
+        match crate::sync::sync_shows(&sync_config, &sync_password) {
             Ok(crate::sync::SyncResult::Completed) => {
                 println!("[Sync] Manual sync completed successfully");
-            }
-            Ok(crate::sync::SyncResult::Skipped) => {
-                println!("[Sync] Manual sync skipped (another instance started syncing)");
             }
             Err(e) => {
                 eprintln!("[Sync] Manual sync error: {}", e);
             }
         }
+        trigger_state.sync_in_progress.store(false, std::sync::atomic::Ordering::SeqCst);
     });
 
     (

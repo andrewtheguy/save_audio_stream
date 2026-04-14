@@ -73,12 +73,11 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 use save_audio_stream::config::{ConfigType, DatabaseConfig, ShowConfig, SyncConfig};
-use save_audio_stream::db_postgres::{self, GLOBAL_DATABASE_NAME};
+use save_audio_stream::db_postgres;
 use save_audio_stream::queries::{metadata, sections, segments};
 use save_audio_stream::segment_wire::{self, WireSegment};
 use save_audio_stream::sync::{replace_source, sync_shows, ReplaceSourceResult};
 use save_audio_stream::EXPECTED_DB_VERSION;
-use sqlx::postgres::PgPool;
 
 /// Database prefix used for all test databases
 const TEST_DATABASE_PREFIX: &str = "test";
@@ -120,19 +119,6 @@ fn get_test_postgres_config() -> Option<(String, String)> {
     let postgres_url = std::env::var("TEST_POSTGRES_URL").ok()?;
     let password = std::env::var("TEST_POSTGRES_PASSWORD").ok()?;
     Some((postgres_url, password))
-}
-
-/// Create the global PostgreSQL pool for lease management
-async fn create_global_pool(postgres_url: &str, password: &str) -> PgPool {
-    let pool = db_postgres::open_postgres_connection_create_if_needed(
-        postgres_url,
-        password,
-        GLOBAL_DATABASE_NAME,
-    )
-    .await
-    .unwrap();
-    db_postgres::create_leases_table_pg(&pool).await.unwrap();
-    pool
 }
 
 /// Test metadata structure
@@ -694,7 +680,7 @@ async fn test_sync_new_show() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Create source database with 3 sections, 5 segments each
     let (source_db, _db_guard) = create_source_database(show_name, "source_unique_123", 3, 5).await;
@@ -708,7 +694,7 @@ async fn test_sync_new_show() {
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -742,7 +728,7 @@ async fn test_sync_incremental() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Create initial source database with 2 sections
     let (source_db, _db_guard) = create_source_database(show_name, "source_unique_456", 2, 5).await;
@@ -755,9 +741,9 @@ async fn test_sync_incremental() {
     // Initial sync
     let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -780,7 +766,7 @@ async fn test_sync_incremental() {
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -813,7 +799,7 @@ async fn test_sync_with_whitelist() {
     drop_test_database(&postgres_url, &password, "show3").await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Create multiple source databases
     let (source_db1, _guard1) = create_source_database("show1", "unique_1", 2, 3).await;
@@ -837,7 +823,7 @@ async fn test_sync_with_whitelist() {
     );
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -876,7 +862,7 @@ async fn test_sync_metadata_validation() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Create source database
     let (source_db, _db_guard) = create_source_database(show_name, "source_unique_789", 2, 5).await;
@@ -889,9 +875,9 @@ async fn test_sync_metadata_validation() {
     // Initial sync
     let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -916,7 +902,7 @@ async fn test_sync_metadata_validation() {
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1026,13 +1012,13 @@ async fn test_sync_rejects_old_version() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Try to sync - should fail due to version mismatch
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1150,13 +1136,13 @@ async fn test_sync_rejects_recipient_database() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Try to sync - should fail with forbidden error
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1263,7 +1249,7 @@ async fn test_replace_source_with_forward_match() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Create initial source and sync
     // Sections at: 1000, 2000, 3000 (ms)
@@ -1288,9 +1274,9 @@ async fn test_replace_source_with_forward_match() {
         "test_replace_forward",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1319,10 +1305,10 @@ async fn test_replace_source_with_forward_match() {
         "test_replace_forward",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
+        replace_source(&config, &password_clone, &show_name_clone)
             .map_err(|e| e.to_string())
     })
     .await
@@ -1363,7 +1349,7 @@ async fn test_replace_source_rejects_backward_match() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Create initial source and sync
     // Sections at: 1000, 2000, 3000 (ms) - receiver max will be 3000
@@ -1388,9 +1374,9 @@ async fn test_replace_source_rejects_backward_match() {
         "test_replace_backward",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1420,10 +1406,10 @@ async fn test_replace_source_rejects_backward_match() {
         "test_replace_backward",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
+        replace_source(&config, &password_clone, &show_name_clone)
             .map_err(|e| e.to_string())
     })
     .await
@@ -1458,7 +1444,7 @@ async fn test_replace_source_empty_receiver() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Create empty receiver database (without syncing any data)
     // We need to create the database structure but with no segments/sections
@@ -1519,10 +1505,10 @@ async fn test_replace_source_empty_receiver() {
         "test_replace_empty_recv",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
+        replace_source(&config, &password_clone, &show_name_clone)
             .map_err(|e| e.to_string())
     })
     .await
@@ -1554,7 +1540,7 @@ async fn test_replace_source_rejects_empty_source() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Create initial source and sync
     let (source_db, _guard1) = create_source_database_with_timestamps(
@@ -1578,9 +1564,9 @@ async fn test_replace_source_rejects_empty_source() {
         "test_replace_empty_src",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1624,10 +1610,10 @@ async fn test_replace_source_rejects_empty_source() {
         "test_replace_empty_src",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
+        replace_source(&config, &password_clone, &show_name_clone)
             .map_err(|e| e.to_string())
     })
     .await
@@ -1665,7 +1651,7 @@ async fn test_replace_source_then_sync() {
     drop_test_database(&postgres_url, &password, show_name).await;
 
     // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
+
 
     // Create initial source and sync
     // Sections at: 1000, 2000 (ms)
@@ -1685,9 +1671,9 @@ async fn test_replace_source_then_sync() {
         "test_replace_then_sync",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1740,10 +1726,10 @@ async fn test_replace_source_then_sync() {
         "test_replace_then_sync",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
+        replace_source(&config, &password_clone, &show_name_clone)
             .map_err(|e| e.to_string())
     })
     .await
@@ -1769,7 +1755,7 @@ async fn test_replace_source_then_sync() {
     );
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
