@@ -387,7 +387,10 @@ mod tests {
         data[12..16].copy_from_slice(&crc.to_le_bytes());
 
         let result = decode_segments(&data);
-        assert!(matches!(result, Err(DecodeError::UnsupportedVersion { .. })));
+        assert!(matches!(
+            result,
+            Err(DecodeError::UnsupportedVersion { .. })
+        ));
     }
 
     #[test]
@@ -544,7 +547,8 @@ mod tests {
 
         let mut encoded = encode_segments(&segments);
         // Calculate offset to second segment's audio data
-        let second_segment_audio_offset = HEADER_SIZE + SEGMENT_HEADER_SIZE + 100 + SEGMENT_HEADER_SIZE;
+        let second_segment_audio_offset =
+            HEADER_SIZE + SEGMENT_HEADER_SIZE + 100 + SEGMENT_HEADER_SIZE;
         encoded[second_segment_audio_offset] ^= 0xFF;
 
         let result = decode_segments(&encoded);
@@ -572,7 +576,10 @@ mod tests {
         match result {
             Err(DecodeError::ChecksumMismatch { expected, computed }) => {
                 assert_eq!(expected, original_crc, "Expected CRC should match original");
-                assert_ne!(computed, expected, "Computed CRC should differ from expected");
+                assert_ne!(
+                    computed, expected,
+                    "Computed CRC should differ from expected"
+                );
             }
             _ => panic!("Expected ChecksumMismatch error"),
         }

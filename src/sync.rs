@@ -203,14 +203,24 @@ pub fn replace_source(
         return Ok(ReplaceSourceResult::Skipped);
     }
 
-    println!("[ReplaceSource] Acquired sync lease for show '{}'", show_name);
+    println!(
+        "[ReplaceSource] Acquired sync lease for show '{}'",
+        show_name
+    );
 
     // Run the replace operation
     let result = replace_source_internal(&db, show_name, remote_url);
 
     // Release the lease
-    let _ = db.block_on(db_postgres::release_lease_pg(db.pool(), lease_name, &holder_id));
-    println!("[ReplaceSource] Released sync lease for show '{}'", show_name);
+    let _ = db.block_on(db_postgres::release_lease_pg(
+        db.pool(),
+        lease_name,
+        &holder_id,
+    ));
+    println!(
+        "[ReplaceSource] Released sync lease for show '{}'",
+        show_name
+    );
 
     result
 }
@@ -478,6 +488,9 @@ fn sync_shows_internal(
 
     println!("Starting sync of {} show(s)", show_names.len());
 
+    let mut synced_count: usize = 0;
+    let mut skipped_count: usize = 0;
+
     // Process each show sequentially
     for (idx, show_name) in show_names.iter().enumerate() {
         // Get retention hours for this show (None if not configured)
@@ -494,7 +507,7 @@ fn sync_shows_internal(
         );
 
         // Sync single show - exit immediately on any error
-        sync_single_show(
+        let synced = sync_single_show(
             remote_url,
             &config.database.url,
             password,
@@ -505,33 +518,45 @@ fn sync_shows_internal(
             lease_name,
         )?;
 
-        // Run retention cleanup if configured
-        if let Some(hours) = retention_hours {
-            let database_name = get_pg_database_name(&config.database.prefix, show_name);
-            match SyncDbPg::connect(&config.database.url, password, &database_name) {
-                Ok(db) => {
-                    if let Err(e) = cleanup_show_retention_pg(&db, show_name, hours) {
-                        eprintln!("[{}] Warning: Retention cleanup failed: {}", show_name, e);
+        if synced {
+            // Run retention cleanup if configured
+            if let Some(hours) = retention_hours {
+                let database_name = get_pg_database_name(&config.database.prefix, show_name);
+                match SyncDbPg::connect(&config.database.url, password, &database_name) {
+                    Ok(db) => {
+                        if let Err(e) = cleanup_show_retention_pg(&db, show_name, hours) {
+                            eprintln!("[{}] Warning: Retention cleanup failed: {}", show_name, e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[{}] Warning: Could not connect to database for cleanup: {}",
+                            show_name, e
+                        );
                     }
                 }
-                Err(e) => {
-                    eprintln!(
-                        "[{}] Warning: Could not connect to database for cleanup: {}",
-                        show_name, e
-                    );
-                }
             }
-        }
 
-        println!(
-            "[{}/{}] ✓ Show '{}' synced successfully",
-            idx + 1,
-            show_names.len(),
-            show_name
-        );
+            synced_count += 1;
+            println!(
+                "[{}/{}] ✓ Show '{}' synced successfully",
+                idx + 1,
+                show_names.len(),
+                show_name
+            );
+        } else {
+            skipped_count += 1;
+        }
     }
 
-    println!("\n✓ All {} show(s) synced successfully", show_names.len());
+    if skipped_count > 0 {
+        println!(
+            "\n✓ {} show(s) synced, {} skipped (lease held by another instance)",
+            synced_count, skipped_count
+        );
+    } else {
+        println!("\n✓ All {} show(s) synced successfully", show_names.len());
+    }
     Ok(())
 }
 
@@ -547,7 +572,7 @@ fn sync_single_show(
     database_prefix: &str,
     retention_hours: Option<i64>,
     lease_name: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
 
     // Calculate cutoff timestamp if retention is configured
@@ -628,7 +653,7 @@ fn sync_single_show(
 
     if !acquired {
         println!("[{}]   Lease held by another instance, skipping", show_name);
-        return Ok(());
+        return Ok(false);
     }
 
     println!("[{}]   Acquired sync lease", show_name);
@@ -640,10 +665,15 @@ fn sync_single_show(
     let renewal_interval_ms = (lease_duration_ms / 4).clamp(10_000, 30_000) as u64;
     let renewal_interval = std::time::Duration::from_millis(renewal_interval_ms);
     let (stop_tx, stop_rx) = mpsc::channel();
+    let lease_lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let renewal_lease_lost = lease_lost.clone();
+
+    const MAX_RENEWAL_FAILURES: u32 = 3;
 
     let renewal_show_name = show_name.to_string();
     let renewal_handle = std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create renewal runtime");
+        let mut consecutive_failures: u32 = 0;
         loop {
             match stop_rx.recv_timeout(renewal_interval) {
                 Ok(_) | Err(RecvTimeoutError::Disconnected) => break,
@@ -658,17 +688,32 @@ fn sync_single_show(
                         .await
                     });
                     match renewed {
-                        Ok(true) => println!("[{}]   Lease renewed", renewal_show_name),
-                        Ok(false) => {
-                            eprintln!(
-                                "[{}]   Warning: Failed to renew lease - lost ownership",
-                                renewal_show_name
-                            )
+                        Ok(true) => {
+                            consecutive_failures = 0;
+                            println!("[{}]   Lease renewed", renewal_show_name);
                         }
-                        Err(e) => eprintln!(
-                            "[{}]   Warning: Lease renewal error: {}",
-                            renewal_show_name, e
-                        ),
+                        Ok(false) => {
+                            consecutive_failures += 1;
+                            eprintln!(
+                                "[{}]   Warning: Failed to renew lease - lost ownership ({}/{})",
+                                renewal_show_name, consecutive_failures, MAX_RENEWAL_FAILURES
+                            );
+                        }
+                        Err(e) => {
+                            consecutive_failures += 1;
+                            eprintln!(
+                                "[{}]   Warning: Lease renewal error ({}/{}): {}",
+                                renewal_show_name, consecutive_failures, MAX_RENEWAL_FAILURES, e
+                            );
+                        }
+                    }
+                    if consecutive_failures >= MAX_RENEWAL_FAILURES {
+                        eprintln!(
+                            "[{}]   Error: Lease lost after {} consecutive renewal failures, aborting sync",
+                            renewal_show_name, consecutive_failures
+                        );
+                        renewal_lease_lost.store(true, std::sync::atomic::Ordering::SeqCst);
+                        break;
                     }
                 }
             }
@@ -677,24 +722,38 @@ fn sync_single_show(
 
     // Run the actual sync work
     let sync_result = sync_single_show_internal(
-        &client,
-        remote_url,
-        show_name,
-        &db,
-        &metadata,
-        chunk_size,
-        cutoff_ts,
+        &client, remote_url, show_name, &db, &metadata, chunk_size, cutoff_ts,
     );
 
     // Stop renewal thread
     let _ = stop_tx.send(());
     let _ = renewal_handle.join();
 
+    // Check if the lease was lost during sync
+    if lease_lost.load(std::sync::atomic::Ordering::SeqCst) {
+        // Release is best-effort — lease may already be taken by another instance
+        let _ = db.block_on(db_postgres::release_lease_pg(
+            db.pool(),
+            lease_name,
+            &holder_id,
+        ));
+        return Err(format!(
+            "[{}] Sync aborted: lease lost after {} consecutive renewal failures",
+            show_name, MAX_RENEWAL_FAILURES
+        )
+        .into());
+    }
+
     // Release the lease
-    let _ = db.block_on(db_postgres::release_lease_pg(db.pool(), lease_name, &holder_id));
+    let _ = db.block_on(db_postgres::release_lease_pg(
+        db.pool(),
+        lease_name,
+        &holder_id,
+    ));
     println!("[{}]   Released sync lease", show_name);
 
-    sync_result
+    sync_result?;
+    Ok(true)
 }
 
 /// Internal sync work for a single show (without lease handling)

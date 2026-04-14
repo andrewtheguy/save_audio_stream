@@ -10,19 +10,19 @@
 //! ```
 
 use axum::{
+    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use save_audio_stream::queries::{metadata, sections, segments};
 use save_audio_stream::EXPECTED_DB_VERSION;
+use save_audio_stream::queries::{metadata, sections, segments};
 
 /// Helper to create a test database with sessions at specific timestamps
 async fn create_test_database_with_sessions(
@@ -278,8 +278,7 @@ async fn start_test_api_server(pool: sqlx::SqlitePool) -> (String, tokio::task::
 async fn test_estimate_segment_at_start() {
     // Create database with one session, 10 segments, 1 second each at 48kHz
     let session_start_ms = 1730000000000i64;
-    let (pool, _guard) =
-        create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
+    let (pool, _guard) = create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 
@@ -310,8 +309,7 @@ async fn test_estimate_segment_at_start() {
 async fn test_estimate_segment_at_middle() {
     // Create database with one session, 10 segments, 1 second each at 48kHz
     let session_start_ms = 1730000000000i64;
-    let (pool, _guard) =
-        create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
+    let (pool, _guard) = create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 
@@ -348,8 +346,7 @@ async fn test_estimate_segment_at_middle() {
 async fn test_estimate_segment_at_end() {
     // Create database with one session, 10 segments, 1 second each at 48kHz
     let session_start_ms = 1730000000000i64;
-    let (pool, _guard) =
-        create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
+    let (pool, _guard) = create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 
@@ -381,8 +378,7 @@ async fn test_estimate_segment_at_end() {
 async fn test_estimate_segment_before_start_returns_error() {
     // Create database with one session
     let session_start_ms = 1730000000000i64;
-    let (pool, _guard) =
-        create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
+    let (pool, _guard) = create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 
@@ -416,8 +412,7 @@ async fn test_estimate_segment_before_start_returns_error() {
 async fn test_estimate_segment_after_end_returns_error() {
     // Create database with one session, 10 segments, 1 second each
     let session_start_ms = 1730000000000i64;
-    let (pool, _guard) =
-        create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
+    let (pool, _guard) = create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 
@@ -453,8 +448,7 @@ async fn test_estimate_segment_after_end_returns_error() {
 async fn test_estimate_segment_nonexistent_section_returns_404() {
     // Create database with one session
     let session_start_ms = 1730000000000i64;
-    let (pool, _guard) =
-        create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
+    let (pool, _guard) = create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 
@@ -536,9 +530,12 @@ async fn test_estimate_segment_linear_interpolation_accuracy() {
     let segments_count = 100;
     let samples_per_segment = 48000; // 1 second each
 
-    let (pool, _guard) =
-        create_test_database_with_sessions(&[session_start_ms], segments_count, samples_per_segment)
-            .await;
+    let (pool, _guard) = create_test_database_with_sessions(
+        &[session_start_ms],
+        segments_count,
+        samples_per_segment,
+    )
+    .await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 
@@ -549,10 +546,10 @@ async fn test_estimate_segment_linear_interpolation_accuracy() {
 
     // Test at various points: 0%, 25%, 50%, 75%, 100%
     let test_points = vec![
-        (0, 1),    // 0% -> segment 1
-        (25, 26),  // 25% -> around segment 25-26
-        (50, 51),  // 50% -> around segment 50-51
-        (75, 76),  // 75% -> around segment 75-76
+        (0, 1),     // 0% -> segment 1
+        (25, 26),   // 25% -> around segment 25-26
+        (50, 51),   // 50% -> around segment 50-51
+        (75, 76),   // 75% -> around segment 75-76
         (100, 100), // 100% -> segment 100
     ];
 
@@ -594,8 +591,7 @@ async fn test_estimate_segment_multiple_sessions() {
         1730200000000i64, // Session 3
     ];
 
-    let (pool, _guard) =
-        create_test_database_with_sessions(&session_timestamps, 10, 48000).await;
+    let (pool, _guard) = create_test_database_with_sessions(&session_timestamps, 10, 48000).await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 
@@ -631,8 +627,7 @@ async fn test_estimate_segment_multiple_sessions() {
 async fn test_estimate_segment_boundary_at_exact_end() {
     // Test edge case: timestamp exactly at session end boundary
     let session_start_ms = 1730000000000i64;
-    let (pool, _guard) =
-        create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
+    let (pool, _guard) = create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 
@@ -650,7 +645,11 @@ async fn test_estimate_segment_boundary_at_exact_end() {
         .unwrap();
 
     // Timestamp exactly at end should be valid
-    assert_eq!(response.status(), 200, "Timestamp at exact end should be valid");
+    assert_eq!(
+        response.status(),
+        200,
+        "Timestamp at exact end should be valid"
+    );
 
     let data: EstimateSegmentResponse = response.json().await.unwrap();
     assert_eq!(data.estimated_segment_id, 10, "Should return last segment");
@@ -660,8 +659,7 @@ async fn test_estimate_segment_boundary_at_exact_end() {
 async fn test_estimate_segment_just_past_end() {
     // Test edge case: timestamp 1ms past session end
     let session_start_ms = 1730000000000i64;
-    let (pool, _guard) =
-        create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
+    let (pool, _guard) = create_test_database_with_sessions(&[session_start_ms], 10, 48000).await;
 
     let (server_url, _handle) = start_test_api_server(pool).await;
 

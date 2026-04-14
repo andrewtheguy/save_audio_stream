@@ -133,8 +133,8 @@ pub async fn open_readonly_connection_immutable(
 /// Enables foreign keys for CASCADE delete testing.
 /// Returns (pool, guard) - the guard must be kept alive to prevent the temp file from being deleted.
 #[allow(dead_code)]
-pub async fn create_test_connection_in_temporary_file(
-) -> Result<(SqlitePool, tempfile::TempDir), DynError> {
+pub async fn create_test_connection_in_temporary_file()
+-> Result<(SqlitePool, tempfile::TempDir), DynError> {
     let temp_dir = tempfile::tempdir()?;
     let db_path = temp_dir.path().join("test.sqlite");
     let dsn = format!("sqlite://{}", db_path.display());

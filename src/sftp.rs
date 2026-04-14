@@ -275,9 +275,10 @@ impl SftpClient {
 
         // Create parent directory if needed
         if let Some(parent) = actual_remote_path.parent()
-            && !parent.as_os_str().is_empty() {
-                self.mkdir_p(parent, 0o755)?;
-            }
+            && !parent.as_os_str().is_empty()
+        {
+            self.mkdir_p(parent, 0o755)?;
+        }
 
         // Create remote file with specified permissions
         let mut remote_file = if let Some(perms) = options.permissions {

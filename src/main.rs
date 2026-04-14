@@ -247,8 +247,7 @@ fn replace_source_command(
     })?;
 
     // Run replace source operation - per-show lease management is handled internally
-    match save_audio_stream::sync::replace_source(&sync_config, &password, &show_name)
-    {
+    match save_audio_stream::sync::replace_source(&sync_config, &password, &show_name) {
         Ok(save_audio_stream::sync::ReplaceSourceResult::Replaced {
             old_source_id,
             new_source_id,
@@ -264,7 +263,9 @@ fn replace_source_command(
                 matched_section_id, matched_section_timestamp_ms
             );
             println!("  Will resume from segment: {}", resume_from_segment_id);
-            println!("\nRun 'receiver --sync-only' or 'receiver' to continue syncing from new source.");
+            println!(
+                "\nRun 'receiver --sync-only' or 'receiver' to continue syncing from new source."
+            );
             Ok(())
         }
         Ok(save_audio_stream::sync::ReplaceSourceResult::Skipped) => {
@@ -274,7 +275,9 @@ fn replace_source_command(
         Ok(save_audio_stream::sync::ReplaceSourceResult::FreshStart { new_source_id }) => {
             println!("Receiver has no existing data.");
             println!("  New source: {}", new_source_id);
-            println!("\nRun 'receiver --sync-only' or 'receiver' to start syncing from new source.");
+            println!(
+                "\nRun 'receiver --sync-only' or 'receiver' to start syncing from new source."
+            );
             Ok(())
         }
         Err(e) => Err(e),

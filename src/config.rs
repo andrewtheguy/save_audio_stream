@@ -142,4 +142,3 @@ pub struct SessionConfig {
     #[serde(skip)]
     pub output_dir: Option<PathBuf>,
 }
-
