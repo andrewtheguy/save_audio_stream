@@ -9,8 +9,8 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Default PostgreSQL configuration (assumes local server already running)
-DEFAULT_POSTGRES_URL="postgres://it3@localhost:5432"
-DEFAULT_POSTGRES_PASSWORD="qwertasdfg"
+DEFAULT_POSTGRES_URL="postgres://postgres@localhost:5432"
+# set up .pgpass file for passwordless access for the user postgres
 
 # Use environment variables if set, otherwise use defaults
 POSTGRES_URL="${TEST_POSTGRES_URL:-$DEFAULT_POSTGRES_URL}"

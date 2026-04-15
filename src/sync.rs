@@ -191,25 +191,28 @@ pub fn replace_source(
     let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
 
     // Try to acquire the per-show lease
-    let acquired = db.block_on(db_postgres::try_acquire_lease_pg(
+    let fencing_token = db.block_on(db_postgres::try_acquire_lease_pg(
         db.pool(),
         lease_name,
         &holder_id,
         lease_duration_ms,
     ))?;
 
-    if !acquired {
-        println!("[ReplaceSource] Lease held by another instance, skipping");
-        return Ok(ReplaceSourceResult::Skipped);
-    }
+    let fencing_token = match fencing_token {
+        Some(token) => token,
+        None => {
+            println!("[ReplaceSource] Lease held by another instance, skipping");
+            return Ok(ReplaceSourceResult::Skipped);
+        }
+    };
 
     println!(
-        "[ReplaceSource] Acquired sync lease for show '{}'",
-        show_name
+        "[ReplaceSource] Acquired sync lease for show '{}' (fencing_token={})",
+        show_name, fencing_token
     );
 
     // Run the replace operation
-    let result = replace_source_internal(&db, show_name, remote_url);
+    let result = replace_source_internal(&db, show_name, remote_url, lease_name, fencing_token);
 
     // Release the lease
     let _ = db.block_on(db_postgres::release_lease_pg(
@@ -230,6 +233,8 @@ fn replace_source_internal(
     db: &SyncDbPg,
     show_name: &str,
     remote_url: &str,
+    lease_name: &str,
+    fencing_token: i64,
 ) -> Result<ReplaceSourceResult, Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
 
@@ -264,8 +269,13 @@ fn replace_source_internal(
                 .into());
             }
 
-            // Update source_unique_id
+            // Update source_unique_id (validated by fencing token)
             if old_source_id.is_some() {
+                db.block_on(db_postgres::validate_fencing_token_pg(
+                    db.pool(),
+                    lease_name,
+                    fencing_token,
+                ))?;
                 db_postgres::upsert_metadata_pg_sync(db, "source_unique_id", &metadata.unique_id)?;
             }
 
@@ -366,6 +376,13 @@ fn replace_source_internal(
 
     // Get old source_id for return value
     let old_source_id_for_return = old_source_id.unwrap_or_else(|| "none".to_string());
+
+    // Validate fencing token before critical writes
+    db.block_on(db_postgres::validate_fencing_token_pg(
+        db.pool(),
+        lease_name,
+        fencing_token,
+    ))?;
 
     // Update metadata atomically
     db.block_on(async {
@@ -644,19 +661,25 @@ fn sync_single_show(
     );
     let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
 
-    let acquired = db.block_on(db_postgres::try_acquire_lease_pg(
+    let fencing_token = db.block_on(db_postgres::try_acquire_lease_pg(
         db.pool(),
         lease_name,
         &holder_id,
         lease_duration_ms,
     ))?;
 
-    if !acquired {
-        println!("[{}]   Lease held by another instance, skipping", show_name);
-        return Ok(false);
-    }
+    let fencing_token = match fencing_token {
+        Some(token) => token,
+        None => {
+            println!("[{}]   Lease held by another instance, skipping", show_name);
+            return Ok(false);
+        }
+    };
 
-    println!("[{}]   Acquired sync lease", show_name);
+    println!(
+        "[{}]   Acquired sync lease (fencing_token={})",
+        show_name, fencing_token
+    );
 
     // Spawn lease renewal thread
     let renewal_pool = db.pool().clone();
@@ -722,7 +745,15 @@ fn sync_single_show(
 
     // Run the actual sync work
     let sync_result = sync_single_show_internal(
-        &client, remote_url, show_name, &db, &metadata, chunk_size, cutoff_ts,
+        &client,
+        remote_url,
+        show_name,
+        &db,
+        &metadata,
+        chunk_size,
+        cutoff_ts,
+        lease_name,
+        fencing_token,
     );
 
     // Stop renewal thread
@@ -766,6 +797,8 @@ fn sync_single_show_internal(
     metadata: &ShowMetadata,
     chunk_size: u64,
     cutoff_ts: Option<i64>,
+    lease_name: &str,
+    fencing_token: i64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Check if database exists (has metadata)
     let existing_unique_id: Option<String> =
@@ -945,6 +978,13 @@ fn sync_single_show_internal(
         // Insert segments into local database (all operations in one transaction)
         let last_id = segments.last().unwrap().id;
         let segments_ref = &segments;
+
+        // Validate fencing token before writing segments
+        db.block_on(db_postgres::validate_fencing_token_pg(
+            db.pool(),
+            lease_name,
+            fencing_token,
+        ))?;
 
         db.block_on(async {
             let mut tx = db
