@@ -2,68 +2,50 @@ name: Build
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version (e.g., 0.1.2). Leave empty for prerelease with timestamp.'
-        required: false
-        default: ''
-      bump_version:
-        description: 'Whether to bump Cargo.toml/Cargo.lock to the provided version.'
-        type: boolean
-        required: false
-        default: false
 
 env:
   GHCR_IMAGE: ghcr.io/andrewtheguy/save_audio_stream
 
 jobs:
-  # Bump version, commit, and prepare build info
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.tag.outputs.name }}
-      is_prerelease: ${{ steps.tag.outputs.is_prerelease }}
-      sha: ${{ steps.bump.outputs.sha }}
+      tag: ${{ steps.version.outputs.tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Determine release tag
-        id: tag
+
+      - name: Determine and validate version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          INPUT_VERSION="${{ github.event.inputs.version }}"
-          if [ -n "$INPUT_VERSION" ]; then
-            echo "name=${INPUT_VERSION}" >> $GITHUB_OUTPUT
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
-          else
-            echo "name=$(date -u +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          # Extract version from Cargo.toml
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "Could not determine version from Cargo.toml" >&2
+            exit 1
           fi
 
-      - name: Bump version and commit
-        id: bump
-        run: |
-          set -e
-          VERSION="${{ steps.tag.outputs.name }}"
-          IS_PRERELEASE="${{ steps.tag.outputs.is_prerelease }}"
-          BUMP_VERSION="${{ github.event.inputs.bump_version }}"
+          TAG="v${VERSION}"
+          echo "Release tag: ${TAG}"
 
-          if [ "$IS_PRERELEASE" = "false" ] && [ "$BUMP_VERSION" = "true" ]; then
-            # Update Cargo.toml and Cargo.lock to the release version
-            python3 scripts/bump_version.py "$VERSION"
-
-            # Configure git
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-
-            # Commit and push
-            git add Cargo.toml
-            git add Cargo.lock
-            git commit -m "Bump version to ${VERSION}"
-            git push
+          # Check if tag already exists
+          if gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists. Bump the version in Cargo.toml before releasing." >&2
+            exit 1
           fi
 
-          # Output the SHA to build from
-          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          # Prerelease if not on main branch
+          IS_PRERELEASE="false"
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            IS_PRERELEASE="true"
+          fi
+
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
 
   build-linux:
     needs: prepare
@@ -84,8 +66,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.sha }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -164,13 +144,15 @@ jobs:
             ${{ env.GHCR_IMAGE }}:${TAG}-arm64
           docker manifest push ${{ env.GHCR_IMAGE }}:${TAG}
 
-          # Also tag as latest
-          docker manifest create ${{ env.GHCR_IMAGE }}:latest \
-            ${{ env.GHCR_IMAGE }}:${TAG}-x86_64 \
-            ${{ env.GHCR_IMAGE }}:${TAG}-arm64
-          docker manifest push ${{ env.GHCR_IMAGE }}:latest
+          # Only tag as latest on non-prerelease (main branch) builds
+          if [ "${{ needs.prepare.outputs.is_prerelease }}" = "false" ]; then
+            docker manifest create ${{ env.GHCR_IMAGE }}:latest \
+              ${{ env.GHCR_IMAGE }}:${TAG}-x86_64 \
+              ${{ env.GHCR_IMAGE }}:${TAG}-arm64
+            docker manifest push ${{ env.GHCR_IMAGE }}:latest
+          fi
 
-  # Windows build is separate and creates its own prerelease with -windows suffix
+  # Windows build is separate and creates its own release with -windows suffix
   build-windows:
     needs: prepare
     runs-on: windows-latest
@@ -181,8 +163,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.sha }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -210,10 +190,10 @@ jobs:
       - name: Rename binary
         run: mv target/release/save_audio_stream.exe target/release/save_audio_stream-windows-x86_64.exe
 
-      - name: Create Windows prerelease
+      - name: Create Windows release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}-windows
           name: ${{ needs.prepare.outputs.tag }}-windows
           files: target/release/save_audio_stream-windows-x86_64.exe
-          prerelease: true
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
