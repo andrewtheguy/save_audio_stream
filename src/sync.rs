@@ -902,24 +902,14 @@ fn sync_single_show_internal(
         .json()
         .map_err(|e| format!("Failed to parse sections JSON: {}", e))?;
 
-    let fenced_insert_section =
-        |section: &SectionData| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            db.block_on(db_postgres::validate_fencing_token_pg(
-                db.pool(),
-                lease_name,
-                fencing_token,
-            ))?;
-            crate::db_postgres::insert_section_or_ignore_pg_sync(
-                db,
-                section.id,
-                section.start_timestamp_ms,
-            )
-        };
-
     // Insert sections into local database
     let sections_count = remote_sections.len();
-    for section in &remote_sections {
-        fenced_insert_section(section)?;
+    for section in remote_sections {
+        crate::db_postgres::insert_section_or_ignore_pg_sync(
+            db,
+            section.id,
+            section.start_timestamp_ms,
+        )?;
     }
     println!("[{}]   Synced {} sections", show_name, sections_count);
 
