@@ -649,21 +649,23 @@ pub async fn is_lease_held_pg(pool: &PgPool, name: &str) -> Result<bool, DynErro
 /// Best-effort fencing token check: reads the current token from sync_leases and
 /// returns an error if it doesn't match `expected_token`.
 ///
-/// **Not atomic with subsequent writes.** A TOCTOU gap (microseconds) exists between
-/// this SELECT and the caller's next write. For a stale holder to slip through that
-/// gap, all of the following must happen within those microseconds:
+/// **Not atomic with the caller's data writes.** The gap is between this SELECT on
+/// `sync_leases` and the caller's subsequent INSERT/UPDATE on the data tables
+/// (segments, metadata). Another holder could acquire the lease — incrementing the
+/// fencing token — after this check passes but before the data write commits.
+/// There is no TOCTOU concern within the lease table itself: this function only
+/// reads `sync_leases` and does not write to it.
 ///
-/// 1. The current lease must have already expired (TTL is [`DEFAULT_LEASE_DURATION_MS`],
-///    10 minutes, renewed every ¼ of that).
-/// 2. A competing holder must acquire the lease, incrementing the fencing token.
-/// 3. The stale holder's check must read the *old* token before the increment commits.
-///
-/// In practice the TTL dwarfs the TOCTOU window, so the race is vanishingly unlikely
-/// while the lease is actively renewed. This check is therefore defence-in-depth on top
-/// of the lease TTL and renewal thread — not a standalone guarantee.
+/// For that race to matter, the current lease must have already expired
+/// (TTL is [`DEFAULT_LEASE_DURATION_MS`], 10 minutes, renewed every ¼ of that),
+/// and a competing holder must acquire in the microseconds between the check and the
+/// data write. In practice the TTL dwarfs this window, making the race vanishingly
+/// unlikely while the lease is actively renewed. This check is therefore
+/// defence-in-depth on top of the lease TTL and renewal thread — not a standalone
+/// guarantee.
 ///
 /// Callers that need strict atomicity should embed
-/// `WHERE fencing_token = $expected` directly in their write SQL.
+/// `WHERE fencing_token = $expected` directly in their data-write SQL.
 pub async fn validate_fencing_token_pg(
     pool: &PgPool,
     lease_name: &str,
