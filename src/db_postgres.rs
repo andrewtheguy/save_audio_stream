@@ -646,6 +646,31 @@ pub async fn is_lease_held_pg(pool: &PgPool, name: &str) -> Result<bool, DynErro
     Ok(result)
 }
 
+/// Validate that the fencing token for a lease matches the expected value.
+/// Call before performing protected writes to detect stale holders.
+pub async fn validate_fencing_token_pg(
+    pool: &PgPool,
+    lease_name: &str,
+    expected_token: i64,
+) -> Result<(), DynError> {
+    let current_token: Option<i64> = sqlx::query_scalar(
+        r#"SELECT fencing_token FROM sync_leases WHERE name = $1"#,
+    )
+    .bind(lease_name)
+    .fetch_optional(pool)
+    .await?;
+
+    match current_token {
+        Some(token) if token == expected_token => Ok(()),
+        Some(token) => Err(format!(
+            "Fencing token mismatch: expected {}, found {} — lease was acquired by another holder",
+            expected_token, token
+        )
+        .into()),
+        None => Err("Lease row not found — cannot validate fencing token".into()),
+    }
+}
+
 /// Get the maximum section timestamp from the receiver database
 pub async fn get_max_section_timestamp_pg(pool: &PgPool) -> Result<Option<i64>, DynError> {
     let sql = sections::select_max_timestamp_pg();
