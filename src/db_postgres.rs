@@ -646,8 +646,24 @@ pub async fn is_lease_held_pg(pool: &PgPool, name: &str) -> Result<bool, DynErro
     Ok(result)
 }
 
-/// Validate that the fencing token for a lease matches the expected value.
-/// Call before performing protected writes to detect stale holders.
+/// Best-effort fencing token check: reads the current token from sync_leases and
+/// returns an error if it doesn't match `expected_token`.
+///
+/// **Not atomic with subsequent writes.** A TOCTOU gap (microseconds) exists between
+/// this SELECT and the caller's next write. For a stale holder to slip through that
+/// gap, all of the following must happen within those microseconds:
+///
+/// 1. The current lease must have already expired (TTL is [`DEFAULT_LEASE_DURATION_MS`],
+///    10 minutes, renewed every ¼ of that).
+/// 2. A competing holder must acquire the lease, incrementing the fencing token.
+/// 3. The stale holder's check must read the *old* token before the increment commits.
+///
+/// In practice the TTL dwarfs the TOCTOU window, so the race is vanishingly unlikely
+/// while the lease is actively renewed. This check is therefore defence-in-depth on top
+/// of the lease TTL and renewal thread — not a standalone guarantee.
+///
+/// Callers that need strict atomicity should embed
+/// `WHERE fencing_token = $expected` directly in their write SQL.
 pub async fn validate_fencing_token_pg(
     pool: &PgPool,
     lease_name: &str,
