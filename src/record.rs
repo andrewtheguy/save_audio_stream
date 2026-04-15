@@ -3,16 +3,16 @@ use crate::config::{AudioFormat, SessionConfig};
 use crate::constants::EXPECTED_DB_VERSION;
 use crate::db;
 use crate::schedule::{
-    get_window_duration_secs, is_in_active_window_now, parse_time, wait_for_active_window,
-    HourMinute,
+    HourMinute, get_window_duration_secs, is_in_active_window_now, parse_time,
+    wait_for_active_window,
 };
 use crate::streaming::StreamingSource;
 
 // Import ShowLocks and get_show_lock from the crate root
 use crate::db::SyncDb;
-use crate::{get_show_lock, ShowLocks};
+use crate::{ShowLocks, get_show_lock};
 use chrono::{DateTime, Utc};
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use fdk_aac::enc::{
     AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
     Transport,
@@ -24,8 +24,8 @@ use reqwest::blocking::Client;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use symphonia::core::audio::SampleBuffer;
@@ -366,9 +366,10 @@ fn run_connection_loop(
 
         // Check if this is a recipient database (sync target)
         if let Some(is_recipient) = existing_is_recipient
-            && is_recipient == "true" {
-                return Err("Cannot record to a recipient database. This database is configured for syncing only.".into());
-            }
+            && is_recipient == "true"
+        {
+            return Err("Cannot record to a recipient database. This database is configured for syncing only.".into());
+        }
 
         // Existing database must have all required metadata
         let db_unique_id = existing_unique_id.ok_or("Database is missing unique_id in metadata")?;
@@ -436,26 +437,27 @@ fn run_connection_loop(
                 audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
             };
             if let Ok(encoder) = fdk_aac::enc::Encoder::new(params)
-                && let Ok(info) = encoder.info() {
-                    if let Some(db_delay) = db_encoder_delay {
-                        let db_delay_val: u32 = db_delay.parse().unwrap_or(0);
-                        if db_delay_val != info.nDelay {
-                            return Err(format!(
+                && let Ok(info) = encoder.info()
+            {
+                if let Some(db_delay) = db_encoder_delay {
+                    let db_delay_val: u32 = db_delay.parse().unwrap_or(0);
+                    if db_delay_val != info.nDelay {
+                        return Err(format!(
                                 "AAC encoder mismatch: database has encoder_delay '{}' but encoder reports '{}'",
                                 db_delay_val, info.nDelay
                             ).into());
-                        }
                     }
-                    if let Some(db_frame) = db_frame_size {
-                        let db_frame_val: u32 = db_frame.parse().unwrap_or(0);
-                        if db_frame_val != info.frameLength {
-                            return Err(format!(
+                }
+                if let Some(db_frame) = db_frame_size {
+                    let db_frame_val: u32 = db_frame.parse().unwrap_or(0);
+                    if db_frame_val != info.frameLength {
+                        return Err(format!(
                                 "AAC encoder mismatch: database has frame_size '{}' but encoder reports '{}'",
                                 db_frame_val, info.frameLength
                             ).into());
-                        }
                     }
                 }
+            }
         }
 
         println!("[{}] Session ID existing db: {}", name, db_unique_id);
@@ -497,10 +499,11 @@ fn run_connection_loop(
                 audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
             };
             if let Ok(encoder) = fdk_aac::enc::Encoder::new(params)
-                && let Ok(info) = encoder.info() {
-                    db::insert_metadata_sync(&db, "aac_encoder_delay", &info.nDelay.to_string())?;
-                    db::insert_metadata_sync(&db, "aac_frame_size", &info.frameLength.to_string())?;
-                }
+                && let Ok(info) = encoder.info()
+            {
+                db::insert_metadata_sync(&db, "aac_encoder_delay", &info.nDelay.to_string())?;
+                db::insert_metadata_sync(&db, "aac_frame_size", &info.frameLength.to_string())?;
+            }
         }
 
         println!("[{}] Session ID new db: {}", name, session_unique_id);
@@ -1061,19 +1064,21 @@ fn run_connection_loop(
                 AudioFormat::Aac => {
                     mono_buffer.resize(frame_size, 0);
                     if let Some(ref encoder) = aac_encoder
-                        && let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output) {
-                            total_output_samples += frame_size as u64;
-                            segment_buffer.extend_from_slice(&encode_output[..info.output_size]);
-                        }
+                        && let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output)
+                    {
+                        total_output_samples += frame_size as u64;
+                        segment_buffer.extend_from_slice(&encode_output[..info.output_size]);
+                    }
                 }
                 AudioFormat::Opus => {
                     mono_buffer.resize(frame_size, 0);
                     if let Some(ref mut encoder) = opus_encoder
-                        && let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output) {
-                            total_output_samples += frame_size as u64;
-                            segment_buffer.extend_from_slice(&(len as u16).to_le_bytes());
-                            segment_buffer.extend_from_slice(&encode_output[..len]);
-                        }
+                        && let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output)
+                    {
+                        total_output_samples += frame_size as u64;
+                        segment_buffer.extend_from_slice(&(len as u16).to_le_bytes());
+                        segment_buffer.extend_from_slice(&encode_output[..len]);
+                    }
                 }
                 AudioFormat::Wav => {
                     for sample in &mono_buffer {
@@ -1248,7 +1253,10 @@ pub fn record(
         // Run cleanup of old sections - recreate connection for cleanup
         if let Ok(cleanup_db) = crate::db::SyncDb::connect(&db_path) {
             match cleanup_old_sections_with_retention(&cleanup_db, retention_hours) {
-                Ok(()) => println!("[{}] Cleanup completed (retention: {}h)", name, retention_hours),
+                Ok(()) => println!(
+                    "[{}] Cleanup completed (retention: {}h)",
+                    name, retention_hours
+                ),
                 Err(e) => eprintln!("[{}] Warning: Failed to clean up old sections: {}", name, e),
             }
         }

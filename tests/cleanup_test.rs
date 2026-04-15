@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
-use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
+use sqlx::sqlite::SqlitePool;
 use tokio::runtime::Runtime;
 
 // Import the cleanup functions and SyncDb from the library

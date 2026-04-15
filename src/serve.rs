@@ -1,18 +1,18 @@
 use axum::{
+    Router,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use log::error;
 
 #[cfg(not(debug_assertions))]
 use axum::{body::Body, response::Response};
 use serde::Serialize;
+use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::sqlite::SqlitePool;
-use sqlx::Row;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc as StdArc;
@@ -286,7 +286,7 @@ async fn hls_playlist_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Query error: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -361,41 +361,42 @@ async fn aac_segment_handler(
     // Handle Range requests
     if let Some(range_header) = headers.get(header::RANGE)
         && let Ok(range_str) = range_header.to_str()
-            && let Some(range) = range_str.strip_prefix("bytes=") {
-                let parts: Vec<&str> = range.split('-').collect();
-                if parts.len() == 2 {
-                    let start: u64 = parts[0].parse().unwrap_or(0);
-                    let end: u64 = if parts[1].is_empty() {
-                        total_len - 1
-                    } else {
-                        parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
-                    };
+        && let Some(range) = range_str.strip_prefix("bytes=")
+    {
+        let parts: Vec<&str> = range.split('-').collect();
+        if parts.len() == 2 {
+            let start: u64 = parts[0].parse().unwrap_or(0);
+            let end: u64 = if parts[1].is_empty() {
+                total_len - 1
+            } else {
+                parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
+            };
 
-                    if start < total_len {
-                        let range_data = audio_data[start as usize..=(end as usize)].to_vec();
-                        return (
-                            StatusCode::PARTIAL_CONTENT,
-                            [
-                                (header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
-                                (
-                                    header::CONTENT_RANGE,
-                                    HeaderValue::from_str(&format!(
-                                        "bytes {}-{}/{}",
-                                        start, end, total_len
-                                    ))
-                                    .unwrap(),
-                                ),
-                                (
-                                    header::CONTENT_LENGTH,
-                                    HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
-                                ),
-                            ],
-                            range_data,
-                        )
-                            .into_response();
-                    }
-                }
+            if start < total_len {
+                let range_data = audio_data[start as usize..=(end as usize)].to_vec();
+                return (
+                    StatusCode::PARTIAL_CONTENT,
+                    [
+                        (header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
+                        (
+                            header::CONTENT_RANGE,
+                            HeaderValue::from_str(&format!(
+                                "bytes {}-{}/{}",
+                                start, end, total_len
+                            ))
+                            .unwrap(),
+                        ),
+                        (
+                            header::CONTENT_LENGTH,
+                            HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
+                        ),
+                    ],
+                    range_data,
+                )
+                    .into_response();
             }
+        }
+    }
 
     // Return full segment
     (
@@ -465,7 +466,7 @@ async fn opus_hls_playlist_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Query error: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -530,7 +531,7 @@ async fn opus_segment_handler(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("Failed to generate init segment: {}", e),
                     )
-                        .into_response()
+                        .into_response();
                 }
             };
 
@@ -579,7 +580,7 @@ async fn opus_segment_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to parse Opus packets: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -607,7 +608,7 @@ async fn opus_segment_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to generate media segment: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -616,41 +617,42 @@ async fn opus_segment_handler(
     // Handle Range requests
     if let Some(range_header) = headers.get(header::RANGE)
         && let Ok(range_str) = range_header.to_str()
-            && let Some(range) = range_str.strip_prefix("bytes=") {
-                let parts: Vec<&str> = range.split('-').collect();
-                if parts.len() == 2 {
-                    let start: u64 = parts[0].parse().unwrap_or(0);
-                    let end: u64 = if parts[1].is_empty() {
-                        total_len - 1
-                    } else {
-                        parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
-                    };
+        && let Some(range) = range_str.strip_prefix("bytes=")
+    {
+        let parts: Vec<&str> = range.split('-').collect();
+        if parts.len() == 2 {
+            let start: u64 = parts[0].parse().unwrap_or(0);
+            let end: u64 = if parts[1].is_empty() {
+                total_len - 1
+            } else {
+                parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
+            };
 
-                    if start < total_len {
-                        let range_data = media_segment[start as usize..=(end as usize)].to_vec();
-                        return (
-                            StatusCode::PARTIAL_CONTENT,
-                            [
-                                (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
-                                (
-                                    header::CONTENT_RANGE,
-                                    HeaderValue::from_str(&format!(
-                                        "bytes {}-{}/{}",
-                                        start, end, total_len
-                                    ))
-                                    .unwrap(),
-                                ),
-                                (
-                                    header::CONTENT_LENGTH,
-                                    HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
-                                ),
-                            ],
-                            range_data,
-                        )
-                            .into_response();
-                    }
-                }
+            if start < total_len {
+                let range_data = media_segment[start as usize..=(end as usize)].to_vec();
+                return (
+                    StatusCode::PARTIAL_CONTENT,
+                    [
+                        (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
+                        (
+                            header::CONTENT_RANGE,
+                            HeaderValue::from_str(&format!(
+                                "bytes {}-{}/{}",
+                                start, end, total_len
+                            ))
+                            .unwrap(),
+                        ),
+                        (
+                            header::CONTENT_LENGTH,
+                            HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
+                        ),
+                    ],
+                    range_data,
+                )
+                    .into_response();
             }
+        }
+    }
 
     // Return full segment
     (
@@ -914,7 +916,11 @@ async fn sessions_handler(
     // or schedule breaks.
 
     // Get all sections with their start id, timestamp, and total duration samples, optionally filtered by date range
-    let sql = segments::select_sessions_with_join_filtered(params.start_ts, params.end_ts, params.sort_desc);
+    let sql = segments::select_sessions_with_join_filtered(
+        params.start_ts,
+        params.end_ts,
+        params.sort_desc,
+    );
     let rows = match sqlx::query(&sql).fetch_all(pool).await {
         Ok(r) => r,
         Err(e) => {
@@ -922,7 +928,7 @@ async fn sessions_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Query error: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1085,22 +1091,23 @@ async fn estimate_segment_handler(
     let total_duration_samples: Option<i64> = row.get(4);
 
     // Check if section has any segments
-    let (start_id, end_id, total_samples) = match (start_segment_id, end_segment_id, total_duration_samples) {
-        (Some(s), Some(e), Some(d)) => (s, e, d),
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&EstimateSegmentError {
-                    error: format!("Section {} has no segments", section_id),
-                    section_start_ms: Some(section_start_ms),
-                    section_end_ms: None,
-                })
-                .unwrap(),
-            )
-                .into_response();
-        }
-    };
+    let (start_id, end_id, total_samples) =
+        match (start_segment_id, end_segment_id, total_duration_samples) {
+            (Some(s), Some(e), Some(d)) => (s, e, d),
+            _ => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    serde_json::to_string(&EstimateSegmentError {
+                        error: format!("Section {} has no segments", section_id),
+                        section_start_ms: Some(section_start_ms),
+                        section_end_ms: None,
+                    })
+                    .unwrap(),
+                )
+                    .into_response();
+            }
+        };
 
     // Calculate total duration in milliseconds
     let total_duration_ms = (total_samples as f64 / sample_rate * 1000.0) as i64;
@@ -1213,8 +1220,8 @@ use serde::Deserialize;
 pub struct ReceiverAppState {
     pub config: crate::config::SyncConfig,
     pub password: String,
-    /// Connection pool to the global database (save_audio_global) for lease operations
-    pub global_pool: PgPool,
+    /// Whether a sync operation is currently in progress (for status/trigger endpoints)
+    pub sync_in_progress: std::sync::atomic::AtomicBool,
 }
 
 /// Receiver mode: serve frontend with show selection and background sync (PostgreSQL)
@@ -1230,53 +1237,54 @@ pub fn receiver_audio(
     println!("Sync interval: {} seconds", config.sync_interval_seconds);
     println!("Listening on: http://[::]:{} (IPv4 + IPv6)", port);
 
-    // Create tokio runtime for global pool initialization
-    let init_rt = tokio::runtime::Runtime::new()?;
-
-    // Create global database and leases table
-    let global_pool = init_rt.block_on(async {
-        let pool = crate::db_postgres::open_postgres_connection_create_if_needed(
-            &config.database.url,
-            &password,
-            crate::db_postgres::GLOBAL_DATABASE_NAME,
-        )
-        .await?;
-        crate::db_postgres::create_leases_table_pg(&pool).await?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(pool)
-    })?;
-
     // Clone values for background sync thread
     let sync_config = config.clone();
     let sync_password = password.clone();
     let sync_interval = config.sync_interval_seconds;
-    let bg_global_pool = global_pool.clone();
 
-    // Spawn background sync thread (lease handling is inside sync_shows)
-    std::thread::spawn(move || loop {
-        println!("[Sync] Starting background sync...");
-        match crate::sync::sync_shows(&sync_config, &sync_password, &bg_global_pool) {
-            Ok(crate::sync::SyncResult::Completed) => {
-                println!("[Sync] Background sync completed successfully");
+    // Create shared state
+    let app_state = StdArc::new(ReceiverAppState {
+        config: config.clone(),
+        password: password.clone(),
+        sync_in_progress: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    // Spawn background sync thread (lease handling is per-show inside sync_single_show)
+    let bg_state = app_state.clone();
+    std::thread::spawn(move || {
+        loop {
+            if bg_state
+                .sync_in_progress
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                println!("[Sync] Starting background sync...");
+                match crate::sync::sync_shows(&sync_config, &sync_password) {
+                    Ok(crate::sync::SyncResult::Completed) => {
+                        println!("[Sync] Background sync completed successfully");
+                    }
+                    Err(e) => {
+                        eprintln!("[Sync] Background sync error: {}", e);
+                    }
+                }
+                bg_state
+                    .sync_in_progress
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            } else {
+                println!("[Sync] Background sync skipped (sync already in progress)");
             }
-            Ok(crate::sync::SyncResult::Skipped) => {
-                println!("[Sync] Background sync skipped (another instance is syncing)");
-            }
-            Err(e) => {
-                eprintln!("[Sync] Background sync error: {}", e);
-            }
+            std::thread::sleep(std::time::Duration::from_secs(sync_interval));
         }
-        std::thread::sleep(std::time::Duration::from_secs(sync_interval));
     });
 
     // Create tokio runtime and run server
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let app_state = StdArc::new(ReceiverAppState {
-            config: config.clone(),
-            password: password.clone(),
-            global_pool,
-        });
-
         let cors = CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
@@ -1421,7 +1429,8 @@ async fn receiver_shows_handler(
     };
 
     for show_name in show_names {
-        let database_name = crate::sync::get_pg_database_name(&state.config.database.prefix, &show_name);
+        let database_name =
+            crate::sync::get_pg_database_name(&state.config.database.prefix, &show_name);
         // Try to connect and get audio format
         let audio_format = match crate::db_postgres::open_postgres_connection(
             &state.config.database.url,
@@ -1551,7 +1560,11 @@ async fn receiver_show_sessions_handler(
     };
 
     // Get all sections with their start id, timestamp, and total duration samples, optionally filtered by date range
-    let sql = segments::select_sessions_with_join_pg_filtered(params.start_ts, params.end_ts, params.sort_desc);
+    let sql = segments::select_sessions_with_join_pg_filtered(
+        params.start_ts,
+        params.end_ts,
+        params.sort_desc,
+    );
     let rows = match sqlx::query(&sql).fetch_all(&pool).await {
         Ok(r) => r,
         Err(e) => {
@@ -1774,7 +1787,7 @@ async fn receiver_opus_playlist_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Query error: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1834,7 +1847,7 @@ async fn receiver_opus_segment_handler(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Failed to generate init segment: {}", e),
                 )
-                    .into_response()
+                    .into_response();
             }
         };
         return (
@@ -1863,7 +1876,7 @@ async fn receiver_opus_segment_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Database error: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1878,7 +1891,7 @@ async fn receiver_opus_segment_handler(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Database error: {}", e),
                 )
-                    .into_response()
+                    .into_response();
             }
         };
 
@@ -1889,7 +1902,7 @@ async fn receiver_opus_segment_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to parse Opus packets: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1908,7 +1921,7 @@ async fn receiver_opus_segment_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to generate media segment: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1917,40 +1930,41 @@ async fn receiver_opus_segment_handler(
     // Handle Range requests
     if let Some(range_header) = headers.get(header::RANGE)
         && let Ok(range_str) = range_header.to_str()
-            && let Some(range) = range_str.strip_prefix("bytes=") {
-                let parts: Vec<&str> = range.split('-').collect();
-                if parts.len() == 2 {
-                    let start: u64 = parts[0].parse().unwrap_or(0);
-                    let end: u64 = if parts[1].is_empty() {
-                        total_len - 1
-                    } else {
-                        parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
-                    };
-                    if start < total_len {
-                        let range_data = media_segment[start as usize..=(end as usize)].to_vec();
-                        return (
-                            StatusCode::PARTIAL_CONTENT,
-                            [
-                                (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
-                                (
-                                    header::CONTENT_RANGE,
-                                    HeaderValue::from_str(&format!(
-                                        "bytes {}-{}/{}",
-                                        start, end, total_len
-                                    ))
-                                    .unwrap(),
-                                ),
-                                (
-                                    header::CONTENT_LENGTH,
-                                    HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
-                                ),
-                            ],
-                            range_data,
-                        )
-                            .into_response();
-                    }
-                }
+        && let Some(range) = range_str.strip_prefix("bytes=")
+    {
+        let parts: Vec<&str> = range.split('-').collect();
+        if parts.len() == 2 {
+            let start: u64 = parts[0].parse().unwrap_or(0);
+            let end: u64 = if parts[1].is_empty() {
+                total_len - 1
+            } else {
+                parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
+            };
+            if start < total_len {
+                let range_data = media_segment[start as usize..=(end as usize)].to_vec();
+                return (
+                    StatusCode::PARTIAL_CONTENT,
+                    [
+                        (header::CONTENT_TYPE, HeaderValue::from_static("audio/mp4")),
+                        (
+                            header::CONTENT_RANGE,
+                            HeaderValue::from_str(&format!(
+                                "bytes {}-{}/{}",
+                                start, end, total_len
+                            ))
+                            .unwrap(),
+                        ),
+                        (
+                            header::CONTENT_LENGTH,
+                            HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
+                        ),
+                    ],
+                    range_data,
+                )
+                    .into_response();
             }
+        }
+    }
 
     (
         StatusCode::OK,
@@ -2009,7 +2023,7 @@ async fn receiver_aac_playlist_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Query error: {}", e),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -2033,7 +2047,10 @@ async fn receiver_aac_playlist_handler(
     for (seg_id, duration_samples) in segment_list {
         let duration = duration_samples as f64 / sample_rate as f64;
         playlist.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        playlist.push_str(&format!("/api/show/{}/aac-segment/{}.aac\n", show_name, seg_id));
+        playlist.push_str(&format!(
+            "/api/show/{}/aac-segment/{}.aac\n",
+            show_name, seg_id
+        ));
     }
 
     playlist.push_str("#EXT-X-ENDLIST\n");
@@ -2075,7 +2092,7 @@ async fn receiver_aac_segment_handler(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Database error: {}", e),
                 )
-                    .into_response()
+                    .into_response();
             }
         };
 
@@ -2084,40 +2101,41 @@ async fn receiver_aac_segment_handler(
     // Handle Range requests
     if let Some(range_header) = headers.get(header::RANGE)
         && let Ok(range_str) = range_header.to_str()
-            && let Some(range) = range_str.strip_prefix("bytes=") {
-                let parts: Vec<&str> = range.split('-').collect();
-                if parts.len() == 2 {
-                    let start: u64 = parts[0].parse().unwrap_or(0);
-                    let end: u64 = if parts[1].is_empty() {
-                        total_len - 1
-                    } else {
-                        parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
-                    };
-                    if start < total_len {
-                        let range_data = audio_data[start as usize..=(end as usize)].to_vec();
-                        return (
-                            StatusCode::PARTIAL_CONTENT,
-                            [
-                                (header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
-                                (
-                                    header::CONTENT_RANGE,
-                                    HeaderValue::from_str(&format!(
-                                        "bytes {}-{}/{}",
-                                        start, end, total_len
-                                    ))
-                                    .unwrap(),
-                                ),
-                                (
-                                    header::CONTENT_LENGTH,
-                                    HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
-                                ),
-                            ],
-                            range_data,
-                        )
-                            .into_response();
-                    }
-                }
+        && let Some(range) = range_str.strip_prefix("bytes=")
+    {
+        let parts: Vec<&str> = range.split('-').collect();
+        if parts.len() == 2 {
+            let start: u64 = parts[0].parse().unwrap_or(0);
+            let end: u64 = if parts[1].is_empty() {
+                total_len - 1
+            } else {
+                parts[1].parse().unwrap_or(total_len - 1).min(total_len - 1)
+            };
+            if start < total_len {
+                let range_data = audio_data[start as usize..=(end as usize)].to_vec();
+                return (
+                    StatusCode::PARTIAL_CONTENT,
+                    [
+                        (header::CONTENT_TYPE, HeaderValue::from_static("audio/aac")),
+                        (
+                            header::CONTENT_RANGE,
+                            HeaderValue::from_str(&format!(
+                                "bytes {}-{}/{}",
+                                start, end, total_len
+                            ))
+                            .unwrap(),
+                        ),
+                        (
+                            header::CONTENT_LENGTH,
+                            HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
+                        ),
+                    ],
+                    range_data,
+                )
+                    .into_response();
             }
+        }
+    }
 
     (
         StatusCode::OK,
@@ -2143,10 +2161,9 @@ struct SyncStatusResponse {
 async fn receiver_sync_status_handler(
     State(state): State<StdArc<ReceiverAppState>>,
 ) -> impl IntoResponse {
-    let in_progress =
-        crate::db_postgres::is_lease_held_pg(&state.global_pool, crate::sync::SYNC_LEASE_NAME)
-            .await
-            .unwrap_or(false);
+    let in_progress = state
+        .sync_in_progress
+        .load(std::sync::atomic::Ordering::SeqCst);
 
     (
         StatusCode::OK,
@@ -2164,13 +2181,17 @@ struct SyncTriggerResponse {
 async fn receiver_trigger_sync_handler(
     State(state): State<StdArc<ReceiverAppState>>,
 ) -> impl IntoResponse {
-    // Check if sync is already in progress
-    let in_progress =
-        crate::db_postgres::is_lease_held_pg(&state.global_pool, crate::sync::SYNC_LEASE_NAME)
-            .await
-            .unwrap_or(false);
-
-    if in_progress {
+    // Atomically check-and-set to prevent double-triggering
+    if state
+        .sync_in_progress
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
         return (
             StatusCode::CONFLICT,
             [(header::CONTENT_TYPE, "application/json")],
@@ -2183,24 +2204,24 @@ async fn receiver_trigger_sync_handler(
             .into_response();
     }
 
-    // Spawn a new sync in a separate thread (lease handling is inside sync_shows)
+    // Spawn a new sync in a separate thread (lease handling is per-show)
     let sync_config = state.config.clone();
     let sync_password = state.password.clone();
-    let global_pool = state.global_pool.clone();
+    let trigger_state = state.clone();
 
     std::thread::spawn(move || {
         println!("[Sync] Manual sync triggered...");
-        match crate::sync::sync_shows(&sync_config, &sync_password, &global_pool) {
+        match crate::sync::sync_shows(&sync_config, &sync_password) {
             Ok(crate::sync::SyncResult::Completed) => {
                 println!("[Sync] Manual sync completed successfully");
-            }
-            Ok(crate::sync::SyncResult::Skipped) => {
-                println!("[Sync] Manual sync skipped (another instance started syncing)");
             }
             Err(e) => {
                 eprintln!("[Sync] Manual sync error: {}", e);
             }
         }
+        trigger_state
+            .sync_in_progress
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     });
 
     (
@@ -2285,22 +2306,23 @@ async fn receiver_estimate_segment_handler(
     let total_duration_samples: Option<i64> = row.get(4);
 
     // Check if section has any segments
-    let (start_id, end_id, total_samples) = match (start_segment_id, end_segment_id, total_duration_samples) {
-        (Some(s), Some(e), Some(d)) => (s, e, d),
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&EstimateSegmentError {
-                    error: format!("Section {} has no segments", section_id),
-                    section_start_ms: Some(section_start_ms),
-                    section_end_ms: None,
-                })
-                .unwrap(),
-            )
-                .into_response();
-        }
-    };
+    let (start_id, end_id, total_samples) =
+        match (start_segment_id, end_segment_id, total_duration_samples) {
+            (Some(s), Some(e), Some(d)) => (s, e, d),
+            _ => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    serde_json::to_string(&EstimateSegmentError {
+                        error: format!("Section {} has no segments", section_id),
+                        section_start_ms: Some(section_start_ms),
+                        section_end_ms: None,
+                    })
+                    .unwrap(),
+                )
+                    .into_response();
+            }
+        };
 
     // Calculate total duration in milliseconds
     let total_duration_ms = (total_samples as f64 / sample_rate * 1000.0) as i64;

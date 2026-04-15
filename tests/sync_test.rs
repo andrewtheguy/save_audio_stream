@@ -58,27 +58,26 @@
 //! - `test_sync_rejects_recipient_database`: Preventing sync from a recipient (already synced) database
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
+use sqlx::sqlite::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+use save_audio_stream::EXPECTED_DB_VERSION;
 use save_audio_stream::config::{ConfigType, DatabaseConfig, ShowConfig, SyncConfig};
-use save_audio_stream::db_postgres::{self, GLOBAL_DATABASE_NAME};
+use save_audio_stream::db_postgres;
 use save_audio_stream::queries::{metadata, sections, segments};
 use save_audio_stream::segment_wire::{self, WireSegment};
-use save_audio_stream::sync::{replace_source, sync_shows, ReplaceSourceResult};
-use save_audio_stream::EXPECTED_DB_VERSION;
-use sqlx::postgres::PgPool;
+use save_audio_stream::sync::{ReplaceSourceResult, replace_source, sync_shows};
 
 /// Database prefix used for all test databases
 const TEST_DATABASE_PREFIX: &str = "test";
@@ -120,19 +119,6 @@ fn get_test_postgres_config() -> Option<(String, String)> {
     let postgres_url = std::env::var("TEST_POSTGRES_URL").ok()?;
     let password = std::env::var("TEST_POSTGRES_PASSWORD").ok()?;
     Some((postgres_url, password))
-}
-
-/// Create the global PostgreSQL pool for lease management
-async fn create_global_pool(postgres_url: &str, password: &str) -> PgPool {
-    let pool = db_postgres::open_postgres_connection_create_if_needed(
-        postgres_url,
-        password,
-        GLOBAL_DATABASE_NAME,
-    )
-    .await
-    .unwrap();
-    db_postgres::create_leases_table_pg(&pool).await.unwrap();
-    pool
 }
 
 /// Test metadata structure
@@ -298,7 +284,7 @@ async fn get_metadata_handler(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Show not found"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -393,7 +379,7 @@ async fn get_sections_handler(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Show not found"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -428,7 +414,7 @@ async fn get_segments_handler(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Show not found"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -460,10 +446,7 @@ async fn get_segments_handler(
 
     (
         StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            segment_wire::CONTENT_TYPE,
-        )],
+        [(axum::http::header::CONTENT_TYPE, segment_wire::CONTENT_TYPE)],
         body,
     )
         .into_response()
@@ -484,7 +467,7 @@ async fn find_section_by_timestamp_handler(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Show not found"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -556,7 +539,7 @@ async fn section_segment_range_handler(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Show not found"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -626,7 +609,8 @@ async fn verify_destination_db_pg(
     expected_num_segments: usize,
     expected_num_sections: usize,
 ) {
-    let database_name = save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
+    let database_name =
+        save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
     let pool = save_audio_stream::db_postgres::open_postgres_connection(
         postgres_url,
         password,
@@ -673,7 +657,8 @@ async fn verify_destination_db_pg(
 
 /// Helper to drop a test database
 async fn drop_test_database(postgres_url: &str, password: &str, show_name: &str) {
-    let database_name = save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
+    let database_name =
+        save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
     let _ = save_audio_stream::db_postgres::drop_database_if_exists(
         postgres_url,
         password,
@@ -693,9 +678,6 @@ async fn test_sync_new_show() {
     // Clean up any existing test database
     drop_test_database(&postgres_url, &password, show_name).await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Create source database with 3 sections, 5 segments each
     let (source_db, _db_guard) = create_source_database(show_name, "source_unique_123", 3, 5).await;
 
@@ -708,7 +690,7 @@ async fn test_sync_new_show() {
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -741,9 +723,6 @@ async fn test_sync_incremental() {
     // Clean up any existing test database
     drop_test_database(&postgres_url, &password, show_name).await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Create initial source database with 2 sections
     let (source_db, _db_guard) = create_source_database(show_name, "source_unique_456", 2, 5).await;
 
@@ -753,11 +732,17 @@ async fn test_sync_incremental() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Initial sync
-    let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100, show_name);
+    let config = create_test_sync_config(
+        server_url.clone(),
+        postgres_url.clone(),
+        None,
+        100,
+        show_name,
+    );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -780,7 +765,7 @@ async fn test_sync_incremental() {
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -812,9 +797,6 @@ async fn test_sync_with_whitelist() {
     drop_test_database(&postgres_url, &password, "show2").await;
     drop_test_database(&postgres_url, &password, "show3").await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Create multiple source databases
     let (source_db1, _guard1) = create_source_database("show1", "unique_1", 2, 3).await;
     let (source_db2, _guard2) = create_source_database("show2", "unique_2", 2, 3).await;
@@ -837,7 +819,7 @@ async fn test_sync_with_whitelist() {
     );
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -847,7 +829,8 @@ async fn test_sync_with_whitelist() {
     verify_destination_db_pg(&postgres_url, &password, "show1", "unique_1", 6, 2).await;
 
     // Verify show2 does NOT exist (connection should fail)
-    let show2_db_name = save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, "show2");
+    let show2_db_name =
+        save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, "show2");
     let show2_result = save_audio_stream::db_postgres::open_postgres_connection(
         &postgres_url,
         &password,
@@ -875,9 +858,6 @@ async fn test_sync_metadata_validation() {
     // Clean up any existing test database
     drop_test_database(&postgres_url, &password, show_name).await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Create source database
     let (source_db, _db_guard) = create_source_database(show_name, "source_unique_789", 2, 5).await;
 
@@ -887,18 +867,25 @@ async fn test_sync_metadata_validation() {
     let (server_url, _handle) = start_test_server(databases).await;
 
     // Initial sync
-    let config = create_test_sync_config(server_url.clone(), postgres_url.clone(), None, 100, show_name);
+    let config = create_test_sync_config(
+        server_url.clone(),
+        postgres_url.clone(),
+        None,
+        100,
+        show_name,
+    );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
     assert!(result.is_ok());
 
     // Manually tamper with destination metadata in PostgreSQL to cause validation failure
-    let database_name = save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
+    let database_name =
+        save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
     let pool = save_audio_stream::db_postgres::open_postgres_connection(
         &postgres_url,
         &password,
@@ -916,7 +903,7 @@ async fn test_sync_metadata_validation() {
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1025,14 +1012,11 @@ async fn test_sync_rejects_old_version() {
     databases.insert(show_name.to_string(), pool);
     let (server_url, _handle) = start_test_server(databases).await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Try to sync - should fail due to version mismatch
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1149,14 +1133,11 @@ async fn test_sync_rejects_recipient_database() {
     databases.insert(show_name.to_string(), pool);
     let (server_url, _handle) = start_test_server(databases).await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Try to sync - should fail with forbidden error
     let config = create_test_sync_config(server_url, postgres_url.clone(), None, 100, show_name);
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1262,18 +1243,11 @@ async fn test_replace_source_with_forward_match() {
     // Clean up any existing test database
     drop_test_database(&postgres_url, &password, show_name).await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Create initial source and sync
     // Sections at: 1000, 2000, 3000 (ms)
-    let (source_db, _guard1) = create_source_database_with_timestamps(
-        show_name,
-        "old_source_123",
-        &[1000, 2000, 3000],
-        5,
-    )
-    .await;
+    let (source_db, _guard1) =
+        create_source_database_with_timestamps(show_name, "old_source_123", &[1000, 2000, 3000], 5)
+            .await;
 
     let mut databases = HashMap::new();
     databases.insert(show_name.to_string(), source_db);
@@ -1288,9 +1262,9 @@ async fn test_replace_source_with_forward_match() {
         "test_replace_forward",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1298,13 +1272,9 @@ async fn test_replace_source_with_forward_match() {
 
     // Now create NEW source with sections at: 2500, 3500, 4000
     // Receiver's max timestamp is 3000, so section at 3500 should be matched (first after 3000)
-    let (new_source_db, _guard2) = create_source_database_with_timestamps(
-        show_name,
-        "new_source_456",
-        &[2500, 3500, 4000],
-        5,
-    )
-    .await;
+    let (new_source_db, _guard2) =
+        create_source_database_with_timestamps(show_name, "new_source_456", &[2500, 3500, 4000], 5)
+            .await;
 
     let mut new_databases = HashMap::new();
     new_databases.insert(show_name.to_string(), new_source_db);
@@ -1319,11 +1289,10 @@ async fn test_replace_source_with_forward_match() {
         "test_replace_forward",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
-            .map_err(|e| e.to_string())
+        replace_source(&config, &password_clone, &show_name_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1362,18 +1331,11 @@ async fn test_replace_source_rejects_backward_match() {
     // Clean up any existing test database
     drop_test_database(&postgres_url, &password, show_name).await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Create initial source and sync
     // Sections at: 1000, 2000, 3000 (ms) - receiver max will be 3000
-    let (source_db, _guard1) = create_source_database_with_timestamps(
-        show_name,
-        "old_source_abc",
-        &[1000, 2000, 3000],
-        5,
-    )
-    .await;
+    let (source_db, _guard1) =
+        create_source_database_with_timestamps(show_name, "old_source_abc", &[1000, 2000, 3000], 5)
+            .await;
 
     let mut databases = HashMap::new();
     databases.insert(show_name.to_string(), source_db);
@@ -1388,9 +1350,9 @@ async fn test_replace_source_rejects_backward_match() {
         "test_replace_backward",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1399,13 +1361,9 @@ async fn test_replace_source_rejects_backward_match() {
     // Create NEW source with sections BEFORE receiver's max timestamp
     // Sections at: 1500, 2500, 2800 - all before 3000
     // Should be REJECTED because source is behind receiver
-    let (new_source_db, _guard2) = create_source_database_with_timestamps(
-        show_name,
-        "new_source_def",
-        &[1500, 2500, 2800],
-        5,
-    )
-    .await;
+    let (new_source_db, _guard2) =
+        create_source_database_with_timestamps(show_name, "new_source_def", &[1500, 2500, 2800], 5)
+            .await;
 
     let mut new_databases = HashMap::new();
     new_databases.insert(show_name.to_string(), new_source_db);
@@ -1420,11 +1378,10 @@ async fn test_replace_source_rejects_backward_match() {
         "test_replace_backward",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
-            .map_err(|e| e.to_string())
+        replace_source(&config, &password_clone, &show_name_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1433,8 +1390,7 @@ async fn test_replace_source_rejects_backward_match() {
     assert!(result.is_err(), "Expected error but got: {:?}", result);
     let err_msg = result.err().unwrap();
     assert!(
-        err_msg.contains("before receiver's current position")
-            || err_msg.contains("old/stale"),
+        err_msg.contains("before receiver's current position") || err_msg.contains("old/stale"),
         "Error should mention source is behind receiver, got: {}",
         err_msg
     );
@@ -1456,9 +1412,6 @@ async fn test_replace_source_empty_receiver() {
 
     // Clean up any existing test database
     drop_test_database(&postgres_url, &password, show_name).await;
-
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
 
     // Create empty receiver database (without syncing any data)
     // We need to create the database structure but with no segments/sections
@@ -1498,13 +1451,9 @@ async fn test_replace_source_empty_receiver() {
     drop(pool);
 
     // Create new source with some data
-    let (new_source_db, _guard) = create_source_database_with_timestamps(
-        show_name,
-        "new_source_xyz",
-        &[1000, 2000, 3000],
-        5,
-    )
-    .await;
+    let (new_source_db, _guard) =
+        create_source_database_with_timestamps(show_name, "new_source_xyz", &[1000, 2000, 3000], 5)
+            .await;
 
     let mut databases = HashMap::new();
     databases.insert(show_name.to_string(), new_source_db);
@@ -1519,11 +1468,10 @@ async fn test_replace_source_empty_receiver() {
         "test_replace_empty_recv",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
-            .map_err(|e| e.to_string())
+        replace_source(&config, &password_clone, &show_name_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1553,17 +1501,10 @@ async fn test_replace_source_rejects_empty_source() {
     // Clean up any existing test database
     drop_test_database(&postgres_url, &password, show_name).await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Create initial source and sync
-    let (source_db, _guard1) = create_source_database_with_timestamps(
-        show_name,
-        "old_source_xyz",
-        &[1000, 2000, 3000],
-        5,
-    )
-    .await;
+    let (source_db, _guard1) =
+        create_source_database_with_timestamps(show_name, "old_source_xyz", &[1000, 2000, 3000], 5)
+            .await;
 
     let mut databases = HashMap::new();
     databases.insert(show_name.to_string(), source_db);
@@ -1578,9 +1519,9 @@ async fn test_replace_source_rejects_empty_source() {
         "test_replace_empty_src",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1624,11 +1565,10 @@ async fn test_replace_source_rejects_empty_source() {
         "test_replace_empty_src",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
-            .map_err(|e| e.to_string())
+        replace_source(&config, &password_clone, &show_name_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1664,9 +1604,6 @@ async fn test_replace_source_then_sync() {
     // Clean up any existing test database
     drop_test_database(&postgres_url, &password, show_name).await;
 
-    // Create global pool for lease management
-    let global_pool = create_global_pool(&postgres_url, &password).await;
-
     // Create initial source and sync
     // Sections at: 1000, 2000 (ms)
     let (source_db, _guard1) =
@@ -1685,9 +1622,9 @@ async fn test_replace_source_then_sync() {
         "test_replace_then_sync",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool_clone).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1712,13 +1649,9 @@ async fn test_replace_source_then_sync() {
     // source would have different segment IDs). The sync will insert new segments with IDs
     // from the new source, so they must not conflict with existing receiver segment IDs.
     // Since receiver has segments 1-10 from old source, new source needs IDs > 10.
-    let (new_source_db, _guard2) = create_source_database_with_timestamps(
-        show_name,
-        "new_source_222",
-        &[1500, 2500, 3000],
-        5,
-    )
-    .await;
+    let (new_source_db, _guard2) =
+        create_source_database_with_timestamps(show_name, "new_source_222", &[1500, 2500, 3000], 5)
+            .await;
 
     // Offset segment IDs on new source to avoid conflicts with receiver's existing segments
     // In a real scenario, the new source would have entirely different segment IDs
@@ -1740,11 +1673,10 @@ async fn test_replace_source_then_sync() {
         "test_replace_then_sync",
     );
     let password_clone = password.clone();
-    let global_pool_clone = global_pool.clone();
+
     let show_name_clone = show_name.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        replace_source(&config, &password_clone, &global_pool_clone, &show_name_clone)
-            .map_err(|e| e.to_string())
+        replace_source(&config, &password_clone, &show_name_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
@@ -1769,11 +1701,15 @@ async fn test_replace_source_then_sync() {
     );
     let password_clone = password.clone();
     let result = tokio::task::spawn_blocking(move || {
-        sync_shows(&config, &password_clone, &global_pool).map_err(|e| e.to_string())
+        sync_shows(&config, &password_clone).map_err(|e| e.to_string())
     })
     .await
     .unwrap();
-    assert!(result.is_ok(), "Sync after replace failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Sync after replace failed: {:?}",
+        result.err()
+    );
 
     // Verify: should have original data PLUS new synced data from sections 2500 and 3000
     // Original: 2 sections (1000, 2000) * 5 segments = 10 segments
@@ -1786,10 +1722,9 @@ async fn test_replace_source_then_sync() {
     // Total: 5 sections (1000, 1500, 2000, 2500, 3000)
     let database_name =
         save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
-    let pool =
-        db_postgres::open_postgres_connection(&postgres_url, &password, &database_name)
-            .await
-            .unwrap();
+    let pool = db_postgres::open_postgres_connection(&postgres_url, &password, &database_name)
+        .await
+        .unwrap();
 
     // Check source_unique_id was updated
     let source_unique_id: String =

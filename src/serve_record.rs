@@ -1,9 +1,9 @@
 use axum::{
+    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use log::{error, warn};
 use serde::{Deserialize, Serialize};
@@ -182,7 +182,6 @@ struct SectionSegmentRange {
     max_id: Option<i64>,
 }
 
-
 pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> impl IntoResponse {
     // Scan output directory for .sqlite files
     let dir_path = &state.output_dir;
@@ -252,9 +251,10 @@ pub async fn sync_shows_list_handler(State(state): State<StdArc<AppState>>) -> i
                 .flatten();
 
         if let Some(is_recipient) = is_recipient
-            && is_recipient == "true" {
-                continue; // Skip recipient databases
-            }
+            && is_recipient == "true"
+        {
+            continue; // Skip recipient databases
+        }
 
         // Get name from metadata
         let name: Option<String> =
@@ -343,13 +343,14 @@ pub async fn sync_show_metadata_handler(
             .flatten();
 
     if let Some(is_recipient) = &is_recipient
-        && is_recipient == "true" {
-            return (
-                StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({"error": "Cannot sync from a recipient database"})),
-            )
-                .into_response();
-        }
+        && is_recipient == "true"
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({"error": "Cannot sync from a recipient database"})),
+        )
+            .into_response();
+    }
 
     // Fetch all required metadata
     let unique_id: String =
@@ -605,20 +606,24 @@ pub async fn sync_show_segments_handler(
             .flatten();
 
     if let Some(is_recipient) = is_recipient
-        && is_recipient == "true" {
-            return (
-                StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({"error": "Cannot sync from a recipient database"})),
-            )
-                .into_response();
-        }
+        && is_recipient == "true"
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({"error": "Cannot sync from a recipient database"})),
+        )
+            .into_response();
+    }
 
     // Fetch segments (optionally filtered by cutoff timestamp)
     let limit = query.limit.unwrap_or(100);
     let sql = match query.cutoff_ts {
-        Some(cutoff) => {
-            segments::select_range_with_limit_and_cutoff(query.start_id, query.end_id, limit, cutoff)
-        }
+        Some(cutoff) => segments::select_range_with_limit_and_cutoff(
+            query.start_id,
+            query.end_id,
+            limit,
+            cutoff,
+        ),
         None => segments::select_range_with_limit(query.start_id, query.end_id, limit),
     };
     let rows = match sqlx::query(&sql).fetch_all(&pool).await {
@@ -650,10 +655,7 @@ pub async fn sync_show_segments_handler(
 
     (
         StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            segment_wire::CONTENT_TYPE,
-        )],
+        [(axum::http::header::CONTENT_TYPE, segment_wire::CONTENT_TYPE)],
         body,
     )
         .into_response()
@@ -711,13 +713,14 @@ pub async fn find_section_by_timestamp_handler(
             .flatten();
 
     if let Some(is_recipient) = &is_recipient
-        && is_recipient == "true" {
-            return (
-                StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({"error": "Cannot query a recipient database"})),
-            )
-                .into_response();
-        }
+        && is_recipient == "true"
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({"error": "Cannot query a recipient database"})),
+        )
+            .into_response();
+    }
 
     // Get source unique_id
     let source_unique_id: String =
@@ -782,25 +785,26 @@ pub async fn find_section_by_timestamp_handler(
         };
 
     // Find section before or equal to timestamp
-    let before_or_equal_section: Option<SectionMatch> =
-        match sqlx::query(&sections::select_latest_before_or_equal_timestamp(query.timestamp_ms))
-            .fetch_optional(&pool)
-            .await
-        {
-            Ok(Some(row)) => Some(SectionMatch {
-                id: row.get(0),
-                start_timestamp_ms: row.get(1),
-            }),
-            Ok(None) => None,
-            Err(e) => {
-                error!("Failed to query section before timestamp: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
-                )
-                    .into_response();
-            }
-        };
+    let before_or_equal_section: Option<SectionMatch> = match sqlx::query(
+        &sections::select_latest_before_or_equal_timestamp(query.timestamp_ms),
+    )
+    .fetch_optional(&pool)
+    .await
+    {
+        Ok(Some(row)) => Some(SectionMatch {
+            id: row.get(0),
+            start_timestamp_ms: row.get(1),
+        }),
+        Ok(None) => None,
+        Err(e) => {
+            error!("Failed to query section before timestamp: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+                .into_response();
+        }
+    };
 
     let response = FindSectionResponse {
         after_section,

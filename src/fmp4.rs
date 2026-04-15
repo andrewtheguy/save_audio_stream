@@ -56,7 +56,7 @@ fn write_mvhd(writer: &mut Vec<u8>, timescale: u32) -> io::Result<()> {
         write_u16_be(w, 0); // Reserved
         write_u32_be(w, 0); // Reserved
         write_u32_be(w, 0); // Reserved
-                            // Matrix
+        // Matrix
         for &val in &[0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000] {
             write_u32_be(w, val);
         }
@@ -85,7 +85,7 @@ fn write_tkhd(writer: &mut Vec<u8>, track_id: u32) -> io::Result<()> {
         write_u16_be(w, 0); // Alternate group
         write_u16_be(w, 0x0100); // Volume (1.0)
         write_u16_be(w, 0); // Reserved
-                            // Matrix
+        // Matrix
         for &val in &[0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000] {
             write_u32_be(w, val);
         }
@@ -349,7 +349,7 @@ fn write_mfhd(writer: &mut Vec<u8>, sequence_number: u32) -> io::Result<()> {
 fn write_tfhd(writer: &mut Vec<u8>, track_id: u32) -> io::Result<()> {
     write_box(writer, b"tfhd", |w| {
         w.push(0); // Version
-                   // Flags: default-base-is-moof (so offsets are relative to this moof box)
+        // Flags: default-base-is-moof (so offsets are relative to this moof box)
         w.extend_from_slice(&[0x02, 0, 0]);
         write_u32_be(w, track_id); // Track ID
         Ok(())
@@ -376,7 +376,7 @@ fn write_trun(
     let mut data_offset_pos = 0usize;
     write_box(writer, b"trun", |w| {
         w.push(0); // Version
-                   // Flags: data-offset-present, sample-duration-present, sample-size-present
+        // Flags: data-offset-present, sample-duration-present, sample-size-present
         w.extend_from_slice(&[0, 0x03, 0x01]); // Flags
         write_u32_be(w, sample_count); // Sample count
         data_offset_pos = w.len();

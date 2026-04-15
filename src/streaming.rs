@@ -1,8 +1,8 @@
 use crossbeam_channel::Receiver;
 use log::warn;
 use std::io::{Read, Seek, SeekFrom};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use symphonia::core::io::MediaSource;
 
 /// A streaming media source that reads from a channel

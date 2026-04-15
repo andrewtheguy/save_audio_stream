@@ -1,6 +1,5 @@
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use sqlx::postgres::PgPool;
 use std::collections::HashSet;
 use std::sync::mpsc::{self, RecvTimeoutError};
 
@@ -74,10 +73,8 @@ pub const SYNC_LEASE_NAME: &str = "sync";
 /// Result of sync_shows indicating whether sync was performed
 #[derive(Debug)]
 pub enum SyncResult {
-    /// Sync completed successfully
+    /// Sync completed successfully (individual shows may have been skipped due to per-show leases)
     Completed,
-    /// Sync was skipped because another instance holds the lease
-    Skipped,
 }
 
 /// Result of replace_source operation
@@ -139,117 +136,45 @@ fn cleanup_show_retention_pg(
 }
 
 /// Main entry point for syncing multiple shows (PostgreSQL version)
-/// Handles lease acquisition, renewal, and release internally.
-/// Returns SyncResult::Skipped if another instance is already syncing.
+/// Each show acquires its own per-show lease independently.
 pub fn sync_shows(
     config: &SyncConfig,
     password: &str,
-    global_pool: &PgPool,
 ) -> Result<SyncResult, Box<dyn std::error::Error + Send + Sync>> {
-    // Generate unique holder ID for this sync operation
-    let holder_id = format!(
-        "sync-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    );
-
-    // Use custom lease name from config if provided, otherwise use default
-    let lease_name = config
-        .lease_name
-        .as_deref()
-        .unwrap_or(SYNC_LEASE_NAME);
-
-    let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
-
-    // Try to acquire the lease
-    let rt = tokio::runtime::Runtime::new()?;
-    let acquired = rt.block_on(async {
-        db_postgres::try_acquire_lease_pg(
-            global_pool,
-            lease_name,
-            &holder_id,
-            lease_duration_ms,
-        )
-        .await
-    })?;
-
-    if !acquired {
-        println!("[Sync] Lease held by another instance, skipping");
-        return Ok(SyncResult::Skipped);
-    }
-
-    println!("[Sync] Acquired sync lease");
-
-    // Spawn lease renewal thread
-    let renewal_pool = global_pool.clone();
-    let renewal_holder_id = holder_id.clone();
-    let renewal_lease_name = lease_name.to_string();
-    let renewal_interval_ms = (lease_duration_ms / 4).clamp(10_000, 30_000) as u64;
-    let renewal_interval = std::time::Duration::from_millis(renewal_interval_ms);
-    let (stop_tx, stop_rx) = mpsc::channel();
-
-    let renewal_handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create renewal runtime");
-        loop {
-            match stop_rx.recv_timeout(renewal_interval) {
-                Ok(_) | Err(RecvTimeoutError::Disconnected) => break,
-                Err(RecvTimeoutError::Timeout) => {
-                    let renewed = rt.block_on(async {
-                        db_postgres::renew_lease_pg(
-                            &renewal_pool,
-                            &renewal_lease_name,
-                            &renewal_holder_id,
-                            lease_duration_ms,
-                        )
-                        .await
-                    });
-                    match renewed {
-                        Ok(true) => println!("[Sync] Lease renewed"),
-                        Ok(false) => {
-                            eprintln!("[Sync] Warning: Failed to renew lease - lost ownership")
-                        }
-                        Err(e) => eprintln!("[Sync] Warning: Lease renewal error: {}", e),
-                    }
-                }
-            }
-        }
-    });
-
-    // Run the actual sync, capturing the result
-    let sync_result = sync_shows_internal(config, password);
-
-    // Stop renewal thread
-    let _ = stop_tx.send(());
-    let _ = renewal_handle.join();
-
-    // Release the lease
-    let _ = rt.block_on(async {
-        db_postgres::release_lease_pg(global_pool, lease_name, &holder_id).await
-    });
-    println!("[Sync] Released sync lease");
-
-    // Return the sync result
-    sync_result?;
+    sync_shows_internal(config, password)?;
     Ok(SyncResult::Completed)
 }
 
 /// Replace the source database for an existing receiver
 ///
 /// This operation:
-/// 1. Acquires the sync lease (prevents concurrent sync/replace)
+/// 1. Acquires a per-show lease (prevents concurrent sync/replace on same show)
 /// 2. Gets the receiver's current latest section timestamp
 /// 3. Queries the new source for a matching section
 /// 4. Updates source_unique_id and last_synced_source_id atomically
 pub fn replace_source(
     config: &SyncConfig,
     password: &str,
-    global_pool: &PgPool,
     show_name: &str,
 ) -> Result<ReplaceSourceResult, Box<dyn std::error::Error + Send + Sync>> {
     let remote_url = &config.remote_url;
+
+    // Connect to show's PostgreSQL database
+    let database_name = get_pg_database_name(&config.database.prefix, show_name);
+    println!(
+        "[ReplaceSource] Connecting to PostgreSQL database '{}'...",
+        database_name
+    );
+
+    let db = SyncDbPg::connect(&config.database.url, password, &database_name).map_err(|e| {
+        format!(
+            "Failed to connect to PostgreSQL database '{}': {}",
+            database_name, e
+        )
+    })?;
+
+    // Create leases table in show database
+    db.block_on(db_postgres::create_leases_table_pg(db.pool()))?;
 
     // Generate unique holder ID for this operation
     let holder_id = format!(
@@ -265,61 +190,55 @@ pub fn replace_source(
     let lease_name = config.lease_name.as_deref().unwrap_or(SYNC_LEASE_NAME);
     let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
 
-    // Try to acquire the lease
-    let rt = tokio::runtime::Runtime::new()?;
-    let acquired = rt.block_on(async {
-        db_postgres::try_acquire_lease_pg(global_pool, lease_name, &holder_id, lease_duration_ms)
-            .await
-    })?;
+    // Try to acquire the per-show lease
+    let acquired = db.block_on(db_postgres::try_acquire_lease_pg(
+        db.pool(),
+        lease_name,
+        &holder_id,
+        lease_duration_ms,
+    ))?;
 
     if !acquired {
         println!("[ReplaceSource] Lease held by another instance, skipping");
         return Ok(ReplaceSourceResult::Skipped);
     }
 
-    println!("[ReplaceSource] Acquired sync lease");
+    println!(
+        "[ReplaceSource] Acquired sync lease for show '{}'",
+        show_name
+    );
 
     // Run the replace operation
-    let result = replace_source_internal(config, password, show_name, remote_url);
+    let result = replace_source_internal(&db, show_name, remote_url);
 
     // Release the lease
-    let _ = rt.block_on(async {
-        db_postgres::release_lease_pg(global_pool, lease_name, &holder_id).await
-    });
-    println!("[ReplaceSource] Released sync lease");
+    let _ = db.block_on(db_postgres::release_lease_pg(
+        db.pool(),
+        lease_name,
+        &holder_id,
+    ));
+    println!(
+        "[ReplaceSource] Released sync lease for show '{}'",
+        show_name
+    );
 
     result
 }
 
 /// Internal implementation of replace_source (without lease handling)
 fn replace_source_internal(
-    config: &SyncConfig,
-    password: &str,
+    db: &SyncDbPg,
     show_name: &str,
     remote_url: &str,
 ) -> Result<ReplaceSourceResult, Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
 
-    // Connect to receiver's PostgreSQL database
-    let database_name = get_pg_database_name(&config.database.prefix, show_name);
-    println!(
-        "[ReplaceSource] Connecting to PostgreSQL database '{}'...",
-        database_name
-    );
-
-    let db = SyncDbPg::connect(&config.database.url, password, &database_name).map_err(|e| {
-        format!(
-            "Failed to connect to PostgreSQL database '{}': {}",
-            database_name, e
-        )
-    })?;
-
     // Check if receiver has any sections
-    let receiver_max_timestamp = db_postgres::get_max_section_timestamp_pg_sync(&db)?;
+    let receiver_max_timestamp = db_postgres::get_max_section_timestamp_pg_sync(db)?;
 
     // Get current source_unique_id (if any)
     let old_source_id: Option<String> =
-        db_postgres::query_metadata_pg_sync(&db, "source_unique_id")?;
+        db_postgres::query_metadata_pg_sync(db, "source_unique_id")?;
 
     // If receiver has no sections, it's a fresh start - just validate and update source_unique_id
     let receiver_max_ts = match receiver_max_timestamp {
@@ -347,7 +266,7 @@ fn replace_source_internal(
 
             // Update source_unique_id
             if old_source_id.is_some() {
-                db_postgres::upsert_metadata_pg_sync(&db, "source_unique_id", &metadata.unique_id)?;
+                db_postgres::upsert_metadata_pg_sync(db, "source_unique_id", &metadata.unique_id)?;
             }
 
             println!(
@@ -481,13 +400,14 @@ fn replace_source_internal(
     })
 }
 
-/// Internal sync implementation (without lease handling)
+/// Internal sync implementation — each show acquires its own lease
 fn sync_shows_internal(
     config: &SyncConfig,
     password: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let remote_url = &config.remote_url;
     let chunk_size = config.chunk_size.unwrap_or(100);
+    let lease_name = config.lease_name.as_deref().unwrap_or(SYNC_LEASE_NAME);
 
     // Verify remote server is in record mode
     let client = Client::new();
@@ -568,6 +488,9 @@ fn sync_shows_internal(
 
     println!("Starting sync of {} show(s)", show_names.len());
 
+    let mut synced_count: usize = 0;
+    let mut skipped_count: usize = 0;
+
     // Process each show sequentially
     for (idx, show_name) in show_names.iter().enumerate() {
         // Get retention hours for this show (None if not configured)
@@ -584,7 +507,7 @@ fn sync_shows_internal(
         );
 
         // Sync single show - exit immediately on any error
-        sync_single_show(
+        let synced = sync_single_show(
             remote_url,
             &config.database.url,
             password,
@@ -592,39 +515,54 @@ fn sync_shows_internal(
             chunk_size,
             &config.database.prefix,
             retention_hours,
+            lease_name,
         )?;
 
-        // Run retention cleanup if configured
-        if let Some(hours) = retention_hours {
-            let database_name = get_pg_database_name(&config.database.prefix, show_name);
-            match SyncDbPg::connect(&config.database.url, password, &database_name) {
-                Ok(db) => {
-                    if let Err(e) = cleanup_show_retention_pg(&db, show_name, hours) {
-                        eprintln!("[{}] Warning: Retention cleanup failed: {}", show_name, e);
+        if synced {
+            // Run retention cleanup if configured
+            if let Some(hours) = retention_hours {
+                let database_name = get_pg_database_name(&config.database.prefix, show_name);
+                match SyncDbPg::connect(&config.database.url, password, &database_name) {
+                    Ok(db) => {
+                        if let Err(e) = cleanup_show_retention_pg(&db, show_name, hours) {
+                            eprintln!("[{}] Warning: Retention cleanup failed: {}", show_name, e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[{}] Warning: Could not connect to database for cleanup: {}",
+                            show_name, e
+                        );
                     }
                 }
-                Err(e) => {
-                    eprintln!(
-                        "[{}] Warning: Could not connect to database for cleanup: {}",
-                        show_name, e
-                    );
-                }
             }
-        }
 
-        println!(
-            "[{}/{}] ✓ Show '{}' synced successfully",
-            idx + 1,
-            show_names.len(),
-            show_name
-        );
+            synced_count += 1;
+            println!(
+                "[{}/{}] ✓ Show '{}' synced successfully",
+                idx + 1,
+                show_names.len(),
+                show_name
+            );
+        } else {
+            skipped_count += 1;
+        }
     }
 
-    println!("\n✓ All {} show(s) synced successfully", show_names.len());
+    if skipped_count > 0 {
+        println!(
+            "\n✓ {} show(s) synced, {} skipped (lease held by another instance)",
+            synced_count, skipped_count
+        );
+    } else {
+        println!("\n✓ All {} show(s) synced successfully", show_names.len());
+    }
     Ok(())
 }
 
-/// Sync a single show from remote to local PostgreSQL database
+/// Sync a single show from remote to local PostgreSQL database.
+/// Acquires a per-show lease to prevent concurrent syncs of the same show.
+#[allow(clippy::too_many_arguments)]
 fn sync_single_show(
     remote_url: &str,
     postgres_url: &str,
@@ -633,7 +571,8 @@ fn sync_single_show(
     chunk_size: u64,
     database_prefix: &str,
     retention_hours: Option<i64>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    lease_name: &str,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
 
     // Calculate cutoff timestamp if retention is configured
@@ -692,9 +631,145 @@ fn sync_single_show(
     // Initialize schema (idempotent)
     crate::db_postgres::init_database_schema_pg_sync(&db)?;
 
+    // Create leases table in show database and acquire per-show lease
+    db.block_on(db_postgres::create_leases_table_pg(db.pool()))?;
+
+    let holder_id = format!(
+        "sync-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+    let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
+
+    let acquired = db.block_on(db_postgres::try_acquire_lease_pg(
+        db.pool(),
+        lease_name,
+        &holder_id,
+        lease_duration_ms,
+    ))?;
+
+    if !acquired {
+        println!("[{}]   Lease held by another instance, skipping", show_name);
+        return Ok(false);
+    }
+
+    println!("[{}]   Acquired sync lease", show_name);
+
+    // Spawn lease renewal thread
+    let renewal_pool = db.pool().clone();
+    let renewal_holder_id = holder_id.clone();
+    let renewal_lease_name = lease_name.to_string();
+    let renewal_interval_ms = (lease_duration_ms / 4).clamp(10_000, 30_000) as u64;
+    let renewal_interval = std::time::Duration::from_millis(renewal_interval_ms);
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let lease_lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let renewal_lease_lost = lease_lost.clone();
+
+    const MAX_RENEWAL_FAILURES: u32 = 3;
+
+    let renewal_show_name = show_name.to_string();
+    let renewal_handle = std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create renewal runtime");
+        let mut consecutive_failures: u32 = 0;
+        loop {
+            match stop_rx.recv_timeout(renewal_interval) {
+                Ok(_) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    let renewed = rt.block_on(async {
+                        db_postgres::renew_lease_pg(
+                            &renewal_pool,
+                            &renewal_lease_name,
+                            &renewal_holder_id,
+                            lease_duration_ms,
+                        )
+                        .await
+                    });
+                    match renewed {
+                        Ok(true) => {
+                            consecutive_failures = 0;
+                            println!("[{}]   Lease renewed", renewal_show_name);
+                        }
+                        Ok(false) => {
+                            consecutive_failures += 1;
+                            eprintln!(
+                                "[{}]   Warning: Failed to renew lease - lost ownership ({}/{})",
+                                renewal_show_name, consecutive_failures, MAX_RENEWAL_FAILURES
+                            );
+                        }
+                        Err(e) => {
+                            consecutive_failures += 1;
+                            eprintln!(
+                                "[{}]   Warning: Lease renewal error ({}/{}): {}",
+                                renewal_show_name, consecutive_failures, MAX_RENEWAL_FAILURES, e
+                            );
+                        }
+                    }
+                    if consecutive_failures >= MAX_RENEWAL_FAILURES {
+                        eprintln!(
+                            "[{}]   Error: Lease lost after {} consecutive renewal failures, aborting sync",
+                            renewal_show_name, consecutive_failures
+                        );
+                        renewal_lease_lost.store(true, std::sync::atomic::Ordering::SeqCst);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Run the actual sync work
+    let sync_result = sync_single_show_internal(
+        &client, remote_url, show_name, &db, &metadata, chunk_size, cutoff_ts,
+    );
+
+    // Stop renewal thread
+    let _ = stop_tx.send(());
+    let _ = renewal_handle.join();
+
+    // Check if the lease was lost during sync
+    if lease_lost.load(std::sync::atomic::Ordering::SeqCst) {
+        // Release is best-effort — lease may already be taken by another instance
+        let _ = db.block_on(db_postgres::release_lease_pg(
+            db.pool(),
+            lease_name,
+            &holder_id,
+        ));
+        return Err(format!(
+            "[{}] Sync aborted: lease lost after {} consecutive renewal failures",
+            show_name, MAX_RENEWAL_FAILURES
+        )
+        .into());
+    }
+
+    // Release the lease
+    let _ = db.block_on(db_postgres::release_lease_pg(
+        db.pool(),
+        lease_name,
+        &holder_id,
+    ));
+    println!("[{}]   Released sync lease", show_name);
+
+    sync_result?;
+    Ok(true)
+}
+
+/// Internal sync work for a single show (without lease handling)
+#[allow(clippy::too_many_arguments)]
+fn sync_single_show_internal(
+    client: &Client,
+    remote_url: &str,
+    show_name: &str,
+    db: &SyncDbPg,
+    metadata: &ShowMetadata,
+    chunk_size: u64,
+    cutoff_ts: Option<i64>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Check if database exists (has metadata)
     let existing_unique_id: Option<String> =
-        crate::db_postgres::query_metadata_pg_sync(&db, "unique_id")?;
+        crate::db_postgres::query_metadata_pg_sync(db, "unique_id")?;
 
     let start_id = if let Some(existing_unique_id) = existing_unique_id {
         // Existing database - validate and resume
@@ -705,7 +780,7 @@ fn sync_single_show(
         );
 
         // Validate local version matches expected version
-        let local_version: String = crate::db_postgres::query_metadata_pg_sync(&db, "version")?
+        let local_version: String = crate::db_postgres::query_metadata_pg_sync(db, "version")?
             .ok_or("Failed to read version from local database: key not found")?;
 
         if local_version != EXPECTED_DB_VERSION {
@@ -719,7 +794,7 @@ fn sync_single_show(
 
         // Validate source_unique_id matches remote unique_id
         let source_unique_id: String =
-            crate::db_postgres::query_metadata_pg_sync(&db, "source_unique_id")?
+            crate::db_postgres::query_metadata_pg_sync(db, "source_unique_id")?
                 .ok_or("Failed to read source_unique_id from local database: key not found")?;
 
         if source_unique_id != metadata.unique_id {
@@ -731,11 +806,11 @@ fn sync_single_show(
         }
 
         // Validate metadata matches
-        validate_metadata(&db, &metadata)?;
+        validate_metadata(db, metadata)?;
 
         // Get last synced source ID
         let last_synced_source_id: i64 =
-            crate::db_postgres::query_metadata_pg_sync(&db, "last_synced_source_id")?
+            crate::db_postgres::query_metadata_pg_sync(db, "last_synced_source_id")?
                 .map(|v| v.parse().unwrap_or(0))
                 .unwrap_or(0);
 
@@ -755,15 +830,15 @@ fn sync_single_show(
         );
 
         // Insert metadata from remote
-        crate::db_postgres::insert_metadata_pg_sync(&db, "version", &metadata.version)?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "unique_id", &target_unique_id)?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "name", &metadata.name)?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "audio_format", &metadata.audio_format)?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "bitrate", &metadata.bitrate)?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "sample_rate", &metadata.sample_rate)?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "is_recipient", "true")?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "source_unique_id", &metadata.unique_id)?;
-        crate::db_postgres::insert_metadata_pg_sync(&db, "last_synced_source_id", "0")?;
+        crate::db_postgres::insert_metadata_pg_sync(db, "version", &metadata.version)?;
+        crate::db_postgres::insert_metadata_pg_sync(db, "unique_id", &target_unique_id)?;
+        crate::db_postgres::insert_metadata_pg_sync(db, "name", &metadata.name)?;
+        crate::db_postgres::insert_metadata_pg_sync(db, "audio_format", &metadata.audio_format)?;
+        crate::db_postgres::insert_metadata_pg_sync(db, "bitrate", &metadata.bitrate)?;
+        crate::db_postgres::insert_metadata_pg_sync(db, "sample_rate", &metadata.sample_rate)?;
+        crate::db_postgres::insert_metadata_pg_sync(db, "is_recipient", "true")?;
+        crate::db_postgres::insert_metadata_pg_sync(db, "source_unique_id", &metadata.unique_id)?;
+        crate::db_postgres::insert_metadata_pg_sync(db, "last_synced_source_id", "0")?;
 
         metadata.min_id
     };
@@ -788,7 +863,7 @@ fn sync_single_show(
     let sections_count = remote_sections.len();
     for section in remote_sections {
         crate::db_postgres::insert_section_or_ignore_pg_sync(
-            &db,
+            db,
             section.id,
             section.start_timestamp_ms,
         )?;

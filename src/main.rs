@@ -188,26 +188,10 @@ fn receiver_from_config(
     })?;
 
     if sync_only {
-        // Sync once and exit - create global pool for lease management
-        let rt = tokio::runtime::Runtime::new()?;
-        let global_pool = rt.block_on(async {
-            let pool = save_audio_stream::db_postgres::open_postgres_connection_create_if_needed(
-                &sync_config.database.url,
-                &password,
-                save_audio_stream::db_postgres::GLOBAL_DATABASE_NAME,
-            )
-            .await?;
-            save_audio_stream::db_postgres::create_leases_table_pg(&pool).await?;
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(pool)
-        })?;
-
-        match save_audio_stream::sync::sync_shows(&sync_config, &password, &global_pool) {
+        // Sync once and exit - per-show lease management is handled internally
+        match save_audio_stream::sync::sync_shows(&sync_config, &password) {
             Ok(save_audio_stream::sync::SyncResult::Completed) => {
                 println!("Sync completed successfully");
-                Ok(())
-            }
-            Ok(save_audio_stream::sync::SyncResult::Skipped) => {
-                println!("Sync skipped (another instance is syncing)");
                 Ok(())
             }
             Err(e) => Err(e),
@@ -262,22 +246,8 @@ fn replace_source_command(
         )
     })?;
 
-    // Create global pool for lease management
-    let rt = tokio::runtime::Runtime::new()?;
-    let global_pool = rt.block_on(async {
-        let pool = save_audio_stream::db_postgres::open_postgres_connection_create_if_needed(
-            &sync_config.database.url,
-            &password,
-            save_audio_stream::db_postgres::GLOBAL_DATABASE_NAME,
-        )
-        .await?;
-        save_audio_stream::db_postgres::create_leases_table_pg(&pool).await?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(pool)
-    })?;
-
-    // Run replace source operation
-    match save_audio_stream::sync::replace_source(&sync_config, &password, &global_pool, &show_name)
-    {
+    // Run replace source operation - per-show lease management is handled internally
+    match save_audio_stream::sync::replace_source(&sync_config, &password, &show_name) {
         Ok(save_audio_stream::sync::ReplaceSourceResult::Replaced {
             old_source_id,
             new_source_id,
@@ -293,7 +263,9 @@ fn replace_source_command(
                 matched_section_id, matched_section_timestamp_ms
             );
             println!("  Will resume from segment: {}", resume_from_segment_id);
-            println!("\nRun 'receiver --sync-only' or 'receiver' to continue syncing from new source.");
+            println!(
+                "\nRun 'receiver --sync-only' or 'receiver' to continue syncing from new source."
+            );
             Ok(())
         }
         Ok(save_audio_stream::sync::ReplaceSourceResult::Skipped) => {
@@ -303,7 +275,9 @@ fn replace_source_command(
         Ok(save_audio_stream::sync::ReplaceSourceResult::FreshStart { new_source_id }) => {
             println!("Receiver has no existing data.");
             println!("  New source: {}", new_source_id);
-            println!("\nRun 'receiver --sync-only' or 'receiver' to start syncing from new source.");
+            println!(
+                "\nRun 'receiver --sync-only' or 'receiver' to start syncing from new source."
+            );
             Ok(())
         }
         Err(e) => Err(e),

@@ -66,7 +66,13 @@ fn build_env_var_name(cred_type: CredentialType, profile: &str) -> String {
     // Replace non-alphanumeric chars with underscore and uppercase
     let profile_normalized: String = profile
         .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("CRED_{}_{}_PASSWORD", type_name, profile_normalized)
 }
