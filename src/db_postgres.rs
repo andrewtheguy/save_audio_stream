@@ -518,14 +518,19 @@ pub fn get_latest_section_before_cutoff_pg_sync(
 /// Default lease duration in milliseconds (10 minutes)
 pub const DEFAULT_LEASE_DURATION_MS: i64 = 600_000;
 
-/// Create the sync_leases table for lease-based locking
-/// Uses TIMESTAMP (without time zone) storing UTC values (Rails convention)
+/// Create the leases table and version sequence for lease-based locking with optimistic fencing.
+/// Uses TIMESTAMP (without time zone) storing UTC values (Rails convention).
+/// The lease_version_seq sequence provides monotonically increasing fencing tokens.
 pub async fn create_leases_table_pg(pool: &PgPool) -> Result<(), DynError> {
+    sqlx::query("CREATE SEQUENCE IF NOT EXISTS lease_version_seq START WITH 0 MINVALUE 0")
+        .execute(pool)
+        .await?;
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS sync_leases (
+        CREATE TABLE IF NOT EXISTS leases (
             name TEXT PRIMARY KEY,
             holder_id TEXT NOT NULL,
+            version BIGINT NOT NULL,
             acquired_at TIMESTAMP NOT NULL,
             expires_at TIMESTAMP NOT NULL,
             renewed_at TIMESTAMP NOT NULL
@@ -537,32 +542,44 @@ pub async fn create_leases_table_pg(pool: &PgPool) -> Result<(), DynError> {
     Ok(())
 }
 
+/// Get the next lease version from the global sequence (fencing token)
+pub async fn next_lease_version_pg(pool: &PgPool) -> Result<i64, DynError> {
+    let version: i64 = sqlx::query_scalar("SELECT nextval('lease_version_seq')")
+        .fetch_one(pool)
+        .await?;
+    Ok(version)
+}
+
 /// Try to acquire a lease. Returns true if acquired, false if held by another.
 /// Will take over expired leases automatically.
 /// All timestamps are stored as UTC.
+/// The version parameter is a fencing token from the lease_version_seq sequence.
 pub async fn try_acquire_lease_pg(
     pool: &PgPool,
     name: &str,
     holder_id: &str,
     duration_ms: i64,
+    version: i64,
 ) -> Result<bool, DynError> {
-    // Try to insert new lease or update if expired or held by same holder
+    // Try to insert new lease or update if expired or held by same holder with matching version
     // Use (NOW() AT TIME ZONE 'UTC') to get UTC timestamp
     let result = sqlx::query(
         r#"
-        INSERT INTO sync_leases (name, holder_id, acquired_at, expires_at, renewed_at)
-        VALUES ($1, $2, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond', (NOW() AT TIME ZONE 'UTC'))
+        INSERT INTO leases (name, holder_id, version, acquired_at, expires_at, renewed_at)
+        VALUES ($1, $2, $4, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond', (NOW() AT TIME ZONE 'UTC'))
         ON CONFLICT (name) DO UPDATE SET
             holder_id = $2,
+            version = $4,
             acquired_at = (NOW() AT TIME ZONE 'UTC'),
             expires_at = (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond',
             renewed_at = (NOW() AT TIME ZONE 'UTC')
-        WHERE sync_leases.expires_at < (NOW() AT TIME ZONE 'UTC') OR sync_leases.holder_id = $2
+        WHERE leases.expires_at < (NOW() AT TIME ZONE 'UTC') OR (leases.holder_id = $2 AND leases.version = $4)
         "#,
     )
     .bind(name)
     .bind(holder_id)
     .bind(duration_ms)
+    .bind(version)
     .execute(pool)
     .await?;
 
@@ -571,42 +588,47 @@ pub async fn try_acquire_lease_pg(
 
 /// Renew an existing lease. Returns true if renewed, false if lease was lost.
 /// All timestamps are stored as UTC.
+/// The version must match the fencing token used when acquiring the lease.
 pub async fn renew_lease_pg(
     pool: &PgPool,
     name: &str,
     holder_id: &str,
     duration_ms: i64,
+    version: i64,
 ) -> Result<bool, DynError> {
     let result = sqlx::query(
         r#"
-        UPDATE sync_leases
+        UPDATE leases
         SET expires_at = (NOW() AT TIME ZONE 'UTC') + $1 * INTERVAL '1 millisecond', renewed_at = (NOW() AT TIME ZONE 'UTC')
-        WHERE name = $2 AND holder_id = $3
+        WHERE name = $2 AND holder_id = $3 AND version = $4
         "#,
     )
     .bind(duration_ms)
     .bind(name)
     .bind(holder_id)
+    .bind(version)
     .execute(pool)
     .await?;
 
     Ok(result.rows_affected() > 0)
 }
 
-/// Release a lease. Only releases if held by the specified holder.
+/// Release a lease. Only releases if held by the specified holder with matching version.
 pub async fn release_lease_pg(
     pool: &PgPool,
     name: &str,
     holder_id: &str,
+    version: i64,
 ) -> Result<bool, DynError> {
     let result = sqlx::query(
         r#"
-        DELETE FROM sync_leases
-        WHERE name = $1 AND holder_id = $2
+        DELETE FROM leases
+        WHERE name = $1 AND holder_id = $2 AND version = $3
         "#,
     )
     .bind(name)
     .bind(holder_id)
+    .bind(version)
     .execute(pool)
     .await?;
 
@@ -618,7 +640,7 @@ pub async fn release_lease_pg(
 pub async fn is_lease_held_pg(pool: &PgPool, name: &str) -> Result<bool, DynError> {
     let result: bool = sqlx::query_scalar(
         r#"
-        SELECT EXISTS(SELECT 1 FROM sync_leases WHERE name = $1 AND expires_at > (NOW() AT TIME ZONE 'UTC'))
+        SELECT EXISTS(SELECT 1 FROM leases WHERE name = $1 AND expires_at > (NOW() AT TIME ZONE 'UTC'))
         "#,
     )
     .bind(name)

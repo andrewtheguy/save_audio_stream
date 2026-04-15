@@ -260,6 +260,10 @@ async fn create_source_database(
 }
 
 /// API handler: List shows
+async fn mode_handler() -> impl IntoResponse {
+    Json(serde_json::json!({"mode": "record"}))
+}
+
 async fn list_shows_handler(State(state): State<Arc<TestServerState>>) -> impl IntoResponse {
     let databases = state.databases.lock().await;
     let shows: Vec<ShowInfo> = databases
@@ -572,6 +576,7 @@ async fn start_test_server(
     });
 
     let app = Router::new()
+        .route("/api/mode", get(mode_handler))
         .route("/api/sync/shows", get(list_shows_handler))
         .route("/api/sync/shows/{show}/metadata", get(get_metadata_handler))
         .route("/api/sync/shows/{show}/sections", get(get_sections_handler))

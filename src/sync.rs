@@ -190,12 +190,16 @@ pub fn replace_source(
     let lease_name = config.lease_name.as_deref().unwrap_or(SYNC_LEASE_NAME);
     let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
 
+    // Get a fencing token from the global sequence
+    let version = db.block_on(db_postgres::next_lease_version_pg(db.pool()))?;
+
     // Try to acquire the per-show lease
     let acquired = db.block_on(db_postgres::try_acquire_lease_pg(
         db.pool(),
         lease_name,
         &holder_id,
         lease_duration_ms,
+        version,
     ))?;
 
     if !acquired {
@@ -204,8 +208,8 @@ pub fn replace_source(
     }
 
     println!(
-        "[ReplaceSource] Acquired sync lease for show '{}'",
-        show_name
+        "[ReplaceSource] Acquired sync lease for show '{}' (version {})",
+        show_name, version
     );
 
     // Run the replace operation
@@ -216,6 +220,7 @@ pub fn replace_source(
         db.pool(),
         lease_name,
         &holder_id,
+        version,
     ));
     println!(
         "[ReplaceSource] Released sync lease for show '{}'",
@@ -644,11 +649,15 @@ fn sync_single_show(
     );
     let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
 
+    // Get a fencing token from the global sequence
+    let version = db.block_on(db_postgres::next_lease_version_pg(db.pool()))?;
+
     let acquired = db.block_on(db_postgres::try_acquire_lease_pg(
         db.pool(),
         lease_name,
         &holder_id,
         lease_duration_ms,
+        version,
     ))?;
 
     if !acquired {
@@ -656,7 +665,7 @@ fn sync_single_show(
         return Ok(false);
     }
 
-    println!("[{}]   Acquired sync lease", show_name);
+    println!("[{}]   Acquired sync lease (version {})", show_name, version);
 
     // Spawn lease renewal thread
     let renewal_pool = db.pool().clone();
@@ -684,6 +693,7 @@ fn sync_single_show(
                             &renewal_lease_name,
                             &renewal_holder_id,
                             lease_duration_ms,
+                            version,
                         )
                         .await
                     });
@@ -736,6 +746,7 @@ fn sync_single_show(
             db.pool(),
             lease_name,
             &holder_id,
+            version,
         ));
         return Err(format!(
             "[{}] Sync aborted: lease lost after {} consecutive renewal failures",
@@ -749,6 +760,7 @@ fn sync_single_show(
         db.pool(),
         lease_name,
         &holder_id,
+        version,
     ));
     println!("[{}]   Released sync lease", show_name);
 
