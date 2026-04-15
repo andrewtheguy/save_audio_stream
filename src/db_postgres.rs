@@ -528,8 +528,17 @@ pub async fn create_leases_table_pg(pool: &PgPool) -> Result<(), DynError> {
             holder_id TEXT NOT NULL,
             acquired_at TIMESTAMP NOT NULL,
             expires_at TIMESTAMP NOT NULL,
-            renewed_at TIMESTAMP NOT NULL
+            renewed_at TIMESTAMP NOT NULL,
+            fencing_token BIGINT NOT NULL DEFAULT 1
         )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    // Add fencing_token column for existing databases (idempotent)
+    sqlx::query(
+        r#"
+        ALTER TABLE sync_leases ADD COLUMN IF NOT EXISTS fencing_token BIGINT NOT NULL DEFAULT 1
         "#,
     )
     .execute(pool)
@@ -537,7 +546,9 @@ pub async fn create_leases_table_pg(pool: &PgPool) -> Result<(), DynError> {
     Ok(())
 }
 
-/// Try to acquire a lease. Returns true if acquired, false if held by another.
+/// Try to acquire a lease. Returns the fencing token if acquired, None if held by another.
+/// The fencing token is a monotonically increasing counter per lease name, incremented on each
+/// new acquisition. It can be used to detect stale holders and guard protected operations.
 /// Will take over expired leases automatically.
 /// All timestamps are stored as UTC.
 pub async fn try_acquire_lease_pg(
@@ -545,28 +556,33 @@ pub async fn try_acquire_lease_pg(
     name: &str,
     holder_id: &str,
     duration_ms: i64,
-) -> Result<bool, DynError> {
+) -> Result<Option<i64>, DynError> {
     // Try to insert new lease or update if expired or held by same holder
     // Use (NOW() AT TIME ZONE 'UTC') to get UTC timestamp
-    let result = sqlx::query(
+    // On new insert: fencing_token starts at 1
+    // On conflict update: fencing_token increments from the existing value
+    // When conflict WHERE clause doesn't match (held by another), no row is returned
+    let result: Option<i64> = sqlx::query_scalar(
         r#"
-        INSERT INTO sync_leases (name, holder_id, acquired_at, expires_at, renewed_at)
-        VALUES ($1, $2, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond', (NOW() AT TIME ZONE 'UTC'))
+        INSERT INTO sync_leases (name, holder_id, acquired_at, expires_at, renewed_at, fencing_token)
+        VALUES ($1, $2, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond', (NOW() AT TIME ZONE 'UTC'), 1)
         ON CONFLICT (name) DO UPDATE SET
             holder_id = $2,
             acquired_at = (NOW() AT TIME ZONE 'UTC'),
             expires_at = (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond',
-            renewed_at = (NOW() AT TIME ZONE 'UTC')
+            renewed_at = (NOW() AT TIME ZONE 'UTC'),
+            fencing_token = sync_leases.fencing_token + 1
         WHERE sync_leases.expires_at < (NOW() AT TIME ZONE 'UTC') OR sync_leases.holder_id = $2
+        RETURNING fencing_token
         "#,
     )
     .bind(name)
     .bind(holder_id)
     .bind(duration_ms)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
 
-    Ok(result.rows_affected() > 0)
+    Ok(result)
 }
 
 /// Renew an existing lease. Returns true if renewed, false if lease was lost.
@@ -594,6 +610,7 @@ pub async fn renew_lease_pg(
 }
 
 /// Release a lease. Only releases if held by the specified holder.
+/// Expires the lease instead of deleting to preserve the fencing token counter.
 pub async fn release_lease_pg(
     pool: &PgPool,
     name: &str,
@@ -601,7 +618,8 @@ pub async fn release_lease_pg(
 ) -> Result<bool, DynError> {
     let result = sqlx::query(
         r#"
-        DELETE FROM sync_leases
+        UPDATE sync_leases
+        SET expires_at = (NOW() AT TIME ZONE 'UTC')
         WHERE name = $1 AND holder_id = $2
         "#,
     )

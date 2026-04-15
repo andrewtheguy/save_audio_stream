@@ -191,21 +191,24 @@ pub fn replace_source(
     let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
 
     // Try to acquire the per-show lease
-    let acquired = db.block_on(db_postgres::try_acquire_lease_pg(
+    let fencing_token = db.block_on(db_postgres::try_acquire_lease_pg(
         db.pool(),
         lease_name,
         &holder_id,
         lease_duration_ms,
     ))?;
 
-    if !acquired {
-        println!("[ReplaceSource] Lease held by another instance, skipping");
-        return Ok(ReplaceSourceResult::Skipped);
-    }
+    let fencing_token = match fencing_token {
+        Some(token) => token,
+        None => {
+            println!("[ReplaceSource] Lease held by another instance, skipping");
+            return Ok(ReplaceSourceResult::Skipped);
+        }
+    };
 
     println!(
-        "[ReplaceSource] Acquired sync lease for show '{}'",
-        show_name
+        "[ReplaceSource] Acquired sync lease for show '{}' (fencing_token={})",
+        show_name, fencing_token
     );
 
     // Run the replace operation
@@ -644,19 +647,25 @@ fn sync_single_show(
     );
     let lease_duration_ms = db_postgres::DEFAULT_LEASE_DURATION_MS;
 
-    let acquired = db.block_on(db_postgres::try_acquire_lease_pg(
+    let fencing_token = db.block_on(db_postgres::try_acquire_lease_pg(
         db.pool(),
         lease_name,
         &holder_id,
         lease_duration_ms,
     ))?;
 
-    if !acquired {
-        println!("[{}]   Lease held by another instance, skipping", show_name);
-        return Ok(false);
-    }
+    let fencing_token = match fencing_token {
+        Some(token) => token,
+        None => {
+            println!("[{}]   Lease held by another instance, skipping", show_name);
+            return Ok(false);
+        }
+    };
 
-    println!("[{}]   Acquired sync lease", show_name);
+    println!(
+        "[{}]   Acquired sync lease (fencing_token={})",
+        show_name, fencing_token
+    );
 
     // Spawn lease renewal thread
     let renewal_pool = db.pool().clone();
