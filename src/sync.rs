@@ -862,16 +862,26 @@ fn sync_single_show_internal(
             show_name, target_unique_id
         );
 
-        // Insert metadata from remote
-        crate::db_postgres::insert_metadata_pg_sync(db, "version", &metadata.version)?;
-        crate::db_postgres::insert_metadata_pg_sync(db, "unique_id", &target_unique_id)?;
-        crate::db_postgres::insert_metadata_pg_sync(db, "name", &metadata.name)?;
-        crate::db_postgres::insert_metadata_pg_sync(db, "audio_format", &metadata.audio_format)?;
-        crate::db_postgres::insert_metadata_pg_sync(db, "bitrate", &metadata.bitrate)?;
-        crate::db_postgres::insert_metadata_pg_sync(db, "sample_rate", &metadata.sample_rate)?;
-        crate::db_postgres::insert_metadata_pg_sync(db, "is_recipient", "true")?;
-        crate::db_postgres::insert_metadata_pg_sync(db, "source_unique_id", &metadata.unique_id)?;
-        crate::db_postgres::insert_metadata_pg_sync(db, "last_synced_source_id", "0")?;
+        let fenced_insert_metadata =
+            |key: &str, value: &str| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                db.block_on(db_postgres::validate_fencing_token_pg(
+                    db.pool(),
+                    lease_name,
+                    fencing_token,
+                ))?;
+                crate::db_postgres::insert_metadata_pg_sync(db, key, value)
+            };
+
+        // Insert metadata from remote, validating token before each write.
+        fenced_insert_metadata("version", &metadata.version)?;
+        fenced_insert_metadata("unique_id", &target_unique_id)?;
+        fenced_insert_metadata("name", &metadata.name)?;
+        fenced_insert_metadata("audio_format", &metadata.audio_format)?;
+        fenced_insert_metadata("bitrate", &metadata.bitrate)?;
+        fenced_insert_metadata("sample_rate", &metadata.sample_rate)?;
+        fenced_insert_metadata("is_recipient", "true")?;
+        fenced_insert_metadata("source_unique_id", &metadata.unique_id)?;
+        fenced_insert_metadata("last_synced_source_id", "0")?;
 
         metadata.min_id
     };
@@ -892,14 +902,24 @@ fn sync_single_show_internal(
         .json()
         .map_err(|e| format!("Failed to parse sections JSON: {}", e))?;
 
+    let fenced_insert_section =
+        |section: &SectionData| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            db.block_on(db_postgres::validate_fencing_token_pg(
+                db.pool(),
+                lease_name,
+                fencing_token,
+            ))?;
+            crate::db_postgres::insert_section_or_ignore_pg_sync(
+                db,
+                section.id,
+                section.start_timestamp_ms,
+            )
+        };
+
     // Insert sections into local database
     let sections_count = remote_sections.len();
-    for section in remote_sections {
-        crate::db_postgres::insert_section_or_ignore_pg_sync(
-            db,
-            section.id,
-            section.start_timestamp_ms,
-        )?;
+    for section in &remote_sections {
+        fenced_insert_section(section)?;
     }
     println!("[{}]   Synced {} sections", show_name, sections_count);
 

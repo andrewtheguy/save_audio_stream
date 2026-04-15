@@ -646,23 +646,34 @@ pub async fn is_lease_held_pg(pool: &PgPool, name: &str) -> Result<bool, DynErro
     Ok(result)
 }
 
-/// Best-effort fencing token check: reads the current token from sync_leases and
-/// returns an error if it doesn't match `expected_token`.
+/// Best-effort fencing token check.
 ///
-/// **Not atomic with the caller's data writes.** The gap is between this SELECT on
-/// `sync_leases` and the caller's subsequent INSERT/UPDATE on the data tables
-/// (segments, metadata). Another holder could acquire the lease — incrementing the
-/// fencing token — after this check passes but before the data write commits.
-/// There is no TOCTOU concern within the lease table itself: this function only
-/// reads `sync_leases` and does not write to it.
+/// Reads the current token from `sync_leases` and returns an error if it does not
+/// match `expected_token`.
 ///
-/// For that race to matter, the current lease must have already expired
-/// (TTL is [`DEFAULT_LEASE_DURATION_MS`], 10 minutes, renewed every ¼ of that),
-/// and a competing holder must acquire in the microseconds between the check and the
-/// data write. In practice the TTL dwarfs this window, making the race vanishingly
-/// unlikely while the lease is actively renewed. This check is therefore
-/// defence-in-depth on top of the lease TTL and renewal thread — not a standalone
-/// guarantee.
+/// This is **not atomic** with the caller's writes to data tables (`segments`,
+/// `metadata`). The flow is:
+/// 1. Read `fencing_token` from `sync_leases`.
+/// 2. Caller performs INSERT/UPDATE on data tables.
+///
+/// If the lease expires after step 1, another holder can acquire the lease and
+/// increment the token before or during step 2.
+///
+/// There is no TOCTOU concern inside `sync_leases` itself because this function
+/// only reads that table.
+///
+/// Also note: this function only compares `fencing_token`.
+/// Lease ownership/expiry (`holder_id`, `expires_at`) are enforced by
+/// acquire/renew/release lease operations, not re-checked here.
+///
+/// For stale-write overlap with a newer holder, both must happen:
+/// - The lease reaches expiry (or is otherwise released/expired).
+/// - A competing holder acquires before the caller's write commits.
+///
+/// With the default lease TTL ([`DEFAULT_LEASE_DURATION_MS`], 10 minutes) and the
+/// current renewal cadence of `min(duration/4, 30s)` (30 seconds at default TTL),
+/// this race is usually unlikely while renewal is healthy. Treat this check as
+/// defense-in-depth, not as a standalone correctness guarantee.
 ///
 /// Callers that need strict atomicity should embed
 /// `WHERE fencing_token = $expected` directly in their data-write SQL.
