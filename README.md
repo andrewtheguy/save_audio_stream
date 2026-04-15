@@ -196,8 +196,7 @@ Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`
 | `audio_format` | Audio encoding: `aac`, `opus`, or `wav` | opus | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
 | `split_interval` | Split chunks every N seconds (0 = no split) | 0 | No |
-| `storage_format` | Storage format (currently only `sqlite` supported) | sqlite | No |
-| `retention_hours` | Auto-delete recordings older than N hours | None (keep forever) | No |
+| `retention_hours` | Auto-delete recordings older than N hours | 168 (~1 week) | No |
 
 **Schedule Options (inside `[sessions.schedule]`):**
 
@@ -216,18 +215,18 @@ Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`
 |--------|-------------|
 | `config_type` | Must be `'receiver'` for receiver/sync configurations |
 | `remote_url` | URL of remote recording server (e.g., `http://remote:17000`) |
-| `postgres_url` | PostgreSQL connection URL without password (e.g., `postgres://user@localhost:5432`) |
-| `credential_profile` | Profile name to look up password from `~/.config/save_audio_stream/credentials` |
+| `database.url` | PostgreSQL connection URL without password (e.g., `postgres://user@localhost:5432`) |
+| `database.credential_profile` | Profile name to look up password from `~/.config/save_audio_stream/credentials.toml` |
 
 **Optional:**
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `shows` | Array of show names to sync (whitelist) | All shows from remote |
+| `shows` | Array of show configs to sync (each with `name` and optional `retention_hours`) | All shows from remote |
 | `chunk_size` | Batch size for fetching chunks | 100 |
 | `port` | HTTP server port for web UI | 18000 |
 | `sync_interval_seconds` | Polling interval for background sync | 60 |
-| `database_prefix` | Prefix in database name (`save_audio_{prefix}_{show}`) | `show` |
+| `database.prefix` | Prefix in database name (`save_audio_{prefix}_{show}`) | `show` |
 
 ### Examples
 
@@ -320,7 +319,8 @@ CREATE TABLE segments (
     timestamp_ms INTEGER NOT NULL,            -- Unix timestamp in milliseconds
     is_timestamp_from_source INTEGER NOT NULL DEFAULT 0,  -- 1 for session boundaries
     audio_data BLOB NOT NULL,
-    section_id INTEGER NOT NULL REFERENCES sections(id)  -- References sections table
+    section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+    duration_samples INTEGER NOT NULL         -- Number of audio samples in this segment
 );
 
 -- Indexes for efficient queries
@@ -546,6 +546,8 @@ When running `record` command, an API server provides synchronization endpoints:
 | `GET /api/sync/shows` | List available shows for syncing |
 | `GET /api/sync/shows/{show_name}/metadata` | Show metadata (format, bitrate, etc.) |
 | `GET /api/sync/shows/{show_name}/sections` | List all sections (recording sessions) |
+| `GET /api/sync/shows/{show_name}/sections/find_by_timestamp?timestamp_ms=N` | Find section by timestamp (used by replace-source) |
+| `GET /api/sync/shows/{show_name}/sections/{section_id}/segment_range` | Get min/max segment IDs for a section |
 | `GET /api/sync/shows/{show_name}/segments?start_id=N&end_id=N&limit=N` | Fetch segments for syncing |
 
 ### API Details

@@ -331,7 +331,7 @@ When resuming a sync, the following metadata fields are validated to ensure comp
 
 Recording mode automatically cleans up old sections to prevent unbound database growth:
 
-- **Retention Period**: Configurable via `RETENTION_HOURS` constant in `src/record.rs` (default: 168 hours / ~1 week)
+- **Retention Period**: Configurable per-session via `retention_hours` config option (default: 168 hours / ~1 week)
 - **Boundary Preservation**: Always keeps complete sessions by deleting only before natural boundaries (segments with `is_timestamp_from_source = 1`)
 - **Timing**: Runs once per day after each recording window completes
 - **Safety**: Non-destructive - if cleanup fails, recording continues normally with a warning
@@ -347,4 +347,4 @@ This ensures:
 - Complete sessions are preserved (no mid-session cuts)
 - Disk space is managed automatically on remote servers with limited storage
 
-**For testing:** Set `RETENTION_HOURS` to smaller values (e.g., 1 hour, 24 hours) in the code constant.
+**For testing:** Set `retention_hours` to smaller values (e.g., 1 or 24) in the session config.
