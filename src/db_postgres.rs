@@ -518,27 +518,19 @@ pub fn get_latest_section_before_cutoff_pg_sync(
 /// Default lease duration in milliseconds (10 minutes)
 pub const DEFAULT_LEASE_DURATION_MS: i64 = 600_000;
 
-/// Create the sync_leases table for lease-based locking
+/// Create the leases table for lease-based locking
 /// Uses TIMESTAMP (without time zone) storing UTC values (Rails convention)
 pub async fn create_leases_table_pg(pool: &PgPool) -> Result<(), DynError> {
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS sync_leases (
+        CREATE TABLE IF NOT EXISTS leases (
             name TEXT PRIMARY KEY,
             holder_id TEXT NOT NULL,
             acquired_at TIMESTAMP NOT NULL,
             expires_at TIMESTAMP NOT NULL,
             renewed_at TIMESTAMP NOT NULL,
-            fencing_token BIGINT NOT NULL DEFAULT 1
+            fencing_token BIGINT NOT NULL DEFAULT 0
         )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    // Add fencing_token column for existing databases (idempotent)
-    sqlx::query(
-        r#"
-        ALTER TABLE sync_leases ADD COLUMN IF NOT EXISTS fencing_token BIGINT NOT NULL DEFAULT 1
         "#,
     )
     .execute(pool)
@@ -559,20 +551,20 @@ pub async fn try_acquire_lease_pg(
 ) -> Result<Option<i64>, DynError> {
     // Try to insert new lease or update if expired or held by same holder
     // Use (NOW() AT TIME ZONE 'UTC') to get UTC timestamp
-    // On new insert: fencing_token starts at 1
+    // On new insert: fencing_token starts at 0
     // On conflict update: fencing_token increments from the existing value
     // When conflict WHERE clause doesn't match (held by another), no row is returned
     let result: Option<i64> = sqlx::query_scalar(
         r#"
-        INSERT INTO sync_leases (name, holder_id, acquired_at, expires_at, renewed_at, fencing_token)
-        VALUES ($1, $2, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond', (NOW() AT TIME ZONE 'UTC'), 1)
+        INSERT INTO leases (name, holder_id, acquired_at, expires_at, renewed_at, fencing_token)
+        VALUES ($1, $2, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond', (NOW() AT TIME ZONE 'UTC'), 0)
         ON CONFLICT (name) DO UPDATE SET
             holder_id = $2,
             acquired_at = (NOW() AT TIME ZONE 'UTC'),
             expires_at = (NOW() AT TIME ZONE 'UTC') + $3 * INTERVAL '1 millisecond',
             renewed_at = (NOW() AT TIME ZONE 'UTC'),
-            fencing_token = sync_leases.fencing_token + 1
-        WHERE sync_leases.expires_at < (NOW() AT TIME ZONE 'UTC') OR sync_leases.holder_id = $2
+            fencing_token = leases.fencing_token + 1
+        WHERE leases.expires_at < (NOW() AT TIME ZONE 'UTC') OR leases.holder_id = $2
         RETURNING fencing_token
         "#,
     )
@@ -595,7 +587,7 @@ pub async fn renew_lease_pg(
 ) -> Result<bool, DynError> {
     let result = sqlx::query(
         r#"
-        UPDATE sync_leases
+        UPDATE leases
         SET expires_at = (NOW() AT TIME ZONE 'UTC') + $1 * INTERVAL '1 millisecond', renewed_at = (NOW() AT TIME ZONE 'UTC')
         WHERE name = $2 AND holder_id = $3
         "#,
@@ -618,7 +610,7 @@ pub async fn release_lease_pg(
 ) -> Result<bool, DynError> {
     let result = sqlx::query(
         r#"
-        UPDATE sync_leases
+        UPDATE leases
         SET expires_at = (NOW() AT TIME ZONE 'UTC')
         WHERE name = $1 AND holder_id = $2
         "#,
@@ -636,7 +628,7 @@ pub async fn release_lease_pg(
 pub async fn is_lease_held_pg(pool: &PgPool, name: &str) -> Result<bool, DynError> {
     let result: bool = sqlx::query_scalar(
         r#"
-        SELECT EXISTS(SELECT 1 FROM sync_leases WHERE name = $1 AND expires_at > (NOW() AT TIME ZONE 'UTC'))
+        SELECT EXISTS(SELECT 1 FROM leases WHERE name = $1 AND expires_at > (NOW() AT TIME ZONE 'UTC'))
         "#,
     )
     .bind(name)
@@ -648,18 +640,18 @@ pub async fn is_lease_held_pg(pool: &PgPool, name: &str) -> Result<bool, DynErro
 
 /// Best-effort fencing token check.
 ///
-/// Reads the current token from `sync_leases` and returns an error if it does not
+/// Reads the current token from `leases` and returns an error if it does not
 /// match `expected_token`.
 ///
 /// This is **not atomic** with the caller's writes to data tables (`segments`,
 /// `metadata`). The flow is:
-/// 1. Read `fencing_token` from `sync_leases`.
+/// 1. Read `fencing_token` from `leases`.
 /// 2. Caller performs INSERT/UPDATE on data tables.
 ///
 /// If the lease expires after step 1, another holder can acquire the lease and
 /// increment the token before or during step 2.
 ///
-/// There is no TOCTOU concern inside `sync_leases` itself because this function
+/// There is no TOCTOU concern inside `leases` itself because this function
 /// only reads that table.
 ///
 /// Also note: this function only compares `fencing_token`.
@@ -683,7 +675,7 @@ pub async fn validate_fencing_token_pg(
     expected_token: i64,
 ) -> Result<(), DynError> {
     let current_token: Option<i64> = sqlx::query_scalar(
-        r#"SELECT fencing_token FROM sync_leases WHERE name = $1"#,
+        r#"SELECT fencing_token FROM leases WHERE name = $1"#,
     )
     .bind(lease_name)
     .fetch_optional(pool)

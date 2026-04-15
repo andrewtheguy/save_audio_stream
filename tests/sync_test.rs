@@ -1765,7 +1765,7 @@ async fn test_replace_source_then_sync() {
 // Lease Lock Tests
 // ============================================================================
 
-/// Helper to set up a lease test database with the sync_leases table.
+/// Helper to set up a lease test database with the leases table.
 /// Returns the PgPool connected to the test database.
 async fn setup_lease_test_db(postgres_url: &str, password: &str, db_name: &str) -> sqlx::PgPool {
     // Drop if leftover from a previous run
@@ -1805,11 +1805,11 @@ async fn test_lease_acquire_release_fencing_token() {
     let lease = "test-lease";
     let duration_ms: i64 = 600_000;
 
-    // 1. First acquire — token starts at 1
+    // 1. First acquire — token starts at 0
     let token = try_acquire_lease_pg(&pool, lease, "holder-a", duration_ms)
         .await
         .unwrap();
-    assert_eq!(token, Some(1), "first acquire should return fencing_token=1");
+    assert_eq!(token, Some(0), "first acquire should return fencing_token=0");
 
     // 2. Renew by same holder succeeds, does not change token
     let renewed = renew_lease_pg(&pool, lease, "holder-a", duration_ms)
@@ -1831,22 +1831,22 @@ async fn test_lease_acquire_release_fencing_token() {
     let held = is_lease_held_pg(&pool, lease).await.unwrap();
     assert!(!held, "lease should not be held after release");
 
-    // 5. Re-acquire after release — token increments to 2
+    // 5. Re-acquire after release — token increments to 1
     let token = try_acquire_lease_pg(&pool, lease, "holder-b", duration_ms)
         .await
         .unwrap();
     assert_eq!(
         token,
-        Some(2),
-        "re-acquire after release should return fencing_token=2"
+        Some(1),
+        "re-acquire after release should return fencing_token=1"
     );
 
-    // 6. Release and acquire again — token increments to 3
+    // 6. Release and acquire again — token increments to 2
     release_lease_pg(&pool, lease, "holder-b").await.unwrap();
     let token = try_acquire_lease_pg(&pool, lease, "holder-c", duration_ms)
         .await
         .unwrap();
-    assert_eq!(token, Some(3), "third acquire should return fencing_token=3");
+    assert_eq!(token, Some(2), "third acquire should return fencing_token=2");
 
     // Cleanup
     release_lease_pg(&pool, lease, "holder-c").await.unwrap();
@@ -1870,7 +1870,7 @@ async fn test_lease_acquire_expired() {
     let token = try_acquire_lease_pg(&pool, lease, "holder-old", 1)
         .await
         .unwrap();
-    assert_eq!(token, Some(1));
+    assert_eq!(token, Some(0));
 
     // Wait for expiration
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -1885,8 +1885,8 @@ async fn test_lease_acquire_expired() {
         .unwrap();
     assert_eq!(
         token,
-        Some(2),
-        "acquiring expired lease should increment fencing_token to 2"
+        Some(1),
+        "acquiring expired lease should increment fencing_token to 1"
     );
 
     // Verify the new holder actually owns it
@@ -1923,7 +1923,7 @@ async fn test_lease_blocked_by_active_holder() {
     let token = try_acquire_lease_pg(&pool, lease, "holder-a", duration_ms)
         .await
         .unwrap();
-    assert_eq!(token, Some(1));
+    assert_eq!(token, Some(0));
 
     // holder-b cannot acquire while holder-a is active
     let token = try_acquire_lease_pg(&pool, lease, "holder-b", duration_ms)
@@ -1940,7 +1940,7 @@ async fn test_lease_blocked_by_active_holder() {
         .unwrap();
     assert_eq!(
         token,
-        Some(2),
+        Some(1),
         "same holder re-acquire should succeed and increment token"
     );
 
@@ -1963,12 +1963,12 @@ async fn test_fencing_token_validation() {
     let lease = "test-lease-validate";
     let duration_ms: i64 = 600_000;
 
-    // Acquire lease — token=1
+    // Acquire lease — token=0
     let token = try_acquire_lease_pg(&pool, lease, "holder-a", duration_ms)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(token, 1);
+    assert_eq!(token, 0);
 
     // Validation with correct token succeeds
     let result = validate_fencing_token_pg(&pool, lease, token).await;
@@ -1985,7 +1985,7 @@ async fn test_fencing_token_validation() {
     );
 
     // Validation for non-existent lease fails
-    let result = validate_fencing_token_pg(&pool, "no-such-lease", 1).await;
+    let result = validate_fencing_token_pg(&pool, "no-such-lease", 0).await;
     assert!(
         result.is_err(),
         "validation for non-existent lease should fail"
@@ -1997,10 +1997,10 @@ async fn test_fencing_token_validation() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(new_token, 2);
+    assert_eq!(new_token, 1);
 
-    // Old token (1) is now stale
-    let result = validate_fencing_token_pg(&pool, lease, 1).await;
+    // Old token (0) is now stale
+    let result = validate_fencing_token_pg(&pool, lease, 0).await;
     assert!(
         result.is_err(),
         "old fencing token should be rejected after new acquisition"
