@@ -56,6 +56,10 @@
 //! - `test_sync_metadata_validation`: Detecting metadata mismatches between source and target
 //! - `test_sync_rejects_old_version`: Rejecting sync from incompatible schema versions
 //! - `test_sync_rejects_recipient_database`: Preventing sync from a recipient (already synced) database
+//! - `test_lease_acquire_release_fencing_token`: Lease lifecycle with fencing token monotonicity
+//! - `test_lease_acquire_expired`: Acquiring an expired lease succeeds and increments token
+//! - `test_lease_blocked_by_active_holder`: Cannot acquire a lease held by another active holder
+//! - `test_fencing_token_validation`: validate_fencing_token_pg accepts matching and rejects stale tokens
 
 use axum::{
     Json, Router,
@@ -1755,4 +1759,259 @@ async fn test_replace_source_then_sync() {
 
     // Cleanup
     drop_test_database(&postgres_url, &password, show_name).await;
+}
+
+// ============================================================================
+// Lease Lock Tests
+// ============================================================================
+
+/// Helper to set up a lease test database with the sync_leases table.
+/// Returns the PgPool connected to the test database.
+async fn setup_lease_test_db(postgres_url: &str, password: &str, db_name: &str) -> sqlx::PgPool {
+    // Drop if leftover from a previous run
+    let _ =
+        save_audio_stream::db_postgres::drop_database_if_exists(postgres_url, password, db_name)
+            .await;
+    save_audio_stream::db_postgres::create_database_if_not_exists(postgres_url, password, db_name)
+        .await
+        .unwrap();
+    let pool =
+        save_audio_stream::db_postgres::open_postgres_connection(postgres_url, password, db_name)
+            .await
+            .unwrap();
+    save_audio_stream::db_postgres::create_leases_table_pg(&pool)
+        .await
+        .unwrap();
+    pool
+}
+
+/// Helper to drop a lease test database.
+async fn drop_lease_test_db(postgres_url: &str, password: &str, db_name: &str) {
+    let _ =
+        save_audio_stream::db_postgres::drop_database_if_exists(postgres_url, password, db_name)
+            .await;
+}
+
+#[tokio::test]
+#[ignore] // Requires PostgreSQL
+async fn test_lease_acquire_release_fencing_token() {
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+    let db_name = "test_lease_fencing";
+    let pool = setup_lease_test_db(&postgres_url, &password, db_name).await;
+
+    use save_audio_stream::db_postgres::*;
+
+    let lease = "test-lease";
+    let duration_ms: i64 = 600_000;
+
+    // 1. First acquire — token starts at 1
+    let token = try_acquire_lease_pg(&pool, lease, "holder-a", duration_ms)
+        .await
+        .unwrap();
+    assert_eq!(token, Some(1), "first acquire should return fencing_token=1");
+
+    // 2. Renew by same holder succeeds, does not change token
+    let renewed = renew_lease_pg(&pool, lease, "holder-a", duration_ms)
+        .await
+        .unwrap();
+    assert!(renewed, "renew by same holder should succeed");
+
+    // 3. Renew by different holder fails
+    let renewed = renew_lease_pg(&pool, lease, "holder-b", duration_ms)
+        .await
+        .unwrap();
+    assert!(!renewed, "renew by different holder should fail");
+
+    // 4. Release expires the lease (row preserved with token)
+    let released = release_lease_pg(&pool, lease, "holder-a").await.unwrap();
+    assert!(released, "release by holder should succeed");
+
+    // Lease row still exists but is expired
+    let held = is_lease_held_pg(&pool, lease).await.unwrap();
+    assert!(!held, "lease should not be held after release");
+
+    // 5. Re-acquire after release — token increments to 2
+    let token = try_acquire_lease_pg(&pool, lease, "holder-b", duration_ms)
+        .await
+        .unwrap();
+    assert_eq!(
+        token,
+        Some(2),
+        "re-acquire after release should return fencing_token=2"
+    );
+
+    // 6. Release and acquire again — token increments to 3
+    release_lease_pg(&pool, lease, "holder-b").await.unwrap();
+    let token = try_acquire_lease_pg(&pool, lease, "holder-c", duration_ms)
+        .await
+        .unwrap();
+    assert_eq!(token, Some(3), "third acquire should return fencing_token=3");
+
+    // Cleanup
+    release_lease_pg(&pool, lease, "holder-c").await.unwrap();
+    pool.close().await;
+    drop_lease_test_db(&postgres_url, &password, db_name).await;
+}
+
+#[tokio::test]
+#[ignore] // Requires PostgreSQL
+async fn test_lease_acquire_expired() {
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+    let db_name = "test_lease_expired";
+    let pool = setup_lease_test_db(&postgres_url, &password, db_name).await;
+
+    use save_audio_stream::db_postgres::*;
+
+    let lease = "test-lease-expire";
+
+    // Acquire with a 1ms duration so it expires immediately
+    let token = try_acquire_lease_pg(&pool, lease, "holder-old", 1)
+        .await
+        .unwrap();
+    assert_eq!(token, Some(1));
+
+    // Wait for expiration
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Lease should be expired
+    let held = is_lease_held_pg(&pool, lease).await.unwrap();
+    assert!(!held, "lease should have expired");
+
+    // A new holder can acquire the expired lease — token increments
+    let token = try_acquire_lease_pg(&pool, lease, "holder-new", 600_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        token,
+        Some(2),
+        "acquiring expired lease should increment fencing_token to 2"
+    );
+
+    // Verify the new holder actually owns it
+    let renewed = renew_lease_pg(&pool, lease, "holder-new", 600_000)
+        .await
+        .unwrap();
+    assert!(renewed, "new holder should be able to renew");
+
+    let renewed = renew_lease_pg(&pool, lease, "holder-old", 600_000)
+        .await
+        .unwrap();
+    assert!(!renewed, "old holder should NOT be able to renew");
+
+    // Cleanup
+    release_lease_pg(&pool, lease, "holder-new").await.unwrap();
+    pool.close().await;
+    drop_lease_test_db(&postgres_url, &password, db_name).await;
+}
+
+#[tokio::test]
+#[ignore] // Requires PostgreSQL
+async fn test_lease_blocked_by_active_holder() {
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+    let db_name = "test_lease_blocked";
+    let pool = setup_lease_test_db(&postgres_url, &password, db_name).await;
+
+    use save_audio_stream::db_postgres::*;
+
+    let lease = "test-lease-block";
+    let duration_ms: i64 = 600_000;
+
+    // holder-a acquires
+    let token = try_acquire_lease_pg(&pool, lease, "holder-a", duration_ms)
+        .await
+        .unwrap();
+    assert_eq!(token, Some(1));
+
+    // holder-b cannot acquire while holder-a is active
+    let token = try_acquire_lease_pg(&pool, lease, "holder-b", duration_ms)
+        .await
+        .unwrap();
+    assert_eq!(
+        token, None,
+        "should not acquire lease held by another active holder"
+    );
+
+    // holder-a can re-acquire its own lease (same holder_id)
+    let token = try_acquire_lease_pg(&pool, lease, "holder-a", duration_ms)
+        .await
+        .unwrap();
+    assert_eq!(
+        token,
+        Some(2),
+        "same holder re-acquire should succeed and increment token"
+    );
+
+    // Cleanup
+    release_lease_pg(&pool, lease, "holder-a").await.unwrap();
+    pool.close().await;
+    drop_lease_test_db(&postgres_url, &password, db_name).await;
+}
+
+#[tokio::test]
+#[ignore] // Requires PostgreSQL
+async fn test_fencing_token_validation() {
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+    let db_name = "test_lease_validation";
+    let pool = setup_lease_test_db(&postgres_url, &password, db_name).await;
+
+    use save_audio_stream::db_postgres::*;
+
+    let lease = "test-lease-validate";
+    let duration_ms: i64 = 600_000;
+
+    // Acquire lease — token=1
+    let token = try_acquire_lease_pg(&pool, lease, "holder-a", duration_ms)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(token, 1);
+
+    // Validation with correct token succeeds
+    let result = validate_fencing_token_pg(&pool, lease, token).await;
+    assert!(result.is_ok(), "validation with correct token should pass");
+
+    // Validation with wrong token fails
+    let result = validate_fencing_token_pg(&pool, lease, token + 1).await;
+    assert!(result.is_err(), "validation with wrong token should fail");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("Fencing token mismatch"),
+        "error should mention mismatch, got: {}",
+        err
+    );
+
+    // Validation for non-existent lease fails
+    let result = validate_fencing_token_pg(&pool, "no-such-lease", 1).await;
+    assert!(
+        result.is_err(),
+        "validation for non-existent lease should fail"
+    );
+
+    // After another holder acquires, old token is stale
+    release_lease_pg(&pool, lease, "holder-a").await.unwrap();
+    let new_token = try_acquire_lease_pg(&pool, lease, "holder-b", duration_ms)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(new_token, 2);
+
+    // Old token (1) is now stale
+    let result = validate_fencing_token_pg(&pool, lease, 1).await;
+    assert!(
+        result.is_err(),
+        "old fencing token should be rejected after new acquisition"
+    );
+
+    // New token (2) is valid
+    let result = validate_fencing_token_pg(&pool, lease, new_token).await;
+    assert!(result.is_ok(), "current fencing token should be accepted");
+
+    // Cleanup
+    release_lease_pg(&pool, lease, "holder-b").await.unwrap();
+    pool.close().await;
+    drop_lease_test_db(&postgres_url, &password, db_name).await;
 }
