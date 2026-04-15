@@ -56,6 +56,9 @@
 //! - `test_sync_metadata_validation`: Detecting metadata mismatches between source and target
 //! - `test_sync_rejects_old_version`: Rejecting sync from incompatible schema versions
 //! - `test_sync_rejects_recipient_database`: Preventing sync from a recipient (already synced) database
+//! - `test_lease_version_fencing`: Optimistic fencing prevents stale holders from operating
+//! - `test_lease_expired_takeover_with_version`: Expired lease takeover with version fencing
+//! - `test_lease_version_sequence_monotonic`: Global sequence produces monotonically increasing versions
 
 use axum::{
     Json, Router,
@@ -1752,6 +1755,229 @@ async fn test_replace_source_then_sync() {
         .await
         .unwrap();
     assert_eq!(section_count, 5); // 2 original (1000, 2000) + 3 new (1500, 2500, 3000)
+
+    // Cleanup
+    drop_test_database(&postgres_url, &password, show_name).await;
+}
+
+#[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
+async fn test_lease_version_fencing() {
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+
+    let show_name = "test_lease_fencing";
+    drop_test_database(&postgres_url, &password, show_name).await;
+
+    // Create the database and leases table
+    let database_name =
+        save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
+    let pool = db_postgres::open_postgres_connection_create_if_needed(
+        &postgres_url,
+        &password,
+        &database_name,
+    )
+    .await
+    .unwrap();
+    db_postgres::create_leases_table_pg(&pool).await.unwrap();
+
+    let lease_name = "test_lease";
+    let duration_ms: i64 = 600_000;
+
+    // Get version 0 from sequence and acquire lease
+    let v0 = db_postgres::next_lease_version_pg(&pool).await.unwrap();
+    assert_eq!(v0, 0, "First version from sequence should be 0");
+
+    let acquired = db_postgres::try_acquire_lease_pg(
+        &pool,
+        lease_name,
+        "holder_a",
+        duration_ms,
+        v0,
+    )
+    .await
+    .unwrap();
+    assert!(acquired, "First acquire should succeed");
+
+    // Same holder, same version can re-acquire
+    let reacquired = db_postgres::try_acquire_lease_pg(
+        &pool,
+        lease_name,
+        "holder_a",
+        duration_ms,
+        v0,
+    )
+    .await
+    .unwrap();
+    assert!(reacquired, "Same holder+version should re-acquire");
+
+    // Different holder cannot acquire (lease not expired)
+    let v1 = db_postgres::next_lease_version_pg(&pool).await.unwrap();
+    assert_eq!(v1, 1, "Second version from sequence should be 1");
+
+    let stolen = db_postgres::try_acquire_lease_pg(
+        &pool,
+        lease_name,
+        "holder_b",
+        duration_ms,
+        v1,
+    )
+    .await
+    .unwrap();
+    assert!(!stolen, "Different holder should not acquire non-expired lease");
+
+    // Same holder but wrong version is blocked (fencing)
+    let wrong_version = db_postgres::try_acquire_lease_pg(
+        &pool,
+        lease_name,
+        "holder_a",
+        duration_ms,
+        v1, // holder_a acquired with v0, not v1
+    )
+    .await
+    .unwrap();
+    assert!(!wrong_version, "Same holder with wrong version should be blocked");
+
+    // Renew with correct version succeeds
+    let renewed = db_postgres::renew_lease_pg(&pool, lease_name, "holder_a", duration_ms, v0)
+        .await
+        .unwrap();
+    assert!(renewed, "Renew with correct version should succeed");
+
+    // Renew with wrong version fails
+    let renewed_wrong = db_postgres::renew_lease_pg(&pool, lease_name, "holder_a", duration_ms, v1)
+        .await
+        .unwrap();
+    assert!(!renewed_wrong, "Renew with wrong version should fail");
+
+    // Release with wrong version fails
+    let released_wrong = db_postgres::release_lease_pg(&pool, lease_name, "holder_a", v1)
+        .await
+        .unwrap();
+    assert!(!released_wrong, "Release with wrong version should fail");
+
+    // Release with correct version succeeds
+    let released = db_postgres::release_lease_pg(&pool, lease_name, "holder_a", v0)
+        .await
+        .unwrap();
+    assert!(released, "Release with correct version should succeed");
+
+    // Lease is no longer held
+    let held = db_postgres::is_lease_held_pg(&pool, lease_name)
+        .await
+        .unwrap();
+    assert!(!held, "Lease should not be held after release");
+
+    // Cleanup
+    drop_test_database(&postgres_url, &password, show_name).await;
+}
+
+#[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
+async fn test_lease_expired_takeover_with_version() {
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+
+    let show_name = "test_lease_expiry";
+    drop_test_database(&postgres_url, &password, show_name).await;
+
+    let database_name =
+        save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
+    let pool = db_postgres::open_postgres_connection_create_if_needed(
+        &postgres_url,
+        &password,
+        &database_name,
+    )
+    .await
+    .unwrap();
+    db_postgres::create_leases_table_pg(&pool).await.unwrap();
+
+    let lease_name = "test_expiry";
+
+    // Acquire with a very short duration (1ms) so it expires immediately
+    let v0 = db_postgres::next_lease_version_pg(&pool).await.unwrap();
+    let acquired = db_postgres::try_acquire_lease_pg(
+        &pool,
+        lease_name,
+        "holder_a",
+        1, // 1ms - expires almost immediately
+        v0,
+    )
+    .await
+    .unwrap();
+    assert!(acquired);
+
+    // Wait for the lease to expire
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Different holder can now take over the expired lease with a new version
+    let v1 = db_postgres::next_lease_version_pg(&pool).await.unwrap();
+    let taken_over = db_postgres::try_acquire_lease_pg(
+        &pool,
+        lease_name,
+        "holder_b",
+        600_000,
+        v1,
+    )
+    .await
+    .unwrap();
+    assert!(taken_over, "Should take over expired lease");
+
+    // Original holder with old version cannot renew
+    let renewed = db_postgres::renew_lease_pg(&pool, lease_name, "holder_a", 600_000, v0)
+        .await
+        .unwrap();
+    assert!(!renewed, "Old holder with old version should not renew after takeover");
+
+    // Original holder cannot release with old version
+    let released = db_postgres::release_lease_pg(&pool, lease_name, "holder_a", v0)
+        .await
+        .unwrap();
+    assert!(!released, "Old holder should not release after takeover");
+
+    // New holder can renew and release with correct version
+    let renewed = db_postgres::renew_lease_pg(&pool, lease_name, "holder_b", 600_000, v1)
+        .await
+        .unwrap();
+    assert!(renewed, "New holder should renew with correct version");
+
+    let released = db_postgres::release_lease_pg(&pool, lease_name, "holder_b", v1)
+        .await
+        .unwrap();
+    assert!(released, "New holder should release with correct version");
+
+    // Cleanup
+    drop_test_database(&postgres_url, &password, show_name).await;
+}
+
+#[tokio::test]
+#[ignore] // Requires PostgreSQL: TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD
+async fn test_lease_version_sequence_monotonic() {
+    let (postgres_url, password) = get_test_postgres_config()
+        .expect("TEST_POSTGRES_URL and TEST_POSTGRES_PASSWORD must be set");
+
+    let show_name = "test_lease_seq";
+    drop_test_database(&postgres_url, &password, show_name).await;
+
+    let database_name =
+        save_audio_stream::sync::get_pg_database_name(TEST_DATABASE_PREFIX, show_name);
+    let pool = db_postgres::open_postgres_connection_create_if_needed(
+        &postgres_url,
+        &password,
+        &database_name,
+    )
+    .await
+    .unwrap();
+    db_postgres::create_leases_table_pg(&pool).await.unwrap();
+
+    // Verify sequence produces monotonically increasing values starting from 0
+    let mut prev = -1i64;
+    for expected in 0..10 {
+        let version = db_postgres::next_lease_version_pg(&pool).await.unwrap();
+        assert_eq!(version, expected, "Sequence should produce {}", expected);
+        assert!(version > prev, "Versions must be monotonically increasing");
+        prev = version;
+    }
 
     // Cleanup
     drop_test_database(&postgres_url, &password, show_name).await;
