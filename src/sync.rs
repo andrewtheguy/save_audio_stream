@@ -269,7 +269,7 @@ fn replace_source_internal(
                 .into());
             }
 
-            // Update source_unique_id (validated by fencing token)
+            // Update source_unique_id (best-effort fencing token check, not atomic with write)
             if old_source_id.is_some() {
                 db.block_on(db_postgres::validate_fencing_token_pg(
                     db.pool(),
@@ -377,7 +377,7 @@ fn replace_source_internal(
     // Get old source_id for return value
     let old_source_id_for_return = old_source_id.unwrap_or_else(|| "none".to_string());
 
-    // Validate fencing token before critical writes
+    // Best-effort fencing token check (not atomic with write, see validate_fencing_token_pg doc)
     db.block_on(db_postgres::validate_fencing_token_pg(
         db.pool(),
         lease_name,
@@ -979,7 +979,7 @@ fn sync_single_show_internal(
         let last_id = segments.last().unwrap().id;
         let segments_ref = &segments;
 
-        // Validate fencing token before writing segments
+        // Best-effort fencing token check (not atomic with write, see validate_fencing_token_pg doc)
         db.block_on(db_postgres::validate_fencing_token_pg(
             db.pool(),
             lease_name,
