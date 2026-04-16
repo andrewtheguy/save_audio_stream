@@ -848,8 +848,12 @@ fn run_connection_loop(
         let mut mono_buffer: Vec<i16> = Vec::new();
         let mut encode_output = vec![0u8; 8192];
 
-        // Target duration in samples at output rate
-        let target_samples = duration * output_sample_rate as u64;
+        // Target duration in samples at output rate (use remaining time, not full duration)
+        let remaining_secs = recording_end_time
+            .checked_duration_since(Instant::now())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let target_samples = remaining_secs * output_sample_rate as u64;
 
         loop {
             // Check if we've reached target duration
