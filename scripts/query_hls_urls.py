@@ -17,11 +17,13 @@ import argparse
 import json
 import sys
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 
 DEFAULT_SERVER = "https://saveaudio.local.168234.xyz"
 DEFAULT_SHOW = "am1430"
+TZ = ZoneInfo("America/Los_Angeles")
 
 
 def parse_args():
@@ -49,12 +51,12 @@ def api_get(url: str, verbose: bool = False) -> dict:
 
 
 def to_timestamp_ms(date_str: str, time_str: str) -> int:
-    dt_naive = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-    return int(dt_naive.astimezone().timestamp() * 1000)
+    dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+    return int(dt.timestamp() * 1000)
 
 
 def fmt_ts(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(ms / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def find_overlapping_sessions(sessions: list, start_ms: int, end_ms: int) -> list:
@@ -86,7 +88,7 @@ def main():
     sessions = api_get(f"{args.server}/api/show/{args.show}/sessions", args.verbose).get("sessions", [])
     audio_format = (
         api_get(f"{args.server}/api/show/{args.show}/format", args.verbose).get("audio_format")
-        or "aac"
+        or "opus"
     )
     playlist_path = "opus-playlist.m3u8" if audio_format == "opus" else "playlist.m3u8"
 
@@ -112,7 +114,7 @@ def main():
         end_seg = estimate_segment(args.server, args.show, section_id, clip_end, args.verbose)
 
         url = (
-            f"{args.server}/show/{args.show}/{playlist_path}"
+            f"{args.server}/api/show/{args.show}/{playlist_path}"
             f"?start_id={start_seg}&end_id={end_seg}"
         )
         results.append({
