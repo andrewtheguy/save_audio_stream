@@ -267,8 +267,10 @@ h2 {
 
 .modal-header h3 {
   margin: 0;
+  margin-right: 0.5rem;
   font-size: 1.25rem;
   color: #333;
+  word-break: break-word;
 }
 
 .modal-close-btn {
@@ -325,11 +327,6 @@ h2 {
 
 .copy-url-btn:hover {
   background: #138496;
-}
-
-.modal-header h3 {
-  word-break: break-word;
-  margin-right: 0.5rem;
 }
 
 .narrow-range-toggle {
