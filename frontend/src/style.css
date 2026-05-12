@@ -267,8 +267,10 @@ h2 {
 
 .modal-header h3 {
   margin: 0;
+  margin-right: 0.5rem;
   font-size: 1.25rem;
   color: #333;
+  word-break: break-word;
 }
 
 .modal-close-btn {
@@ -325,6 +327,85 @@ h2 {
 
 .copy-url-btn:hover {
   background: #138496;
+}
+
+.narrow-range-toggle {
+  margin-top: 0.75rem;
+  background: none;
+  border: none;
+  color: #17a2b8;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.narrow-range-toggle:hover {
+  text-decoration: underline;
+}
+
+.narrow-range-panel {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid #e9ecef;
+  border-radius: 4px;
+  background: #fafafa;
+}
+
+.narrow-range-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.range-time-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  color: #555;
+  gap: 0.25rem;
+}
+
+.range-time-input {
+  padding: 0.4rem 0.5rem;
+  font-size: 0.9rem;
+  font-family: monospace;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+}
+
+.range-reset-btn {
+  background: #6c757d;
+  color: white;
+  border: none;
+  padding: 0.4rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.range-reset-btn:hover {
+  background: #5a6268;
+}
+
+.range-info {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #666;
+  font-family: monospace;
+}
+
+.range-note {
+  font-family: inherit;
+  color: #999;
+  margin-left: 0.5rem;
+}
+
+.range-error {
+  color: #c0392b;
+  font-family: inherit;
 }
 
 .session-header {
