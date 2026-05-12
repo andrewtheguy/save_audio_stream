@@ -235,6 +235,10 @@ h2 {
   background: #138496;
 }
 
+.session-header .show-hls-btn {
+  margin-left: auto;
+}
+
 /* HLS URL Modal */
 .modal-backdrop {
   position: fixed;
