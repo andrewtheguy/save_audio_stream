@@ -1,4 +1,5 @@
-import React from "react";
+import { useState } from "react";
+import { HlsUrlModal } from "./HlsUrlModal";
 
 interface SessionInfo {
   section_id: number;
@@ -12,7 +13,8 @@ interface SessionCardProps {
   session: SessionInfo;
   isActive: boolean;
   onSelect: (session: SessionInfo) => void;
-  getHlsUrl: (session: SessionInfo) => string;
+  audioFormat: string;
+  showName?: string;
   savedPosition?: number;
   formatDuration: (seconds: number) => string;
   formatDateWithTimeRange: (startMs: number, endMs: number) => string;
@@ -23,13 +25,15 @@ export function SessionCard({
   session,
   isActive,
   onSelect,
-  getHlsUrl,
+  audioFormat,
+  showName,
   savedPosition,
   formatDuration,
   formatDateWithTimeRange,
   formatPosition,
 }: SessionCardProps) {
   const endTimestampMs = session.timestamp_ms + session.duration_ms;
+  const [showHlsModal, setShowHlsModal] = useState(false);
 
   return (
     <div
@@ -46,6 +50,13 @@ export function SessionCard({
         <span className="session-position">
           Position: {formatPosition(savedPosition)}
         </span>
+        <button
+          className="show-hls-btn"
+          onClick={() => setShowHlsModal(true)}
+          title="Show HLS URL"
+        >
+          HLS URL
+        </button>
         {isActive ? (
           <span className="active-badge">Active</span>
         ) : (
@@ -60,19 +71,15 @@ export function SessionCard({
           </button>
         )}
       </div>
-      <div className="session-info">
-        <div className="url-row">
-          <span className="url-label">HLS:</span>
-          <a
-            href={getHlsUrl(session)}
-            className="url-link"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {getHlsUrl(session)}
-          </a>
-        </div>
-      </div>
+      {showHlsModal && (
+        <HlsUrlModal
+          session={session}
+          audioFormat={audioFormat}
+          showName={showName}
+          formatDateWithTimeRange={formatDateWithTimeRange}
+          onClose={() => setShowHlsModal(false)}
+        />
+      )}
     </div>
   );
 }

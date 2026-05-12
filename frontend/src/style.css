@@ -462,10 +462,6 @@ h2 {
   border-radius: 16px;
 }
 
-.session-info {
-  margin-bottom: 1rem;
-}
-
 .session-content {
   display: flex;
   flex-direction: column;
@@ -473,37 +469,6 @@ h2 {
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px solid #e9ecef;
-}
-
-.url-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.url-label {
-  font-weight: 600;
-  color: #495057;
-  min-width: 60px;
-  font-size: 0.9rem;
-}
-
-.url-link {
-  color: #0066cc;
-  text-decoration: none;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 0.9rem;
-  word-break: break-all;
-  padding: 0.5rem;
-  background: #f8f9fa;
-  border-radius: 4px;
-  flex: 1;
-  transition: background-color 0.2s ease;
-}
-
-.url-link:hover {
-  background: #e9ecef;
-  text-decoration: underline;
 }
 
 @media (max-width: 768px) {
@@ -528,19 +493,6 @@ h2 {
   .session-header {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .url-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .url-label {
-    min-width: auto;
-  }
-
-  .url-link {
-    width: 100%;
   }
 }
 

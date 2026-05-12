@@ -325,11 +325,6 @@ function ShowDetail({
     }
   };
 
-  const getHlsUrl = (session: SessionInfo): string => {
-    return audioFormat === "aac"
-      ? `/api/show/${decodedShowName}/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
-      : `/api/show/${decodedShowName}/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
-  };
 
   if (loading) {
     return (
@@ -448,7 +443,8 @@ function ShowDetail({
                 session={session}
                 isActive={activeSession?.section_id === session.section_id}
                 onSelect={setActiveSession}
-                getHlsUrl={getHlsUrl}
+                audioFormat={audioFormat}
+                showName={decodedShowName}
                 savedPosition={getSavedPosition(session.section_id)}
                 formatDuration={formatDuration}
                 formatDateWithTimeRange={formatDateWithTimeRange}
@@ -602,12 +598,6 @@ function InspectView() {
     setCurrentPage,
   });
 
-  const getHlsUrl = (session: SessionInfo): string => {
-    return audioFormat === "aac"
-      ? `/api/playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`
-      : `/api/opus-playlist.m3u8?start_id=${session.start_id}&end_id=${session.end_id}`;
-  };
-
   if (loading) {
     return (
       <div id="app">
@@ -687,7 +677,7 @@ function InspectView() {
                   session={session}
                   isActive={activeSession?.section_id === session.section_id}
                   onSelect={setActiveSession}
-                  getHlsUrl={getHlsUrl}
+                  audioFormat={audioFormat}
                   savedPosition={getSavedPosition(session.section_id)}
                   formatDuration={formatDuration}
                   formatDateWithTimeRange={formatDateWithTimeRange}

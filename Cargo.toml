@@ -1,6 +1,6 @@
 [package]
 name = "save_audio_stream"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2024"
 
 [dependencies]
