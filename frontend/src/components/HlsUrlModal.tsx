@@ -71,16 +71,24 @@ export function HlsUrlModal({
 
   const url = useMemo(() => buildUrl(startId, endId), [startId, endId, basePath, playlistFile]);
 
+  const urlInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const el = urlInputRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [url]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const handleCopy = () => {
     navigator.clipboard.writeText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleBackdropClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
   };
 
   const handleReset = () => {
@@ -155,7 +163,7 @@ export function HlsUrlModal({
   const titleText = formatDateWithTimeRange(sessionStartMs, sessionEndMs);
 
   return (
-    <div className="modal-backdrop" onClick={handleBackdropClick}>
+    <div className="modal-backdrop">
       <div className="modal-content">
         <div className="modal-header">
           <h3>{titleText}</h3>
@@ -165,6 +173,7 @@ export function HlsUrlModal({
         </div>
         <div className="modal-body">
           <input
+            ref={urlInputRef}
             type="text"
             className="hls-url-input"
             value={url}
