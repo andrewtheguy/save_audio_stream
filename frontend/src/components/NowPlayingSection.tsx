@@ -8,7 +8,6 @@ interface NowPlayingSectionProps {
   audioFormat: string;
   dbUniqueId: string;
   getSavedPosition: (sectionId: number) => number | undefined;
-  getHlsUrl: (session: SessionInfo) => string;
   onGoToSession: () => void;
   formatDuration: (seconds: number) => string;
   formatDateWithTimeRange: (startMs: number, endMs: number) => string;
@@ -20,7 +19,6 @@ export function NowPlayingSection({
   audioFormat,
   dbUniqueId,
   getSavedPosition,
-  getHlsUrl,
   onGoToSession,
   formatDuration,
   formatDateWithTimeRange,
@@ -39,7 +37,6 @@ export function NowPlayingSection({
   }
 
   const endTimestampMs = activeSession.timestamp_ms + activeSession.duration_ms;
-  const fullHlsUrl = window.location.origin + getHlsUrl(activeSession);
 
   return (
     <div className="now-playing-section">
@@ -79,7 +76,10 @@ export function NowPlayingSection({
       />
       {showHlsModal && (
         <HlsUrlModal
-          url={fullHlsUrl}
+          session={activeSession}
+          audioFormat={audioFormat}
+          showName={showName}
+          formatDateWithTimeRange={formatDateWithTimeRange}
           onClose={() => setShowHlsModal(false)}
         />
       )}

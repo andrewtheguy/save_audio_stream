@@ -432,7 +432,6 @@ function ShowDetail({
           audioFormat={audioFormat}
           dbUniqueId={dbUniqueId}
           getSavedPosition={getSavedPosition}
-          getHlsUrl={getHlsUrl}
           onGoToSession={handleGoToActiveSession}
           formatDuration={formatDuration}
           formatDateWithTimeRange={formatDateWithTimeRange}
@@ -669,7 +668,6 @@ function InspectView() {
           audioFormat={audioFormat}
           dbUniqueId={dbUniqueId}
           getSavedPosition={getSavedPosition}
-          getHlsUrl={getHlsUrl}
           onGoToSession={handleGoToActiveSession}
           formatDuration={formatDuration}
           formatDateWithTimeRange={formatDateWithTimeRange}
