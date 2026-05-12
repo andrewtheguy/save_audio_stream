@@ -183,7 +183,6 @@ h2 {
   font-weight: 600;
   padding: 0.35rem 0.75rem;
   border-radius: 16px;
-  margin-left: auto;
 }
 
 .select-btn {
@@ -195,7 +194,6 @@ h2 {
   padding: 0.35rem 0.75rem;
   border-radius: 16px;
   cursor: pointer;
-  margin-left: auto;
   transition: background-color 0.2s ease;
 }
 
@@ -235,8 +233,11 @@ h2 {
   background: #138496;
 }
 
-.session-header .show-hls-btn {
+.session-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 /* HLS URL Modal */

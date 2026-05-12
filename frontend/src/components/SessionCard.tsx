@@ -50,26 +50,28 @@ export function SessionCard({
         <span className="session-position">
           Position: {formatPosition(savedPosition)}
         </span>
-        <button
-          className="show-hls-btn"
-          onClick={() => setShowHlsModal(true)}
-          title="Show HLS URL"
-        >
-          HLS URL
-        </button>
-        {isActive ? (
-          <span className="active-badge">Active</span>
-        ) : (
+        <div className="session-actions">
           <button
-            className="select-btn"
-            onClick={() => {
-              onSelect(session);
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }}
+            className="show-hls-btn"
+            onClick={() => setShowHlsModal(true)}
+            title="Show HLS URL"
           >
-            Select
+            HLS URL
           </button>
-        )}
+          {isActive ? (
+            <span className="active-badge">Active</span>
+          ) : (
+            <button
+              className="select-btn"
+              onClick={() => {
+                onSelect(session);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+            >
+              Select
+            </button>
+          )}
+        </div>
       </div>
       {showHlsModal && (
         <HlsUrlModal
