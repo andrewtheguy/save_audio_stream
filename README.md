@@ -658,37 +658,30 @@ The web UI displays:
 
 ## Releasing
 
-The GitHub Action supports two modes:
-
-- **Prerelease** (default): Leave the version field empty to create a prerelease with a timestamp tag
-- **Release**: Enter a version (e.g., `0.1.2`) to create a stable release with matching Docker tag
+The `Release` GitHub Action takes no inputs — it reads the version from `Cargo.toml` and
+fails if the matching tag already exists. Bump the version yourself before running it.
 
 ### Creating a Release
 
-**Automated (Recommended):**
+1. Bump the version in `Cargo.toml` and `Cargo.lock`:
 
-Use the release script to automate version bumping and workflow triggering:
+   ```bash
+   python3 scripts/bump_version.py 0.2.15
+   ```
 
-```bash
-python3 scripts/release.py
-```
+2. Commit both files and push to `main`.
+3. Run the workflow, either from Actions → Release → Run workflow, or:
 
-The script will:
-1. Verify git working directory is clean
-2. Verify you're on the `main` branch and synced with remote
-3. Calculate the next patch version (e.g., `0.1.8` → `0.1.9`)
-4. Trigger the GitHub Actions workflow which bumps `Cargo.toml`/`Cargo.lock`, commits, and builds
+   ```bash
+   gh workflow run release.yml --ref main
+   ```
+
+The workflow tags `v{version}`, creates the GitHub release with the Linux x86_64/arm64
+binaries, pushes multi-arch Docker images to GHCR, and publishes a separate
+`v{version}-windows` release with the Windows binary. Runs from a branch other than
+`main` are marked as prereleases and are not tagged `latest`.
 
 **Prerequisites:** `gh` CLI must be installed and authenticated (`gh auth login`).
-
-**Manual:**
-
-1. Go to Actions → Release → Run workflow
-2. Enter the version number (e.g., `0.1.2`)
-3. Check "bump_version" to have the workflow update Cargo.toml/Cargo.lock
-4. Run the workflow
-
-The workflow automatically bumps the version, commits, creates the GitHub release, and builds Docker multi-arch images with the version tag.
 
 ## License
 
