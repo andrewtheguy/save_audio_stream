@@ -683,7 +683,7 @@ The script will:
 
 **Manual:**
 
-1. Go to Actions → Build → Run workflow
+1. Go to Actions → Release → Run workflow
 2. Enter the version number (e.g., `0.1.2`)
 3. Check "bump_version" to have the workflow update Cargo.toml/Cargo.lock
 4. Run the workflow

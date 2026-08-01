@@ -81,7 +81,7 @@ def trigger_workflow(new_version: str) -> None:
     """Trigger the GitHub Actions workflow with the new version."""
     print("Triggering GitHub Actions workflow...")
     run_cmd([
-        "gh", "workflow", "run", "build.yml",
+        "gh", "workflow", "run", "release.yml",
         "--ref", "main",
         "-f", f"version={new_version}",
         "-f", "bump_version=true",
