@@ -59,34 +59,24 @@ This tool is designed for scenarios where you need to:
 ### Prerequisites
 
 - Rust toolchain (cargo, rustc)
-- System libraries for audio encoding:
-  - **macOS**: `brew install fdk-aac opus`
-  - **Ubuntu/Debian**: `apt install libfdk-aac-dev libopus-dev`
-  - **Windows**: Install via vcpkg (see below)
+- A C/C++ compiler, for building the bundled fdk-aac sources:
+  - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
+  - **Ubuntu/Debian**: `apt install build-essential`
+  - **Windows**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with the **Desktop development with C++** workload (provides the MSVC toolchain Rust's `x86_64-pc-windows-msvc` target links against)
+- [Bun](https://bun.sh) for the frontend build
+
+No system audio libraries are needed: fdk-aac is compiled from vendored sources and libopus comes prebuilt from [libopus-prebuilt](https://github.com/andrewtheguy/libopus-prebuilt). No cmake, no pkg-config, no vcpkg.
+
+Note: the prebuilt libopus x86_64 builds require **AVX2** (Coffee Lake or newer); arm64 macOS requires an M1 or newer.
 
 ### Build
 
-**macOS/Linux:**
 ```bash
+cd frontend && bun install --frozen-lockfile && cd ..
 cargo build --release
 ```
 
-**Windows:**
-```powershell
-# Install vcpkg if not already installed
-cd C:\
-git clone https://github.com/microsoft/vcpkg.git
-cd vcpkg
-.\bootstrap-vcpkg.bat
-.\vcpkg integrate install
-
-# Install dependencies
-vcpkg install fdk-aac:x64-windows opus:x64-windows
-
-# Set VCPKG_ROOT and build
-$env:VCPKG_ROOT = "C:\vcpkg"
-cargo build --release
-```
+The same two commands work on macOS, Linux, and Windows (PowerShell).
 
 The binary will be at `target/release/save_audio_stream`.
 
