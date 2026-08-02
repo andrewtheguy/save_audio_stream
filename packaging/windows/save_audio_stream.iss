@@ -110,8 +110,13 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
 [Code]
 const
   EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
-  FILE_ATTRIBUTE_REPARSE_POINT = $00000400;
-  INVALID_FILE_ATTRIBUTES = $FFFFFFFF;
+  // Deliberately not named FILE_ATTRIBUTE_REPARSE_POINT / INVALID_FILE_ATTRIBUTES:
+  // Inno Setup predefines those in Pascal Script, and redeclaring one is a
+  // "Duplicate identifier" compile error rather than a shadow. Using the Win32
+  // names would work only for as long as this file does not also need a
+  // constant Inno has not defined, so both carry local names instead.
+  ReparsePointAttr = $00000400;
+  InvalidFileAttrs = $FFFFFFFF;
 
 function ApiGetFileAttributes(lpFileName: string): Cardinal;
   external 'GetFileAttributesW@kernel32.dll stdcall';
@@ -126,13 +131,13 @@ function ApiGetFileAttributes(lpFileName: string): Cardinal;
 // credentials.toml into, an attacker-chosen location — or, with
 // `onlyifdoesntexist`, silently adopt an attacker-planted config as though it
 // were the operator's own.
-function IsReparsePoint(Path: string): Boolean;
+function IsReparsePoint(TargetPath: string): Boolean;
 var
   Attrs: Cardinal;
 begin
-  Attrs := ApiGetFileAttributes(Path);
-  Result := (Attrs <> INVALID_FILE_ATTRIBUTES) and
-            ((Attrs and FILE_ATTRIBUTE_REPARSE_POINT) <> 0);
+  Attrs := ApiGetFileAttributes(TargetPath);
+  Result := (Attrs <> InvalidFileAttrs) and
+            ((Attrs and ReparsePointAttr) <> 0);
 end;
 
 // Refuse to install onto a redirected configuration or data tree rather than
@@ -158,12 +163,17 @@ begin
   begin
     if IsReparsePoint(Suspect[I]) then
     begin
-      Result := 'Refusing to install: ' + Suspect[I] + ' is a junction, symbolic' +
-                ' link or other reparse point.' #13#10#13#10 +
+      // Every join is an explicit '+': adjacent-literal concatenation
+      // ('a' #13#10 'b') is Delphi syntax that Inno's Pascal Script does not
+      // accept.
+      Result := 'Refusing to install: ' + Suspect[I] +
+                ' is a junction, symbolic link or other reparse point.' +
+                #13#10 + #13#10 +
                 'Configuration and recordings must live under ' + Base +
-                ' itself, not be redirected elsewhere — an elevated installer' +
+                ' itself, not be redirected elsewhere - an elevated installer' +
                 ' following a link placed there by a standard user would write' +
-                ' credentials to a location that user controls.' #13#10#13#10 +
+                ' credentials to a location that user controls.' +
+                #13#10 + #13#10 +
                 'Remove or replace that path with a real directory, then run' +
                 ' this installer again.';
       exit;
