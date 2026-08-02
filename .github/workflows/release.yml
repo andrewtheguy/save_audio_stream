@@ -31,7 +31,15 @@ jobs:
           import re, sys, tomllib
           with open("Cargo.toml", "rb") as f:
               version = tomllib.load(f)["package"]["version"]
-          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version):
+          # Cargo accepts SemVer build metadata (1.2.3+build.5); this pipeline
+          # cannot carry it. An OCI image tag may not contain "+" -- docker
+          # rejects ghcr.io/...:v1.2.3+build.5-amd64 outright -- and the asset
+          # filename is reconstructed by hand in the network install.sh. Caught
+          # here, in the first job, rather than in `docker`, which runs *after*
+          # `release` has already published the tag and the assets.
+          if "+" in version:
+              sys.exit(f"build metadata is not supported in release versions: {version!r}")
+          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
               sys.exit(f"invalid version in Cargo.toml: {version!r}")
           print(version)
           ')
