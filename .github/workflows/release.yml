@@ -111,6 +111,17 @@ jobs:
             target-note: linux-x86_64
           - runner: ubuntu-24.04-arm
             target-note: linux-arm64
+          # Pinned for the same reason, with a different floor: the macOS SDK on
+          # the runner sets the minimum OS version the binary will launch on, so
+          # macos-latest silently raising it is a user-visible regression. 14 is
+          # the oldest arm64 image GitHub still offers.
+          #
+          # arm64 only. The x86_64 image (macos-13) is on its way out, and the
+          # prebuilt libopus x86_64 build requires AVX2, which no Intel Mac
+          # before Coffee Lake has — an Intel tarball would be a support
+          # question, not a convenience. Intel users build from source.
+          - runner: macos-14
+            target-note: macos-arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4

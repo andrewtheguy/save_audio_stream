@@ -76,7 +76,7 @@ so nothing forces you to run it. Extract it wherever you like and run the binary
 in place:
 
 ```bash
-tar -xzf save_audio_stream-<version>-linux-x86_64.tar.gz
+tar -xzf save_audio_stream-<version>-linux-x86_64.tar.gz   # or -macos-arm64
 cd save_audio_stream-<version>
 ./bin/save_audio_stream record
 ```

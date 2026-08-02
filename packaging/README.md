@@ -152,7 +152,7 @@ service created with `sc.exe` would be killed at startup for not responding.
 `.github/workflows/release.yml`, `workflow_dispatch` only:
 
 ```
-prepare ──> frontend ──┬──> build (linux x86_64, linux arm64)
+prepare ──> frontend ──┬──> build (linux x86_64, linux arm64, macos arm64)
     │                  └──> windows (Inno Setup installer)
     └──────────────────────┴──> release ──> docker (amd64, arm64) ──> docker-manifest
 ```
@@ -163,7 +163,9 @@ release — assets attach to the draft and the tag is created only when it is
 published, so a failed build never leaves a half-populated release behind.
 `frontend` builds the bundle once and every downstream job consumes that
 artifact, so the tarballs, the Windows installer and both images ship identical
-frontend bytes. The `docker` job runs after the release is published and builds
+frontend bytes. `build` does not cross-compile — each tarball is produced on a
+runner of its own platform, which is why macOS ships arm64 only (see the matrix
+comment for why Intel is excluded). The `docker` job runs after the release is published and builds
 from the published tarball, smoke-testing each image before it is pushed.
 
 To cut a release: bump the version (`uv run scripts/bump_version.py <version>`),
