@@ -135,6 +135,15 @@ function IsReparsePoint(TargetPath: string): Boolean;
 var
   Attrs: Cardinal;
 begin
+  Result := False;
+  // Check existence through Inno first. The "failed" sentinel is $FFFFFFFF --
+  // every bit set, the reparse bit included -- so a bare bit test would call
+  // every *absent* path a reparse point and refuse every fresh install. Testing
+  // existence first means the sentinel comparison below is only ever reached
+  // for a path that is really there, and does not have to depend on how a
+  // Cardinal and a $FFFFFFFF literal compare in Pascal Script.
+  if (not FileExists(TargetPath)) and (not DirExists(TargetPath)) then
+    exit;
   Attrs := ApiGetFileAttributes(TargetPath);
   Result := (Attrs <> InvalidFileAttrs) and
             ((Attrs and ReparsePointAttr) <> 0);
@@ -147,11 +156,17 @@ end;
 // the decision with whoever can tell the two apart.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  Base: string;
+  Base, Blank: string;
   Suspect: array[0..5] of string;
   I: Integer;
 begin
   Result := '';
+  // Chr(13) + Chr(10) rather than #13#10: the preprocessor runs first and
+  // treats a '#' in the first column as a directive, so a wrapped line that
+  // happens to begin with a character literal fails the build with "Unknown
+  // preprocessor directive". Building the separator once sidesteps the question
+  // of where the line breaks fall.
+  Blank := Chr(13) + Chr(10) + Chr(13) + Chr(10);
   Base := ExpandConstant('{commonappdata}\{#AppName}');
   Suspect[0] := Base;
   Suspect[1] := Base + '\etc';
@@ -168,12 +183,12 @@ begin
       // accept.
       Result := 'Refusing to install: ' + Suspect[I] +
                 ' is a junction, symbolic link or other reparse point.' +
-                #13#10 + #13#10 +
+                Blank +
                 'Configuration and recordings must live under ' + Base +
                 ' itself, not be redirected elsewhere - an elevated installer' +
                 ' following a link placed there by a standard user would write' +
                 ' credentials to a location that user controls.' +
-                #13#10 + #13#10 +
+                Blank +
                 'Remove or replace that path with a real directory, then run' +
                 ' this installer again.';
       exit;
