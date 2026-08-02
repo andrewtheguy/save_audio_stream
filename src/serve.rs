@@ -7,8 +7,6 @@ use axum::{
 };
 use log::error;
 
-#[cfg(not(debug_assertions))]
-use axum::{body::Body, response::Response};
 use serde::Serialize;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
@@ -21,15 +19,6 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::constants::EXPECTED_DB_VERSION;
 use crate::fmp4::{generate_init_segment, generate_media_segment};
 use crate::queries::{metadata, segments};
-
-#[cfg(not(debug_assertions))]
-const INDEX_HTML: &[u8] = include_bytes!("../frontend/dist/index.html");
-
-#[cfg(not(debug_assertions))]
-const STYLE_CSS: &[u8] = include_bytes!("../frontend/dist/assets/style.css");
-
-#[cfg(not(debug_assertions))]
-const MAIN_JS: &[u8] = include_bytes!("../frontend/dist/assets/main.js");
 
 /// Parse Opus packets from audio data for fMP4 generation
 /// Opus packets are stored as 2-byte little-endian length followed by packet data
@@ -179,13 +168,7 @@ pub fn inspect_audio(
                 .route("/api/aac-segment/{filename}", get(aac_segment_handler));
         }
 
-        #[cfg(debug_assertions)]
-        let app = api_routes.layer(cors).with_state(app_state);
-
-        #[cfg(not(debug_assertions))]
-        let app = api_routes
-            .route("/", get(index_handler_release))
-            .route("/assets/{*path}", get(assets_handler_release))
+        let app = crate::web::attach_static(api_routes)
             .layer(cors)
             .with_state(app_state);
 
@@ -1181,32 +1164,6 @@ async fn inspect_mode_handler() -> impl IntoResponse {
     )
 }
 
-#[cfg(not(debug_assertions))]
-async fn index_handler_release() -> Response {
-    let mut response = Response::new(Body::from(INDEX_HTML));
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
-    response
-}
-
-#[cfg(not(debug_assertions))]
-async fn assets_handler_release(Path(path): Path<String>) -> Response {
-    let (content, mime_type): (&[u8], &str) = match path.as_str() {
-        "style.css" => (STYLE_CSS, "text/css"),
-        "main.js" => (MAIN_JS, "application/javascript"),
-        _ => {
-            return (StatusCode::NOT_FOUND, "Asset not found").into_response();
-        }
-    };
-
-    let mut response = Response::new(Body::from(content));
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
-    response
-}
-
 // Sync handlers moved to serve_record.rs
 
 // ============================================================================
@@ -1337,13 +1294,7 @@ pub fn receiver_audio(
             .route("/api/sync", post(receiver_trigger_sync_handler))
             .route("/api/sync/status", get(receiver_sync_status_handler));
 
-        #[cfg(debug_assertions)]
-        let app = api_routes.layer(cors).with_state(app_state);
-
-        #[cfg(not(debug_assertions))]
-        let app = api_routes
-            .route("/", get(receiver_index_handler_release))
-            .route("/assets/{*path}", get(receiver_assets_handler_release))
+        let app = crate::web::attach_static(api_routes)
             .layer(cors)
             .with_state(app_state);
 
@@ -2385,26 +2336,3 @@ async fn receiver_estimate_segment_handler(
         .into_response()
 }
 
-// Release mode handlers for receiver (reuse the same embedded assets)
-#[cfg(not(debug_assertions))]
-async fn receiver_index_handler_release() -> Response {
-    let mut response = Response::new(Body::from(INDEX_HTML));
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
-    response
-}
-
-#[cfg(not(debug_assertions))]
-async fn receiver_assets_handler_release(Path(path): Path<String>) -> Response {
-    let (content, mime_type): (&[u8], &str) = match path.as_str() {
-        "style.css" => (STYLE_CSS, "text/css"),
-        "main.js" => (MAIN_JS, "application/javascript"),
-        _ => return (StatusCode::NOT_FOUND, "Asset not found").into_response(),
-    };
-    let mut response = Response::new(Body::from(content));
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
-    response
-}

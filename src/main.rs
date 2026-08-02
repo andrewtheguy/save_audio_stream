@@ -1,22 +1,8 @@
 use clap::{Parser, Subcommand};
 use save_audio_stream::config::{ConfigType, MultiSessionConfig, SyncConfig};
+use save_audio_stream::paths;
 use save_audio_stream::{record, serve};
 use std::path::PathBuf;
-
-fn default_config_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config")
-        .join("save_audio_stream")
-}
-
-fn default_record_config() -> PathBuf {
-    default_config_dir().join("record.toml")
-}
-
-fn default_receiver_config() -> PathBuf {
-    default_config_dir().join("receiver.toml")
-}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -34,8 +20,8 @@ enum Command {
     /// Record audio from multiple streams
     Record {
         /// Path to multi-session config file (TOML format with [[sessions]] array)
-        /// Default: ~/.config/save_audio_stream/record.toml
-        #[arg(short, long, default_value_os_t = default_record_config())]
+        /// Default: record.toml in the installed config directory
+        #[arg(short, long, default_value_os_t = paths::config_path("record.toml"))]
         config: PathBuf,
 
         /// Override API server port for all sessions (overrides config file setting)
@@ -62,8 +48,8 @@ enum Command {
     /// Receive and browse synced shows from remote server
     Receiver {
         /// Path to receiver config file (TOML format, same as sync config)
-        /// Default: ~/.config/save_audio_stream/receiver.toml
-        #[arg(short, long, default_value_os_t = default_receiver_config())]
+        /// Default: receiver.toml in the installed config directory
+        #[arg(short, long, default_value_os_t = paths::config_path("receiver.toml"))]
         config: PathBuf,
 
         /// Sync once and exit without starting the server
@@ -78,8 +64,8 @@ enum Command {
     /// timestamp proximity and updates the receiver's tracking metadata.
     ReplaceSource {
         /// Path to receiver config file (TOML format, same as sync config)
-        /// Default: ~/.config/save_audio_stream/receiver.toml
-        #[arg(short, long, default_value_os_t = default_receiver_config())]
+        /// Default: receiver.toml in the installed config directory
+        #[arg(short, long, default_value_os_t = paths::config_path("receiver.toml"))]
         config: PathBuf,
 
         /// Name of the show to replace source for

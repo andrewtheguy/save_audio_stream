@@ -1,16 +1,22 @@
 # Recording Configuration Example
-# Copy this file and customize for your setup
+#
+# install.sh seeds this to <prefix>/etc/record.toml (default
+# /opt/save_audio_stream/etc/record.toml) and never overwrites it afterwards,
+# so edits here survive upgrades. Run with an explicit path via `-c` to use a
+# different one.
 
 config_type = 'record'
 
 # Global settings
-output_dir = './recordings'  # Directory to save recordings
-api_port = 17000             # API server port (required for sync)
 
-# Optional: export config
-# [export]
-# to_sftp = false
-# periodically = true
+# Where recordings, their SQLite databases and their lock files go. Commented
+# out because the default is already the right answer on an installed system:
+# <prefix>/data/recordings — a sibling of versions/, so upgrades, pruning and
+# rollback never touch it. A relative path is resolved against the working
+# directory, which is rarely what a service wants.
+# output_dir = '/opt/save_audio_stream/data/recordings'
+
+api_port = 17000             # API server port (required for sync)
 
 [[sessions]]
 url = 'https://stream.example.com/radio'

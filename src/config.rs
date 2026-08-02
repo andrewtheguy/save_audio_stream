@@ -51,7 +51,9 @@ pub struct MultiSessionConfig {
     pub config_type: ConfigType,
     /// Array of recording sessions
     pub sessions: Vec<SessionConfig>,
-    /// Global output directory for all sessions (default: tmp)
+    /// Global output directory for all sessions
+    /// (default: the `recordings` directory under the resolved data directory,
+    /// `<prefix>/data/recordings` on an installed system — see `paths.rs`)
     pub output_dir: Option<PathBuf>,
     /// Global API server port for all sessions (default: 17000)
     #[serde(default = "default_api_port")]

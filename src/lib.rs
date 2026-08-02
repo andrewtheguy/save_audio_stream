@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod db;
 pub mod db_postgres;
 pub mod fmp4;
+pub mod paths;
 pub mod queries;
 pub mod record;
 pub mod schedule;
@@ -21,6 +22,7 @@ pub mod serve_record;
 pub mod sftp;
 pub mod streaming;
 pub mod sync;
+pub mod web;
 pub mod webm;
 
 // Re-export the expected database version for convenience

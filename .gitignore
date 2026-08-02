@@ -18,3 +18,5 @@ frontend/dist/
 frontend/dist-dev/
 .idea/
 .claude/
+# Release tarballs from packaging/build-tarball.sh
+/dist/

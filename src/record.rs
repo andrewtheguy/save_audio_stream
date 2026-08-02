@@ -1175,10 +1175,13 @@ pub fn record(
     let audio_format = config.audio_format.unwrap_or(AudioFormat::Opus);
     let bitrate = config.bitrate;
     let name = config.name.clone();
+    // Not defaulted here: run_multi_session resolves the default once and
+    // copies it into every session config, so a second default in this
+    // function could only ever disagree with the real one.
     let output_dir = config
         .output_dir
         .clone()
-        .unwrap_or_else(|| PathBuf::from("tmp"));
+        .ok_or("internal error: output_dir was not populated by run_multi_session")?;
     let split_interval = config.split_interval.unwrap_or(0);
     let retention_hours = config.retention_hours.unwrap_or(RETENTION_HOURS);
 
@@ -1284,11 +1287,12 @@ pub fn run_multi_session(
     use std::thread;
     use std::time::Duration;
 
-    // Determine output directory and API port
+    // Determine output directory and API port. This is the single place the
+    // default is resolved; every session gets the result copied into it below.
     let output_dir_path = multi_config
         .output_dir
         .clone()
-        .unwrap_or_else(|| PathBuf::from("tmp"));
+        .unwrap_or_else(crate::paths::default_output_dir);
     let api_port = port_override.unwrap_or(multi_config.api_port);
 
     // Test all stream URLs for decode capability
