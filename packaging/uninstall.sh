@@ -56,10 +56,17 @@ remove_launcher() {
 }
 
 if [ -n "$version" ]; then
-  # Single version: the launcher stays, because the other version still needs it.
+  # Single version: the launcher normally stays, because the version still
+  # installed alongside this one continues to need it.
   if [ "$(readlink "$prefix/current" 2>/dev/null)" = "versions/$version" ]; then
     rm -f "$prefix/current"
     echo ">> deactivated current (was $version)"
+    # ...but this was the *active* version, so `current` is gone and the
+    # launcher now points through a symlink that resolves to nothing. Leaving it
+    # would put a save_audio_stream on PATH that fails with "No such file or
+    # directory". Remove it; re-pointing `current` at a kept version and
+    # re-running install.sh restores it.
+    remove_launcher
   fi
   rm -rf "${prefix:?}/versions/$version"
   echo ">> removed version $version"

@@ -164,7 +164,12 @@ jobs:
 
       - name: Smoke test the binary
         run: |
-          $got = & .\target\release\save_audio_stream.exe --version
+          # First line only, and stringified before Trim(): PowerShell turns
+          # multi-line native output into an *array*, and `-ne` against an array
+          # filters it rather than comparing it, which compares as truthy in
+          # ways that have nothing to do with the version.
+          $lines = & .\target\release\save_audio_stream.exe --version
+          $got = "$($lines | Select-Object -First 1)".Trim()
           Write-Host "binary reports: $got"
           if ($got -ne "save_audio_stream ${{ needs.prepare.outputs.version }}") {
             Write-Error "expected 'save_audio_stream ${{ needs.prepare.outputs.version }}'"
@@ -256,11 +261,20 @@ jobs:
       - name: Unpack the tarball into the build context
         run: |
           mkdir -p tmp/docker-context
+          # The downloaded artifact is the source of truth for its own name.
+          # Rebuilding the filename from the version and the target duplicated
+          # packaging/build-tarball.sh's naming here, where nothing would notice
+          # the two drifting apart until a release failed on a missing file.
+          shopt -s nullglob
+          tarballs=(tmp/tarball/*.tar.gz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one tarball in tmp/tarball, found ${#tarballs[@]}"
+            exit 1
+          fi
           # --strip-components=1 drops the save_audio_stream-<version>/ wrapper
           # so the context root holds bin/ and share/ as packaging/Dockerfile
           # expects.
-          tar -xzf "tmp/tarball/save_audio_stream-${{ needs.prepare.outputs.version }}-${{ matrix.target-note }}.tar.gz" \
-            -C tmp/docker-context --strip-components=1
+          tar -xzf "${tarballs[0]}" -C tmp/docker-context --strip-components=1
           ls -la tmp/docker-context tmp/docker-context/bin
 
       - uses: docker/login-action@v3

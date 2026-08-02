@@ -132,10 +132,18 @@ chmod 700 "$config_dir"
 
 # Beside versions/, never inside one — see the header. Created here so a fresh
 # install has somewhere to record to before anyone edits a config.
+#
+# The chown runs only on the install that creates the directory. Doing it on
+# every upgrade would walk the whole recording tree — potentially tens of
+# gigabytes — and, worse, would silently reassign ownership of every recording
+# to whoever ran sudo, undoing a deliberate choice to run the recorder as a
+# dedicated service account.
 data_dir="$prefix/data/recordings"
-mkdir -p "$data_dir"
-if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
-  chown -R "$SUDO_UID:$SUDO_GID" "$prefix/data"
+if [ ! -d "$data_dir" ]; then
+  mkdir -p "$data_dir"
+  if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
+    chown -R "$SUDO_UID:$SUDO_GID" "$prefix/data"
+  fi
 fi
 chmod 700 "$prefix/data"
 

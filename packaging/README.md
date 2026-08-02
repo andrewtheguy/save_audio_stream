@@ -169,8 +169,17 @@ runner of its own platform, which is why macOS ships arm64 only (see the matrix
 comment for why Intel is excluded). The `docker` job runs after the release is published and builds
 from the published tarball, smoke-testing each image before it is pushed.
 
-To cut a release: bump the version (`uv run scripts/bump_version.py <version>`),
-commit, then run the workflow.
+To cut a release: bump the version, commit, then run the workflow.
+
+```sh
+uv run scripts/bump_version.py <version>   # project convention (see CLAUDE.md)
+python3 scripts/bump_version.py <version>  # equivalent — needs only Python 3.11+
+```
+
+Either works: `bump_version.py` and `release_version.py` import nothing outside
+the standard library (`pyproject.toml` declares `dependencies = []`), and 3.11 is
+the floor because both use `tomllib`. `uv` is how this project runs the scripts
+under `scripts/`, not something the release needs installed.
 
 ### What counts as a releasable version
 

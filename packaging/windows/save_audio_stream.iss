@@ -108,18 +108,114 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
 ; the recordings or the edited configuration with it.
 
 [Code]
+const
+  EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+  FILE_ATTRIBUTE_REPARSE_POINT = $00000400;
+  INVALID_FILE_ATTRIBUTES = $FFFFFFFF;
+
+function ApiGetFileAttributes(lpFileName: string): Cardinal;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
+
+// True if the path exists and is a junction, symlink or other reparse point.
+//
+// This matters because ProgramData's default ACL lets any authenticated user
+// *create* subdirectories under it. A standard user can therefore pre-create
+// C:\ProgramData\save_audio_stream (or its etc\ subdirectory) as a junction
+// pointing somewhere they control, before this installer ever runs. The
+// installer runs elevated, so it would then apply the [Dirs] ACLs to, and seed
+// credentials.toml into, an attacker-chosen location — or, with
+// `onlyifdoesntexist`, silently adopt an attacker-planted config as though it
+// were the operator's own.
+function IsReparsePoint(Path: string): Boolean;
+var
+  Attrs: Cardinal;
+begin
+  Attrs := ApiGetFileAttributes(Path);
+  Result := (Attrs <> INVALID_FILE_ATTRIBUTES) and
+            ((Attrs and FILE_ATTRIBUTE_REPARSE_POINT) <> 0);
+end;
+
+// Refuse to install onto a redirected configuration or data tree rather than
+// trying to repair one: the safe repair is indistinguishable from deleting
+// something the operator set up deliberately (a data directory relocated onto
+// another volume is a legitimate junction). Aborting names the path and leaves
+// the decision with whoever can tell the two apart.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Base: string;
+  Suspect: array[0..5] of string;
+  I: Integer;
+begin
+  Result := '';
+  Base := ExpandConstant('{commonappdata}\{#AppName}');
+  Suspect[0] := Base;
+  Suspect[1] := Base + '\etc';
+  Suspect[2] := Base + '\data';
+  Suspect[3] := Base + '\etc\record.toml';
+  Suspect[4] := Base + '\etc\receiver.toml';
+  Suspect[5] := Base + '\etc\credentials.toml';
+  for I := 0 to 5 do
+  begin
+    if IsReparsePoint(Suspect[I]) then
+    begin
+      Result := 'Refusing to install: ' + Suspect[I] + ' is a junction, symbolic' +
+                ' link or other reparse point.' #13#10#13#10 +
+                'Configuration and recordings must live under ' + Base +
+                ' itself, not be redirected elsewhere — an elevated installer' +
+                ' following a link placed there by a standard user would write' +
+                ' credentials to a location that user controls.' #13#10#13#10 +
+                'Remove or replace that path with a real directory, then run' +
+                ' this installer again.';
+      exit;
+    end;
+  end;
+end;
+
 // Append to PATH only when it is not already there — an installer that appends
 // unconditionally grows PATH by one entry per reinstall.
 function NeedsAddPath(Dir: string): Boolean;
 var
   OrigPath: string;
 begin
-  if not RegQueryStringValue(HKEY_LOCAL_MACHINE,
-       'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
-       'Path', OrigPath) then
+  if not RegQueryStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', OrigPath) then
   begin
     Result := True;
     exit;
   end;
   Result := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(OrigPath) + ';') = 0;
+end;
+
+// Take the PATH entry back out on uninstall.
+//
+// Inno cannot do this declaratively: the [Registry] entry appends to an
+// existing value, and the only automatic counterpart, `uninsdeletevalue`, would
+// delete the *entire* system PATH. So the segment is removed by hand, matched
+// case-insensitively the same way NeedsAddPath adds it, and only if it is
+// actually present — an uninstall must not rewrite PATH when it put nothing
+// there (the task is opt-in) or when the value is missing entirely.
+procedure RemoveFromPath(Dir: string);
+var
+  OrigPath, Padded: string;
+  P: Integer;
+begin
+  if not RegQueryStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', OrigPath) then
+    exit;
+  Padded := ';' + OrigPath + ';';
+  P := Pos(';' + Uppercase(Dir) + ';', Uppercase(Padded));
+  if P = 0 then
+    exit;
+  // P indexes the leading ';' of the match; drop the directory and the
+  // separator that follows it, leaving that leading ';' to join the neighbours.
+  Delete(Padded, P + 1, Length(Dir) + 1);
+  // Strip the sentinel ';' from each end.
+  RegWriteExpandStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path',
+    Copy(Padded, 2, Length(Padded) - 2));
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  // usPostUninstall: the files are gone but {app} still expands, which is what
+  // the PATH entry was built from. ChangesEnvironment=yes broadcasts the change.
+  if CurUninstallStep = usPostUninstall then
+    RemoveFromPath(ExpandConstant('{app}\bin'));
 end;

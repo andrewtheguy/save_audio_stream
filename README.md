@@ -134,6 +134,16 @@ each can be overridden with `SAVE_AUDIO_STREAM_CONFIG_DIR`,
 own `output_dir` still wins over the recordings default; `-c` still wins over
 the config path.
 
+> **A custom `output_dir` must stay outside `<prefix>/versions/`.** Nothing
+> stops you pointing it at `/opt/save_audio_stream/versions/<version>/...`, and
+> `install.sh` will delete it without asking: the upgrade prunes everything under
+> `versions/` except the active and previous version, so recordings put there
+> vanish on the second upgrade after they were written. `<prefix>/data` and
+> `<prefix>/etc` are siblings of `versions/` precisely so the prune cannot reach
+> them — a custom path outside the prefix entirely (`/srv/recordings`, a mounted
+> volume) is equally safe. Wherever you point it, it is yours to back up:
+> nothing under `<prefix>` is backed up by the installer either.
+
 ## Building from source
 
 ### Prerequisites
@@ -773,8 +783,12 @@ fails if the matching tag already exists. Bump the version yourself before runni
 1. Bump the version in `Cargo.toml` and `Cargo.lock`:
 
    ```bash
-   python3 scripts/bump_version.py 0.2.15
+   uv run scripts/bump_version.py 0.2.15   # or: python3 scripts/bump_version.py 0.2.15
    ```
+
+   Needs only Python 3.11+ — the script has no third-party dependencies. It
+   refuses a version the release cannot ship before writing anything; see
+   [What counts as a releasable version](packaging/README.md#what-counts-as-a-releasable-version).
 
 2. Commit both files and push to `main`.
 3. Run the workflow, either from Actions → Release → Run workflow, or:
