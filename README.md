@@ -149,15 +149,17 @@ the config path.
 ### Prerequisites
 
 - Rust toolchain (cargo, rustc)
-- A C/C++ compiler, for building the bundled fdk-aac sources:
+- A C compiler, for the vendored C dependencies (SQLite, libssh2, zlib):
   - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
   - **Ubuntu/Debian**: `apt install build-essential`
   - **Windows**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with the **Desktop development with C++** workload (provides the MSVC toolchain Rust's `x86_64-pc-windows-msvc` target links against)
 - [Bun](https://bun.sh) for the frontend build
 
-No system audio libraries are needed: fdk-aac is compiled from vendored sources and libopus comes prebuilt from [libopus-prebuilt](https://github.com/andrewtheguy/libopus-prebuilt). No cmake, no pkg-config, no vcpkg.
+No system audio libraries are needed, and neither codec is compiled here: both come prebuilt as static archives, libopus from [libopus-prebuilt](https://github.com/andrewtheguy/libopus-prebuilt) and fdk-aac from [fdk-aac-prebuilt](https://github.com/andrewtheguy/fdk-aac-prebuilt). Nothing here compiles C++ any more, and there is no cmake, pkg-config or vcpkg in the build. (The MSVC workload above is still needed on Windows — Rust links against it regardless.)
 
-Note: the prebuilt libopus x86_64 builds require **AVX2** (Coffee Lake or newer); arm64 macOS requires an M1 or newer.
+Note: both prebuilt x86_64 builds require **AVX2** (Coffee Lake or newer); arm64 macOS requires an M1 or newer. The two floors are deliberately the same, so linking both excludes no machine that either would have excluded on its own.
+
+AAC patent licensing is the user's responsibility — see [fdk-aac-prebuilt's LICENSE](https://github.com/andrewtheguy/fdk-aac-prebuilt/blob/main/LICENSE) for the Fraunhofer terms, which are not OSI-approved and grant no patent rights.
 
 ### Build
 
@@ -448,7 +450,7 @@ CREATE INDEX idx_sections_start_timestamp ON sections(start_timestamp_ms);
 
 ### AAC Implementation Notes
 
-- The `fdk-aac` crate is used for **encoding** - it's the only practical choice for AAC encoding in Rust without FFmpeg
+- [`fdk-aac-prebuilt`](https://github.com/andrewtheguy/fdk-aac-prebuilt) is used for **encoding** — a fork of the `fdk-aac` crate that links a prebuilt static library instead of compiling ~170 C++ files per clean build. Fraunhofer FDK AAC is the only practical choice for AAC encoding in Rust without FFmpeg
 - **Symphonia AAC decoder** is recommended for decoding - more stable and reliable than fdk-aac decoder
 - Priming sample metadata is written to enable gapless playback during decoding
 

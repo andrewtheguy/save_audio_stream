@@ -1,6 +1,6 @@
 [package]
 name = "save_audio_stream"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 
 [dependencies]
@@ -12,7 +12,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 crossbeam-channel = "0.5"
-fdk-aac = "0.8.0"
+fdk-aac = { package = "fdk-aac-prebuilt", git = "https://github.com/andrewtheguy/fdk-aac-prebuilt", tag = "v2.0.3-20260802160323-88a9ddd" }
 opus = { package = "opus-prebuilt", git = "https://github.com/andrewtheguy/libopus-prebuilt", tag = "v1.6.1-20260731073637-74aab76" }
 ogg = "0.9"
 hound = "3.5"

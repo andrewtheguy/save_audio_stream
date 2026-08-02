@@ -903,7 +903,7 @@ fn run_connection_loop(
 
                                 match audio_format {
                                     AudioFormat::Aac => {
-                                        if let Some(ref encoder) = aac_encoder {
+                                        if let Some(ref mut encoder) = aac_encoder {
                                             match encoder.encode(&frame, &mut encode_output) {
                                                 Ok(info) => {
                                                     total_output_samples += frame_size as u64;
@@ -1067,7 +1067,7 @@ fn run_connection_loop(
             match audio_format {
                 AudioFormat::Aac => {
                     mono_buffer.resize(frame_size, 0);
-                    if let Some(ref encoder) = aac_encoder
+                    if let Some(ref mut encoder) = aac_encoder
                         && let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output)
                     {
                         total_output_samples += frame_size as u64;
