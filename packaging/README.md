@@ -46,6 +46,22 @@ canonicalized, so both the launcher symlink and `current` resolve to the real
 there. See `src/paths.rs`. Nothing is compiled in, so a tarball is relocatable:
 `PREFIX=/srv/sas BINDIR=~/bin ./install.sh` works with no rebuild.
 
+### Running the tarball without installing it
+
+`install.sh` is a convenience, not a requirement — the tarball is a working tree
+on its own. Extracted anywhere and run as `<extracted>/bin/save_audio_stream`,
+the binary still finds `share/save_audio_stream/web` beside itself, because that
+lookup is `<exe>/../share/...` and holds in every layout.
+
+Config and data do *not* resolve to the extracted directory, and that is the
+point of the shape check in `installed_prefix()`: it requires the component
+above the version root to be literally named `versions` before it will claim a
+prefix. An extracted tarball does not match, so it falls back to the per-user
+directories instead of inventing `<extracted>/../etc` out of whatever the user
+happened to untar into. `SAVE_AUDIO_STREAM_CONFIG_DIR` and
+`SAVE_AUDIO_STREAM_DATA_DIR` make it fully self-contained if that is what is
+wanted.
+
 Local build:
 
 ```sh

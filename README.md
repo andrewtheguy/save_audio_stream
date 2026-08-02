@@ -69,6 +69,40 @@ both. Upgrades are the same command; rollback is one symlink flip. See
 [`packaging/README.md`](packaging/README.md) for the layout, the upgrade model
 and the one caveat that matters (rollback restores the binary, not the data).
 
+### Linux / macOS, without the install script
+
+The release asset is a plain tarball and the install script ships *inside* it,
+so nothing forces you to run it. Extract it wherever you like and run the binary
+in place:
+
+```bash
+tar -xzf save_audio_stream-<version>-linux-x86_64.tar.gz
+cd save_audio_stream-<version>
+./bin/save_audio_stream record
+```
+
+The web UI works with no further setup — the binary finds
+`share/save_audio_stream/web` relative to its own location, from any working
+directory. Config and recordings fall back to your per-user directories
+(`~/.config/save_audio_stream/`, `~/.local/share/save_audio_stream/recordings`),
+because the versioned `/opt` layout is detected by shape and an extracted
+tarball deliberately does not match it. Config templates are in
+`share/doc/save_audio_stream/`.
+
+To keep everything inside the extracted directory instead — a portable install
+that touches nothing else:
+
+```bash
+export SAVE_AUDIO_STREAM_CONFIG_DIR="$PWD/etc"
+export SAVE_AUDIO_STREAM_DATA_DIR="$PWD/data"
+mkdir -p etc data/recordings
+cp share/doc/save_audio_stream/record.toml.example etc/record.toml
+```
+
+What you give up versus `install.sh` is the versioned layout: no `current`
+symlink, so no atomic upgrade and no one-symlink rollback, and no launcher on
+PATH. Upgrading is extracting the next tarball yourself.
+
 ### Windows
 
 Download `save_audio_stream-<version>-windows-x86_64-setup.exe` from the
