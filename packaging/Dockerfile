@@ -18,11 +18,16 @@ FROM debian:trixie-slim
 
 LABEL org.opencontainers.image.source=https://github.com/andrewtheguy/save_audio_stream
 
-# ca-certificates for HTTPS stream sources. libssl3 and zlib1g are named
+# ca-certificates for HTTPS stream sources. The three libraries are named
 # explicitly rather than left to arrive transitively: `ldd` on the release
 # binary shows libssl.so.3, libcrypto.so.3, libz.so.1 and libzstd.so.1 —
 # reqwest's native-tls and ssh2's libssh2 both link OpenSSL. Naming them means a
 # change to the dependency chain fails here, not at the first HTTPS request.
+#
+# `libssl3` is deliberate even though trixie ships the package as `libssl3t64`
+# (the 64-bit time_t transition): apt resolves the old name to it, and writing
+# the name the linker reports keeps this line legible. Verified against the
+# built image — it installs libssl3t64 3.5.6.
 #
 # tini because save_audio_stream does not install a SIGTERM handler: as PID 1 it
 # would inherit the default "ignore" disposition, and `docker stop` would time
