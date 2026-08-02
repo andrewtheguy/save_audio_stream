@@ -48,7 +48,7 @@ where
         None => {
             warn!(
                 "No web UI bundle found — serving the API only. \
-                 Build it with `bun run build --cwd frontend`, \
+                 Build it with `bun run --cwd frontend build`, \
                  or point SAVE_AUDIO_STREAM_WEB_DIR at one."
             );
             router

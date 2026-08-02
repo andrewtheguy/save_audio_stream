@@ -135,13 +135,17 @@ without a source change — after deleting it, or after a `CI=true` build, which
 skips the frontend step entirely:
 
 ```bash
-bun run build --cwd frontend
+bun run --cwd frontend build && cargo run -- inspect path/to/show.sqlite
 ```
+
+`--cwd` goes **before** the script name — anything after it is passed to the
+script rather than to bun, so `bun run build --cwd frontend` fails with
+`Script not found "build"`.
 
 If the bundle is missing the server still starts and serves the API; the log says
 so and `/` is a 404.
 
-For frontend work, `bun run dev --cwd frontend` gives HMR on port 5173 and
+For frontend work, `bun run --cwd frontend dev` gives HMR on port 5173 and
 proxies `/api` to `VITE_API_PORT` (default 16000).
 
 To build a release tarball locally, `bash packaging/build-tarball.sh`.
