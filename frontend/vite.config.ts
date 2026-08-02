@@ -19,18 +19,4 @@ export default defineConfig({
       },
     },
   },
-  build: {
-    outDir: "dist",
-    rollupOptions: {
-      output: {
-        entryFileNames: "assets/main.js",
-        assetFileNames: (assetInfo) => {
-          if (assetInfo.names?.[0]?.endsWith(".css")) {
-            return "assets/style.css";
-          }
-          return "assets/[name].[ext]";
-        },
-      },
-    },
-  },
 });

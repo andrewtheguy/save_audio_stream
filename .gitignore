@@ -18,3 +18,9 @@ frontend/dist/
 frontend/dist-dev/
 .idea/
 .claude/
+# Release tarballs from packaging/build-tarball.sh
+/dist/
+
+# Python bytecode (packaging/release_version.py is imported by scripts/)
+__pycache__/
+*.pyc

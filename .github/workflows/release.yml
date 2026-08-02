@@ -3,6 +3,10 @@ name: Release
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  packages: write
+
 env:
   GHCR_IMAGE: ghcr.io/andrewtheguy/save_audio_stream
 
@@ -10,109 +14,186 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
+      version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Determine and validate version
         id: version
+        run: |
+          # The same validator packaging/build-tarball.sh runs, so the tag, the
+          # tarball filename and the image tag cannot disagree. It checks the
+          # version against Cargo's grammar and against the OCI tag grammar --
+          # see packaging/release_version.py. Failing here costs ten seconds;
+          # the `docker` job that would otherwise catch it runs *after*
+          # `release` has published the tag and its assets.
+          VERSION=$(python3 packaging/release_version.py)
+          TAG="v${VERSION}"
+          echo "Release tag: ${TAG}"
+          IS_PRERELEASE="false"
+          [ "$GITHUB_REF_NAME" = "main" ] || IS_PRERELEASE="true"
+          # The bare version (no leading v) is the tarball filename component
+          # and the Dockerfile's VERSION build-arg.
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Abort if tag already exists
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
+            echo "::error::Tag ${{ steps.version.outputs.tag }} already exists on remote. Bump the version in Cargo.toml first."
+            exit 1
+          fi
+
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          # Extract version from Cargo.toml
-          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-          if [ -z "$VERSION" ]; then
-            echo "Could not determine version from Cargo.toml" >&2
-            exit 1
+          # Assets attach to a draft and the git tag is only created when the
+          # draft is published, so a failed build never leaves a half-populated
+          # release or a dangling tag behind.
+          #
+          # Clean up any leftover draft from a previous failed run with the same
+          # version. A draft doesn't create the tag on the remote, so a stale
+          # draft is the only thing that can collide here — real published tags
+          # are caught by the step above.
+          if gh release view "${{ steps.version.outputs.tag }}" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx true; then
+            echo "Deleting stale draft release ${{ steps.version.outputs.tag }}"
+            gh release delete "${{ steps.version.outputs.tag }}" --yes
           fi
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --draft \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes \
+            ${{ steps.version.outputs.is_prerelease == 'true' && '--prerelease' || '' }}
 
-          TAG="v${VERSION}"
-          echo "Release tag: ${TAG}"
-
-          # Check if tag already exists
-          if gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists. Bump the version in Cargo.toml before releasing." >&2
-            exit 1
-          fi
-
-          # Prerelease if not on main branch
-          IS_PRERELEASE="false"
-          if [ "$GITHUB_REF_NAME" != "main" ]; then
-            IS_PRERELEASE="true"
-          fi
-
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
-
-  build-linux:
+  # The frontend bundle is platform-agnostic — build it once here and reuse it
+  # for every tarball and for the Windows installer, rather than rebuilding it on
+  # each runner and hoping the three agree.
+  frontend:
     needs: prepare
-    strategy:
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            arch: x86_64
-            docker_platform: linux/amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-            docker_platform: linux/arm64
-
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      packages: write
-
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@v2
 
-      - name: Install frontend dependencies
-        run: cd frontend && bun install --frozen-lockfile
+      - name: Build frontend
+        run: cd frontend && bun install --frozen-lockfile && bun run build
+
+      - name: Upload frontend bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+
+  build:
+    needs: [prepare, frontend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Pinned, not ubuntu-latest: these binaries set the glibc floor for
+          # both the tarballs and the container images (packaging/Dockerfile runs
+          # them on debian:trixie-slim, glibc 2.41), so the builder must not
+          # drift under us into something newer than what can run them.
+          - runner: ubuntu-24.04
+            target-note: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target-note: linux-arm64
+          # Pinned for the same reason, with a different floor: the macOS SDK on
+          # the runner sets the minimum OS version the binary will launch on, so
+          # macos-latest silently raising it is a user-visible regression. 14 is
+          # the oldest arm64 image GitHub still offers.
+          #
+          # arm64 only. The x86_64 image (macos-13) is on its way out, and the
+          # prebuilt libopus x86_64 build requires AVX2, which no Intel Mac
+          # before Coffee Lake has — an Intel tarball would be a support
+          # question, not a convenience. Intel users build from source.
+          - runner: macos-14
+            target-note: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download prebuilt frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get install -y pkg-config
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Rename binary
-        run: mv target/release/save_audio_stream target/release/save_audio_stream-linux-${{ matrix.arch }}
+      # GitHub Actions sets CI=true, so build.rs also skips its bun step and the
+      # downloaded bundle is used verbatim.
+      - name: Build release tarball (${{ matrix.target-note }})
+        run: SKIP_FRONTEND_BUILD=1 bash packaging/build-tarball.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: save_audio_stream-linux-${{ matrix.arch }}
-          path: target/release/save_audio_stream-linux-${{ matrix.arch }}
+          name: save_audio_stream-${{ matrix.target-note }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+  # Windows ships an installer, not a bare .exe, and it is an asset on the same
+  # release as everything else rather than a separate -windows tag.
+  windows:
+    needs: [prepare, frontend]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download prebuilt frontend
+        uses: actions/download-artifact@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          name: frontend-dist
+          path: frontend/dist
 
-      - name: Build and push Docker image (using pre-built binary)
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Smoke test the binary
         run: |
-          TAG=${{ needs.prepare.outputs.tag }}
-          # Copy binary to build context root for Dockerfile
-          cp target/release/save_audio_stream-linux-${{ matrix.arch }} save_audio_stream
-          docker build --target runtime-prebuilt -t ${{ env.GHCR_IMAGE }}:${TAG}-${{ matrix.arch }} .
-          docker push ${{ env.GHCR_IMAGE }}:${TAG}-${{ matrix.arch }}
+          # First line only, and stringified before Trim(): PowerShell turns
+          # multi-line native output into an *array*, and `-ne` against an array
+          # filters it rather than comparing it, which compares as truthy in
+          # ways that have nothing to do with the version.
+          $lines = & .\target\release\save_audio_stream.exe --version
+          $got = "$($lines | Select-Object -First 1)".Trim()
+          Write-Host "binary reports: $got"
+          if ($got -ne "save_audio_stream ${{ needs.prepare.outputs.version }}") {
+            Write-Error "expected 'save_audio_stream ${{ needs.prepare.outputs.version }}'"
+            exit 1
+          }
+
+      # ISCC.exe is preinstalled on the windows-latest runner image, so there is
+      # no toolchain step here.
+      - name: Build the installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DAppVersion=${{ needs.prepare.outputs.version }}" `
+            packaging\windows\save_audio_stream.iss
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: save_audio_stream-windows-x86_64
+          path: dist/*-setup.exe
+          if-no-files-found: error
 
   release:
-    needs: [prepare, build-linux]
+    needs: [prepare, build, windows]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -120,68 +201,141 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: ${{ needs.prepare.outputs.tag }}
-          files: artifacts/*
-          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+      - name: List artifacts
+        run: ls -la artifacts/
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - name: Upload artifacts to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        # Explicit globs, not `artifacts/*`: `merge-multiple` also drops the
+        # frontend-dist artifact's files in here, and those are build input, not
+        # release assets.
+        run: |
+          gh release upload "${{ needs.prepare.outputs.tag }}" \
+            artifacts/*.tar.gz artifacts/*-setup.exe --clobber
+
+      - name: Publish release (removes draft, creates the tag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false
+
+  # Container images, built only once the release is published so a pushed image
+  # tag always corresponds to a real release. Nothing is compiled here: each
+  # arch's image is the published tarball for that arch unpacked into the build
+  # context, so it carries the exact binary users download plus the one
+  # platform-agnostic frontend bundle from the `frontend` job.
+  #
+  # Each arch builds on its own native runner — no QEMU, no cross-compilation —
+  # and plain `docker` rather than buildx, because there is nothing to
+  # cross-build and it lets the image be smoke-tested before it is pushed.
+  #
+  # These runners need no pinning (unlike the tarball builds above): the runner
+  # only unpacks a tarball and drives docker, so all that matters is its arch —
+  # the glibc that has to line up is the base image's against the binary's.
+  docker:
+    needs: [prepare, release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+            target-note: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            target-note: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE_TAG: ${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the release tarball (${{ matrix.target-note }})
+        uses: actions/download-artifact@v4
+        with:
+          name: save_audio_stream-${{ matrix.target-note }}
+          path: tmp/tarball
+
+      - name: Unpack the tarball into the build context
+        run: |
+          mkdir -p tmp/docker-context
+          # The downloaded artifact is the source of truth for its own name.
+          # Rebuilding the filename from the version and the target duplicated
+          # packaging/build-tarball.sh's naming here, where nothing would notice
+          # the two drifting apart until a release failed on a missing file.
+          shopt -s nullglob
+          tarballs=(tmp/tarball/*.tar.gz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one tarball in tmp/tarball, found ${#tarballs[@]}"
+            exit 1
+          fi
+          # --strip-components=1 drops the save_audio_stream-<version>/ wrapper
+          # so the context root holds bin/ and share/ as packaging/Dockerfile
+          # expects.
+          tar -xzf "${tarballs[0]}" -C tmp/docker-context --strip-components=1
+          ls -la tmp/docker-context tmp/docker-context/bin
+
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
-      - name: Create and push multi-arch manifest
+      - name: Build image
         run: |
-          TAG=${{ needs.prepare.outputs.tag }}
-          # Create manifest combining both architectures
-          docker manifest create ${{ env.GHCR_IMAGE }}:${TAG} \
-            ${{ env.GHCR_IMAGE }}:${TAG}-x86_64 \
-            ${{ env.GHCR_IMAGE }}:${TAG}-arm64
-          docker manifest push ${{ env.GHCR_IMAGE }}:${TAG}
+          docker build \
+            --file packaging/Dockerfile \
+            --build-arg "VERSION=${{ needs.prepare.outputs.version }}" \
+            --tag "${GHCR_IMAGE}:${IMAGE_TAG}" \
+            tmp/docker-context
 
-          # Only tag as latest on non-prerelease (main branch) builds
-          if [ "${{ needs.prepare.outputs.is_prerelease }}" = "false" ]; then
-            docker manifest create ${{ env.GHCR_IMAGE }}:latest \
-              ${{ env.GHCR_IMAGE }}:${TAG}-x86_64 \
-              ${{ env.GHCR_IMAGE }}:${TAG}-arm64
-            docker manifest push ${{ env.GHCR_IMAGE }}:latest
-          fi
+      - name: Smoke test the image
+        run: |
+          # Proves the release binary actually runs on this base image — a glibc
+          # or OpenSSL mismatch would only ever surface here — and that the image
+          # contents match the release being published.
+          got=$(docker run --rm "${GHCR_IMAGE}:${IMAGE_TAG}" --version)
+          echo "image reports: ${got}"
+          [ "$got" = "save_audio_stream ${{ needs.prepare.outputs.version }}" ] || {
+            echo "::error::expected 'save_audio_stream ${{ needs.prepare.outputs.version }}'"
+            exit 1
+          }
+          # The frontend has to be where the server looks for it by default.
+          docker run --rm --entrypoint sh "${GHCR_IMAGE}:${IMAGE_TAG}" \
+            -c 'test -f /opt/save_audio_stream/current/share/save_audio_stream/web/index.html'
 
-  # Windows build is separate and creates its own release with -windows suffix
-  build-windows:
-    needs: prepare
-    runs-on: windows-latest
-    permissions:
-      actions: read
-      contents: write
+      - name: Push image
+        run: docker push "${GHCR_IMAGE}:${IMAGE_TAG}"
 
+  # The per-arch tags above are plumbing; this is the tag users pull.
+  docker-manifest:
+    needs: [prepare, docker]
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Install frontend dependencies
-        run: cd frontend && bun install --frozen-lockfile
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Rename binary
-        run: mv target/release/save_audio_stream.exe target/release/save_audio_stream-windows-x86_64.exe
-
-      - name: Create Windows release
-        uses: softprops/action-gh-release@v2
+      - uses: docker/login-action@v3
         with:
-          tag_name: ${{ needs.prepare.outputs.tag }}-windows
-          name: ${{ needs.prepare.outputs.tag }}-windows
-          files: target/release/save_audio_stream-windows-x86_64.exe
-          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Create and push the multi-arch manifest
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          docker manifest create "${GHCR_IMAGE}:${TAG}" \
+            "${GHCR_IMAGE}:${TAG}-amd64" \
+            "${GHCR_IMAGE}:${TAG}-arm64"
+          docker manifest push "${GHCR_IMAGE}:${TAG}"
+
+      # A prerelease is never `latest` — it is built off a non-main branch.
+      - name: Point latest at this release
+        if: needs.prepare.outputs.is_prerelease == 'false'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          docker manifest create "${GHCR_IMAGE}:latest" \
+            "${GHCR_IMAGE}:${TAG}-amd64" \
+            "${GHCR_IMAGE}:${TAG}-arm64"
+          docker manifest push "${GHCR_IMAGE}:latest"

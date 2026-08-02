@@ -32,13 +32,13 @@ pub enum CredentialType {
     Postgres,
 }
 
-/// Get the default credentials file path: ~/.config/save_audio_stream/credentials.toml
+/// Get the default credentials file path.
+///
+/// Resolved through [`crate::paths::config_dir`], so credentials always sit
+/// beside the config file that references them — the installed `<prefix>/etc`
+/// when running from an install, the per-user config directory otherwise.
 pub fn get_credentials_path() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME environment variable not set");
-    PathBuf::from(home)
-        .join(".config")
-        .join("save_audio_stream")
-        .join("credentials.toml")
+    crate::paths::config_path("credentials.toml")
 }
 
 /// Load credentials from the default location

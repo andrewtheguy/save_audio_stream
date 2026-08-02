@@ -93,6 +93,19 @@ def main() -> None:
     cargo_toml = project_root / "Cargo.toml"
     cargo_lock = project_root / "Cargo.lock"
 
+    # Reject a version the release cannot ship *before* writing it to two files
+    # and touching the lockfile. The same check runs in the release workflow and
+    # in packaging/build-tarball.sh; catching it here means it never reaches a
+    # commit. Imported by path because packaging/ is not a package and this
+    # script is invoked directly.
+    sys.path.insert(0, str(project_root / "packaging"))
+    from release_version import InvalidVersion, validate  # noqa: E402
+
+    try:
+        validate(new_version)
+    except InvalidVersion as exc:
+        error(str(exc))
+
     if not cargo_toml.exists():
         error(f"Cargo.toml not found at {cargo_toml}")
 

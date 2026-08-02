@@ -56,6 +56,96 @@ This tool is designed for scenarios where you need to:
 
 ## Installation
 
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/andrewtheguy/save_audio_stream/main/install.sh | bash
+```
+
+Downloads the release tarball for your platform, verifies its SHA-256 against
+the digest GitHub published, and installs to `/opt/save_audio_stream` with a
+launcher at `/usr/local/bin/save_audio_stream`. `PREFIX` and `BINDIR` override
+both. Upgrades are the same command; rollback is one symlink flip. See
+[`packaging/README.md`](packaging/README.md) for the layout, the upgrade model
+and the one caveat that matters (rollback restores the binary, not the data).
+
+### Linux / macOS, without the install script
+
+The release asset is a plain tarball and the install script ships *inside* it,
+so nothing forces you to run it. Extract it wherever you like and run the binary
+in place:
+
+```bash
+tar -xzf save_audio_stream-<version>-linux-x86_64.tar.gz   # or -macos-arm64
+cd save_audio_stream-<version>
+./bin/save_audio_stream record
+```
+
+The web UI works with no further setup — the binary finds
+`share/save_audio_stream/web` relative to its own location, from any working
+directory. Config and recordings fall back to your per-user directories
+(`~/.config/save_audio_stream/`, `~/.local/share/save_audio_stream/recordings`),
+because the versioned `/opt` layout is detected by shape and an extracted
+tarball deliberately does not match it. Config templates are in
+`share/doc/save_audio_stream/`.
+
+To keep everything inside the extracted directory instead — a portable install
+that touches nothing else:
+
+```bash
+export SAVE_AUDIO_STREAM_CONFIG_DIR="$PWD/etc"
+export SAVE_AUDIO_STREAM_DATA_DIR="$PWD/data"
+mkdir -p etc data/recordings
+cp share/doc/save_audio_stream/record.toml.example etc/record.toml
+```
+
+What you give up versus `install.sh` is the versioned layout: no `current`
+symlink, so no atomic upgrade and no one-symlink rollback, and no launcher on
+PATH. Upgrading is extracting the next tarball yourself.
+
+### Windows
+
+Download `save_audio_stream-<version>-windows-x86_64-setup.exe` from the
+[releases page](https://github.com/andrewtheguy/save_audio_stream/releases) and
+run it. It installs to `C:\Program Files\save_audio_stream`, puts configuration
+and recordings under `C:\ProgramData\save_audio_stream`, and can add the program
+to your PATH. Run it from a command prompt — it registers no service.
+
+### Docker
+
+```bash
+docker run -p 17000:17000 \
+  -v ./record.toml:/opt/save_audio_stream/etc/record.toml:ro \
+  -v sas-data:/opt/save_audio_stream/data \
+  ghcr.io/andrewtheguy/save_audio_stream:latest record
+```
+
+### Where things live
+
+| | Linux/macOS (installed) | Windows | Checkout |
+| --- | --- | --- | --- |
+| Config | `/opt/save_audio_stream/etc/` | `C:\ProgramData\save_audio_stream\etc\` | `~/.config/save_audio_stream/` |
+| Recordings | `/opt/save_audio_stream/data/recordings/` | `C:\ProgramData\save_audio_stream\data\recordings\` | `~/.local/share/save_audio_stream/recordings/` |
+| Web UI files | `<prefix>/current/share/save_audio_stream/web/` | `C:\Program Files\save_audio_stream\share\save_audio_stream\web\` | `frontend/dist/` |
+
+All three are resolved from the running binary's own path (`src/paths.rs`), and
+each can be overridden with `SAVE_AUDIO_STREAM_CONFIG_DIR`,
+`SAVE_AUDIO_STREAM_DATA_DIR` and `SAVE_AUDIO_STREAM_WEB_DIR`. A config file's
+own `output_dir` still wins over the recordings default; `-c` still wins over
+the config path.
+
+> **A custom `output_dir` must stay outside `<prefix>/versions/`.** Nothing
+> stops you pointing it at `/opt/save_audio_stream/versions/<version>/...`, and
+> `install.sh` will delete it without asking: the upgrade prunes everything under
+> `versions/` except the active and previous version, so recordings put there
+> vanish on the second upgrade after they were written. `<prefix>/data` and
+> `<prefix>/etc` are siblings of `versions/` precisely so the prune cannot reach
+> them — a custom path outside the prefix entirely (`/srv/recordings`, a mounted
+> volume) is equally safe. Wherever you point it, it is yours to back up:
+> nothing under `<prefix>` is backed up by the installer either.
+
+## Building from source
+
 ### Prerequisites
 
 - Rust toolchain (cargo, rustc)
@@ -73,12 +163,36 @@ Note: the prebuilt libopus x86_64 builds require **AVX2** (Coffee Lake or newer)
 
 ```bash
 cd frontend && bun install --frozen-lockfile && cd ..
-cargo build --release
+cargo run -- inspect path/to/show.sqlite
 ```
 
-The same two commands work on macOS, Linux, and Windows (PowerShell).
+`cargo run` is the entry point. `build.rs` runs `bun run build` for you and
+declares the frontend sources as Cargo inputs, so editing the frontend rebuilds
+the bundle on the next `cargo` invocation — in debug and release alike. The same
+commands work on macOS, Linux and Windows (PowerShell); `cargo build --release`
+puts the binary at `target/release/save_audio_stream`.
 
-The binary will be at `target/release/save_audio_stream`.
+The servers serve `frontend/dist` **from disk**, and `build.rs` declares only the
+frontend *sources* as inputs, so Cargo cannot notice that the bundle itself is
+missing. Build it explicitly whenever `frontend/dist` may be gone or stale
+without a source change — after deleting it, or after a `CI=true` build, which
+skips the frontend step entirely:
+
+```bash
+bun run --cwd frontend build && cargo run -- inspect path/to/show.sqlite
+```
+
+`--cwd` goes **before** the script name — anything after it is passed to the
+script rather than to bun, so `bun run build --cwd frontend` fails with
+`Script not found "build"`.
+
+If the bundle is missing the server still starts and serves the API; the log says
+so and `/` is a 404.
+
+For frontend work, `bun run --cwd frontend dev` gives HMR on port 5173 and
+proxies `/api` to `VITE_API_PORT` (default 16000).
+
+To build a release tarball locally, `bash packaging/build-tarball.sh`.
 
 Note: windows file locking is not tested yet.
 
@@ -86,7 +200,8 @@ Note: windows file locking is not tested yet.
 
 **On your recording server (stable connection):**
 
-1. Copy [`config/record.example.toml`](config/record.example.toml) to `record.toml` and customize
+1. Edit `/opt/save_audio_stream/etc/record.toml` (seeded by the installer from
+   [`packaging/etc/record.toml.example`](packaging/etc/record.toml.example))
 2. Start recording:
    ```bash
    ./save_audio_stream record -c record.toml
@@ -96,8 +211,10 @@ Note: windows file locking is not tested yet.
 
 Prerequisites: PostgreSQL server running locally or accessible remotely.
 
-1. Copy [`config/user/credentials.example.toml`](config/user/credentials.example.toml) to `~/.config/save_audio_stream/credentials.toml` and add your PostgreSQL password
-2. Copy [`config/receiver.example.toml`](config/receiver.example.toml) to `receiver.toml` and customize
+1. Add your PostgreSQL password to `/opt/save_audio_stream/etc/credentials.toml`
+   (see [`packaging/etc/credentials.toml.example`](packaging/etc/credentials.toml.example))
+2. Edit `/opt/save_audio_stream/etc/receiver.toml`
+   (see [`packaging/etc/receiver.toml.example`](packaging/etc/receiver.toml.example))
 3. Start receiver:
    ```bash
    ./save_audio_stream receiver --config receiver.toml
@@ -128,7 +245,7 @@ save_audio_stream record -c <CONFIG_FILE> [-p <PORT>]
 
 #### Recording Config
 
-Config files use TOML format with `config_type = 'record'`. See [`config/record.example.toml`](config/record.example.toml) for a complete example.
+Config files use TOML format with `config_type = 'record'`. See [`packaging/etc/record.toml.example`](packaging/etc/record.toml.example) for a complete example.
 
 ### Receiver Mode
 
@@ -151,9 +268,9 @@ save_audio_stream receiver --config <CONFIG_FILE> [--sync-only]
 
 #### Receiver Config
 
-Config files use TOML format with `config_type = 'receiver'`. See [`config/receiver.example.toml`](config/receiver.example.toml) for a complete example.
+Config files use TOML format with `config_type = 'receiver'`. See [`packaging/etc/receiver.toml.example`](packaging/etc/receiver.toml.example) for a complete example.
 
-Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`config/user/credentials.example.toml`](config/user/credentials.example.toml) for the format.
+Credentials live in `credentials.toml` beside the other config files (see [Where things live](#where-things-live)). See [`packaging/etc/credentials.toml.example`](packaging/etc/credentials.toml.example) for the format.
 
 **Database naming:** Each show is stored in a separate PostgreSQL database named `save_audio_{prefix}_{show_name}` (default prefix is `show`). The databases are created automatically if they don't exist.
 
@@ -206,7 +323,7 @@ Credentials are stored in `~/.config/save_audio_stream/credentials.toml`. See [`
 | `config_type` | Must be `'receiver'` for receiver/sync configurations |
 | `remote_url` | URL of remote recording server (e.g., `http://remote:17000`) |
 | `database.url` | PostgreSQL connection URL without password (e.g., `postgres://user@localhost:5432`) |
-| `database.credential_profile` | Profile name to look up password from `~/.config/save_audio_stream/credentials.toml` |
+| `database.credential_profile` | Profile name to look up password from `credentials.toml` |
 
 **Optional:**
 
@@ -432,8 +549,8 @@ The application supports one-way synchronization from a remote recording server 
 
 **1. Set up credentials and config:**
 
-- Copy [`config/user/credentials.example.toml`](config/user/credentials.example.toml) to `~/.config/save_audio_stream/credentials.toml` and add your PostgreSQL password
-- Copy [`config/receiver.example.toml`](config/receiver.example.toml) and customize for your setup
+- Add your PostgreSQL password to `credentials.toml` (see [`packaging/etc/credentials.toml.example`](packaging/etc/credentials.toml.example))
+- Customize `receiver.toml` (see [`packaging/etc/receiver.toml.example`](packaging/etc/receiver.toml.example))
 
 **2. Run the receiver command:**
 
@@ -666,8 +783,12 @@ fails if the matching tag already exists. Bump the version yourself before runni
 1. Bump the version in `Cargo.toml` and `Cargo.lock`:
 
    ```bash
-   python3 scripts/bump_version.py 0.2.15
+   uv run scripts/bump_version.py 0.2.15   # or: python3 scripts/bump_version.py 0.2.15
    ```
+
+   Needs only Python 3.11+ — the script has no third-party dependencies. It
+   refuses a version the release cannot ship before writing anything; see
+   [What counts as a releasable version](packaging/README.md#what-counts-as-a-releasable-version).
 
 2. Commit both files and push to `main`.
 3. Run the workflow, either from Actions → Release → Run workflow, or:

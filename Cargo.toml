@@ -1,6 +1,6 @@
 [package]
 name = "save_audio_stream"
-version = "0.2.14"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -23,7 +23,7 @@ uuid = { version = "1", features = ["v4"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tower-http = { version = "0.5", features = ["cors", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 bytes = "1"
 tempfile = "3"
 tokio-util = { version = "0.7", features = ["io"] }
