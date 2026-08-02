@@ -18,27 +18,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-# Real TOML parse + semver check, not grep/sed — the same code the release
-# workflow runs, so the tarball name and the git tag cannot disagree. Plain
-# python3 (3.11+ for tomllib) so this also runs on CI runners without uv.
-# `[package]`, not `[workspace.package]`: this is a single crate.
-version="$(python3 -c '
-import re, sys, tomllib
-with open("Cargo.toml", "rb") as f:
-    version = tomllib.load(f)["package"]["version"]
-# Cargo accepts SemVer build metadata (1.2.3+build.5) but this pipeline cannot
-# carry it: an OCI image tag may not contain "+" at all -- docker rejects
-# ghcr.io/...:v1.2.3+build.5-amd64 with "invalid reference format" -- and the
-# release asset filename is reconstructed character-for-character by the network
-# install.sh, so anything the upload rewrites breaks the download. Rejected
-# rather than sanitized, because a container tag that silently disagrees with
-# the git tag is worse than a release that will not start.
-if "+" in version:
-    sys.exit(f"build metadata is not supported in release versions: {version!r}")
-if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
-    sys.exit(f"invalid version in Cargo.toml: {version!r}")
-print(version)
-')"
+# The same validator the release workflow runs, so a version this accepts
+# locally cannot be rejected in CI (or the reverse). See packaging/release_version.py
+# for what "releasable" means and why.
+version="$(python3 packaging/release_version.py)"
 
 case "$(uname -s)" in
   Linux)  os=linux ;;

@@ -9,6 +9,7 @@ How `save_audio_stream` is built into a release artifact and laid down on disk.
 | `uninstall.sh` | Ships inside the tarball. Removes versions; keeps config and recordings unless `--purge` |
 | `Dockerfile` | Runtime image built from an *extracted tarball* — nothing is compiled |
 | `etc/*.toml.example` | Config templates, shipped to `share/doc/save_audio_stream/` and seeded into `<prefix>/etc` |
+| `release_version.py` | The one definition of a releasable version — checked against Cargo's grammar *and* the OCI image-tag grammar |
 | `windows/save_audio_stream.iss` | Inno Setup script for the Windows installer |
 | `../install.sh` | Network installer: downloads a release, verifies its SHA-256, runs the bundled `install.sh` |
 
@@ -170,3 +171,29 @@ from the published tarball, smoke-testing each image before it is pushed.
 
 To cut a release: bump the version (`uv run scripts/bump_version.py <version>`),
 commit, then run the workflow.
+
+### What counts as a releasable version
+
+`release_version.py` is the single answer, shared by `bump_version.py`,
+`build-tarball.sh` and the workflow's `prepare` job, so the three cannot
+disagree. It validates against both grammars the version has to satisfy:
+
+- **Cargo's** — SemVer 2.0.0, which Cargo enforces strictly. `01.2.3`, `1.2`,
+  `1.2.3-`, `1.2.3-01` and `1.2.3-RC_1` are all rejected by `cargo` itself, so
+  they are rejected here too rather than at `cargo build`, three jobs later.
+- **The OCI tag grammar** — applied to the tag the release actually builds
+  (`v<version>-amd64`), not to the version alone, since that whole string is
+  what a registry has to accept.
+
+They disagree in exactly two places, and the OCI side wins both:
+
+| Version | Cargo | Here |
+| --- | --- | --- |
+| `1.2.3+build.5` | accepts | rejected — an OCI tag may not contain `+` |
+| a 130-character prerelease | accepts | rejected — the tag exceeds 128 characters |
+
+Build metadata is rejected rather than stripped: a container tag that silently
+disagrees with the git tag is worse than a release that refuses to start. Note
+also *where* the unfixed version of this failed — `docker` runs after `release`,
+so an unrepresentable version would have produced a published tag with assets
+and no images.

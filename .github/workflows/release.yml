@@ -23,26 +23,13 @@ jobs:
       - name: Determine and validate version
         id: version
         run: |
-          # Real TOML parse + semver check, not grep/sed — the same code
-          # packaging/build-tarball.sh runs, so the tag and the tarball filename
-          # cannot disagree. Plain python3 (3.11+ for tomllib): uv is for the
-          # scripts/ directory, not the CI runners.
-          VERSION=$(python3 -c '
-          import re, sys, tomllib
-          with open("Cargo.toml", "rb") as f:
-              version = tomllib.load(f)["package"]["version"]
-          # Cargo accepts SemVer build metadata (1.2.3+build.5); this pipeline
-          # cannot carry it. An OCI image tag may not contain "+" -- docker
-          # rejects ghcr.io/...:v1.2.3+build.5-amd64 outright -- and the asset
-          # filename is reconstructed by hand in the network install.sh. Caught
-          # here, in the first job, rather than in `docker`, which runs *after*
-          # `release` has already published the tag and the assets.
-          if "+" in version:
-              sys.exit(f"build metadata is not supported in release versions: {version!r}")
-          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
-              sys.exit(f"invalid version in Cargo.toml: {version!r}")
-          print(version)
-          ')
+          # The same validator packaging/build-tarball.sh runs, so the tag, the
+          # tarball filename and the image tag cannot disagree. It checks the
+          # version against Cargo's grammar and against the OCI tag grammar --
+          # see packaging/release_version.py. Failing here costs ten seconds;
+          # the `docker` job that would otherwise catch it runs *after*
+          # `release` has published the tag and its assets.
+          VERSION=$(python3 packaging/release_version.py)
           TAG="v${VERSION}"
           echo "Release tag: ${TAG}"
           IS_PRERELEASE="false"
