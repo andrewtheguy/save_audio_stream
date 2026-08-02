@@ -596,7 +596,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 [[package]]
 name = "fdk-aac-prebuilt"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/fdk-aac-prebuilt?tag=v2.0.3-20260802160323-88a9ddd#88a9ddd39309309cd4cbf3f63eefff8aac5dd962"
+source = "git+https://github.com/andrewtheguy/fdk-aac-prebuilt?tag=v2.0.3-20260802170125-5960feb#5960feb3ce2c465078f2dabfaf14322e9f5c01df"
 dependencies = [
  "fdk-aac-prebuilt-sys",
 ]
@@ -604,7 +604,7 @@ dependencies = [
 [[package]]
 name = "fdk-aac-prebuilt-sys"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/fdk-aac-prebuilt?tag=v2.0.3-20260802160323-88a9ddd#88a9ddd39309309cd4cbf3f63eefff8aac5dd962"
+source = "git+https://github.com/andrewtheguy/fdk-aac-prebuilt?tag=v2.0.3-20260802170125-5960feb#5960feb3ce2c465078f2dabfaf14322e9f5c01df"
 
 [[package]]
 name = "find-msvc-tools"
