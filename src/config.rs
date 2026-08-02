@@ -17,7 +17,10 @@ pub enum AudioFormat {
     /// AAC-LC format (16kHz mono, 32kbps)
     ///
     /// ⚠️ EXPERIMENTAL:
-    /// - The fdk-aac library binding is not widely used
+    /// - Encoding goes through `fdk-aac-prebuilt`, a fork of the `fdk-aac`
+    ///   binding maintained alongside this project. The fork exists because
+    ///   upstream 0.8.0 encoded through `&self` behind an `unsafe impl Sync`;
+    ///   it is tested, but it is not a widely used crate either.
     /// - May be replaced with FFmpeg-based encoding in the future
     ///
     /// Recommendation: Use Opus for production workloads

@@ -51,9 +51,10 @@ else
 fi
 
 echo ">> building release binary"
-# fdk-aac vendors C sources, so this needs a C compiler; every CI runner has
-# one. libopus does not — Cargo.toml uses opus-prebuilt, which pulls a prebuilt
-# static archive rather than compiling vendored C through cmake.
+# Neither codec is compiled here: Cargo.toml takes libopus from opus-prebuilt
+# and fdk-aac from fdk-aac-prebuilt, both of which pull a prebuilt static
+# archive rather than compiling vendored sources. A C compiler is still needed
+# for the other vendored C (SQLite, libssh2, zlib); every CI runner has one.
 #
 # build.rs would build the frontend a second time here. Harmless (vite is fast
 # and the second run is a no-op-shaped rebuild), and CI sets CI=true, which
