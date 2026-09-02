@@ -157,7 +157,7 @@ the config path.
 
 No system audio libraries are needed, and neither codec is compiled here: both come prebuilt as static archives, libopus from [libopus-prebuilt](https://github.com/andrewtheguy/libopus-prebuilt) and fdk-aac from [fdk-aac-prebuilt](https://github.com/andrewtheguy/fdk-aac-prebuilt). Nothing here compiles C++ any more, and there is no cmake, pkg-config or vcpkg in the build. (The MSVC workload above is still needed on Windows — Rust links against it regardless.)
 
-Note: both prebuilt x86_64 builds require **AVX2** (Coffee Lake or newer); arm64 macOS requires an M1 or newer. The two floors are deliberately the same, so linking both excludes no machine that either would have excluded on its own.
+Note: both prebuilt x86_64 builds require the **x86-64-v3** feature set — AVX2, BMI1, BMI2, F16C, FMA, LZCNT and MOVBE, i.e. Coffee Lake or Zen or newer; arm64 macOS requires an M1 or newer. fdk-aac-prebuilt ships a baseline x86_64 archive too, and this crate opts into the v3 one with `features = ["x86-64-v3"]` in `Cargo.toml`, so the two floors stay the same and linking both excludes no machine that either would have excluded on its own.
 
 AAC patent licensing is the user's responsibility — see [fdk-aac-prebuilt's LICENSE](https://github.com/andrewtheguy/fdk-aac-prebuilt/blob/main/LICENSE) for the Fraunhofer terms, which are not OSI-approved and grant no patent rights.
 
