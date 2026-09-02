@@ -1253,7 +1253,7 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 [[package]]
 name = "libopus-prebuilt-sys"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260731073637-74aab76#74aab76ebd6dc1ca666afa53e016e3926dadbaec"
+source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260902165321-488bdb1#488bdb12e9bec84b2caf24cd570128fa787299b5"
 
 [[package]]
 name = "libredox"
@@ -1516,7 +1516,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "opus-prebuilt"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260731073637-74aab76#74aab76ebd6dc1ca666afa53e016e3926dadbaec"
+source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260902165321-488bdb1#488bdb12e9bec84b2caf24cd570128fa787299b5"
 dependencies = [
  "libopus-prebuilt-sys",
 ]
