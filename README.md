@@ -785,7 +785,7 @@ fails if the matching tag already exists. Bump the version yourself before runni
 1. Bump the version in `Cargo.toml` and `Cargo.lock`:
 
    ```bash
-   uv run scripts/bump_version.py 0.2.15   # or: python3 scripts/bump_version.py 0.2.15
+   uv run scripts/bump_version.py 0.3.2   # or: python3 scripts/bump_version.py 0.3.2
    ```
 
    Needs only Python 3.11+ — the script has no third-party dependencies. It
@@ -799,10 +799,20 @@ fails if the matching tag already exists. Bump the version yourself before runni
    gh workflow run release.yml --ref main
    ```
 
-The workflow tags `v{version}`, creates the GitHub release with the Linux x86_64/arm64
-binaries, pushes multi-arch Docker images to GHCR, and publishes a separate
-`v{version}-windows` release with the Windows binary. Runs from a branch other than
-`main` are marked as prereleases and are not tagged `latest`.
+The workflow opens a **draft** release, attaches every artifact to it, and publishes it last —
+which is when the `v{version}` tag comes into existence, so a failed build leaves no dangling
+tag behind. One release carries all four artifacts:
+
+| artifact | built on |
+|----------|----------|
+| `save_audio_stream-{version}-linux-x86_64.tar.gz` | ubuntu-24.04 |
+| `save_audio_stream-{version}-linux-arm64.tar.gz` | ubuntu-24.04-arm |
+| `save_audio_stream-{version}-macos-arm64.tar.gz` | macos-14 |
+| `save_audio_stream-{version}-windows-x86_64-setup.exe` | windows-latest (Inno Setup) |
+
+Multi-arch Docker images go to GHCR afterwards, built from the same tarball the release ships
+and smoke-tested before they are pushed. Runs from a branch other than `main` are marked as
+prereleases and are not tagged `latest`.
 
 **Prerequisites:** `gh` CLI must be installed and authenticated (`gh auth login`).
 
