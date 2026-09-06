@@ -12,8 +12,8 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 crossbeam-channel = "0.5"
-fdk-aac = { package = "fdk-aac-prebuilt", git = "https://github.com/andrewtheguy/fdk-aac-prebuilt", tag = "v2.0.3-20260902193421-5490fe1", features = ["x86-64-v3"] }
-opus = { package = "opus-prebuilt", git = "https://github.com/andrewtheguy/libopus-prebuilt", tag = "v1.6.1-20260902165321-488bdb1" }
+fdk-aac = { package = "fdk-aac-prebuilt", git = "https://github.com/andrewtheguy/fdk-aac-prebuilt", tag = "v2.0.3-20260906161257-b191431", features = ["x86-64-v3"] }
+opus = { package = "opus-prebuilt", git = "https://github.com/andrewtheguy/libopus-prebuilt", tag = "v1.6.1-20260906161304-8dd83e8" }
 ogg = "0.9"
 hound = "3.5"
 sea-query = { version = "0.32", features = ["backend-sqlite", "backend-postgres"] }

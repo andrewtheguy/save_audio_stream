@@ -596,7 +596,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 [[package]]
 name = "fdk-aac-prebuilt"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/fdk-aac-prebuilt?tag=v2.0.3-20260902193421-5490fe1#5490fe1fef27b77a0418157c2368e08b1eee7f12"
+source = "git+https://github.com/andrewtheguy/fdk-aac-prebuilt?tag=v2.0.3-20260906161257-b191431#b191431580ba9b307d899c7d35606c4350bdbb68"
 dependencies = [
  "fdk-aac-prebuilt-sys",
 ]
@@ -604,7 +604,7 @@ dependencies = [
 [[package]]
 name = "fdk-aac-prebuilt-sys"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/fdk-aac-prebuilt?tag=v2.0.3-20260902193421-5490fe1#5490fe1fef27b77a0418157c2368e08b1eee7f12"
+source = "git+https://github.com/andrewtheguy/fdk-aac-prebuilt?tag=v2.0.3-20260906161257-b191431#b191431580ba9b307d899c7d35606c4350bdbb68"
 
 [[package]]
 name = "find-msvc-tools"
@@ -1253,7 +1253,7 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 [[package]]
 name = "libopus-prebuilt-sys"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260902165321-488bdb1#488bdb12e9bec84b2caf24cd570128fa787299b5"
+source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260906161304-8dd83e8#8dd83e865b4913df74b66199236346f9bfab2912"
 
 [[package]]
 name = "libredox"
@@ -1516,7 +1516,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "opus-prebuilt"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260902165321-488bdb1#488bdb12e9bec84b2caf24cd570128fa787299b5"
+source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260906161304-8dd83e8#8dd83e865b4913df74b66199236346f9bfab2912"
 dependencies = [
  "libopus-prebuilt-sys",
 ]
