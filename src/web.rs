@@ -46,11 +46,7 @@ pub async fn serve(request: Request) -> Response {
     };
 
     let etag = etag(&file);
-    if request
-        .headers()
-        .get(header::IF_NONE_MATCH)
-        .is_some_and(|held| *held == etag)
-    {
+    if holds(request.headers().get(header::IF_NONE_MATCH), &etag) {
         return ([(header::ETAG, etag)], StatusCode::NOT_MODIFIED).into_response();
     }
     (
@@ -61,6 +57,23 @@ pub async fn serve(request: Request) -> Response {
         Body::from(file.data),
     )
         .into_response()
+}
+
+/// Does an `If-None-Match` hold the file we are about to send? The header is
+/// `*` or a comma-separated list of validators, and a read compares them
+/// weakly: a `W/` prefix on either side does not stop a match, so a cache that
+/// weakened our tag still revalidates to a 304 instead of re-downloading the
+/// asset.
+fn holds(header: Option<&HeaderValue>, etag: &HeaderValue) -> bool {
+    let Some(held) = header.and_then(|held| held.to_str().ok()) else {
+        return false;
+    };
+    let etag = etag.to_str().expect("our own tag is hex digits and quotes");
+    held.trim() == "*"
+        || held.split(',').any(|candidate| {
+            let candidate = candidate.trim();
+            candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+        })
 }
 
 /// A strong validator from the file's content hash, quoted as the header wants.
@@ -167,6 +180,31 @@ mod tests {
 
         let stale = get("/", Some(&HeaderValue::from_static("\"something-else\""))).await;
         assert_eq!(stale.status(), StatusCode::OK);
+    }
+
+    /// The header is a list, not one tag: `*`, a weakened copy of our tag, and
+    /// our tag among others all mean the browser already holds this file.
+    #[tokio::test]
+    async fn every_form_of_if_none_match_is_honoured() {
+        let etag = get("/", None).await.headers()[header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        for held in [
+            "*".to_owned(),
+            format!("W/{etag}"),
+            format!("\"other\", {etag}"),
+            format!("{etag} , \"other\""),
+        ] {
+            let response = get("/", Some(&HeaderValue::from_str(&held).unwrap())).await;
+            assert_eq!(response.status(), StatusCode::NOT_MODIFIED, "{held}");
+        }
+
+        for held in ["\"other\", W/\"another\"", "\"\"", ""] {
+            let response = get("/", Some(&HeaderValue::from_static(held))).await;
+            assert_eq!(response.status(), StatusCode::OK, "{held}");
+        }
     }
 
     /// Nothing here takes a body: the page is read, never written to.

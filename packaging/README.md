@@ -128,7 +128,6 @@ platforms.
 ```
 C:\Program Files\save_audio_stream\      admin-writable only; replaced on upgrade
 ├── bin\save_audio_stream.exe
-├── share\save_audio_stream\web\
 ├── share\doc\save_audio_stream\*.example
 └── unins000.exe
 
