@@ -81,9 +81,9 @@ cd save_audio_stream-<version>
 ./bin/save_audio_stream record
 ```
 
-The web UI works with no further setup — the binary finds
-`share/save_audio_stream/web` relative to its own location, from any working
-directory. Config and recordings fall back to your per-user directories
+The web UI works with no further setup — it is compiled into the binary, so
+there is nothing beside it to find. Config and recordings fall back to your
+per-user directories
 (`~/.config/save_audio_stream/`, `~/.local/share/save_audio_stream/recordings`),
 because the versioned `/opt` layout is detected by shape and an extracted
 tarball deliberately does not match it. Config templates are in
@@ -126,11 +126,11 @@ docker run -p 17000:17000 \
 | --- | --- | --- | --- |
 | Config | `/opt/save_audio_stream/etc/` | `C:\ProgramData\save_audio_stream\etc\` | `~/.config/save_audio_stream/` |
 | Recordings | `/opt/save_audio_stream/data/recordings/` | `C:\ProgramData\save_audio_stream\data\recordings\` | `~/.local/share/save_audio_stream/recordings/` |
-| Web UI files | `<prefix>/current/share/save_audio_stream/web/` | `C:\Program Files\save_audio_stream\share\save_audio_stream\web\` | `frontend/dist/` |
 
-All three are resolved from the running binary's own path (`src/paths.rs`), and
-each can be overridden with `SAVE_AUDIO_STREAM_CONFIG_DIR`,
-`SAVE_AUDIO_STREAM_DATA_DIR` and `SAVE_AUDIO_STREAM_WEB_DIR`. A config file's
+Both are resolved from the running binary's own path (`src/paths.rs`), and
+each can be overridden with `SAVE_AUDIO_STREAM_CONFIG_DIR` and
+`SAVE_AUDIO_STREAM_DATA_DIR`. The web UI is compiled into the binary and has no
+location of its own. A config file's
 own `output_dir` still wins over the recordings default; `-c` still wins over
 the config path.
 
@@ -168,28 +168,27 @@ cd frontend && bun install --frozen-lockfile && cd ..
 cargo run -- inspect path/to/show.sqlite
 ```
 
-`cargo run` is the entry point. `build.rs` runs `bun run build` for you and
-declares the frontend sources as Cargo inputs, so editing the frontend rebuilds
-the bundle on the next `cargo` invocation — in debug and release alike. The same
-commands work on macOS, Linux and Windows (PowerShell); `cargo build --release`
-puts the binary at `target/release/save_audio_stream`.
+`cargo run` is the entry point. `build.rs` runs `bun run build` for you, writing
+the bundle into Cargo's private `OUT_DIR`, and `src/web.rs` compiles every file
+in it into the binary — in debug and release alike, so there is one serving path
+and the binary is one file with no web root beside it. The frontend sources are
+declared as Cargo inputs, so editing the frontend rebuilds the bundle on the
+next `cargo` invocation, and the build fails outright if the bundle has no
+`index.html`. The same commands work on macOS, Linux and Windows (PowerShell);
+`cargo build --release` puts the binary at `target/release/save_audio_stream`.
 
-The servers serve `frontend/dist` **from disk**, and `build.rs` declares only the
-frontend *sources* as inputs, so Cargo cannot notice that the bundle itself is
-missing. Build it explicitly whenever `frontend/dist` may be gone or stale
-without a source change — after deleting it, or after a `CI=true` build, which
-skips the frontend step entirely:
+To build the frontend somewhere bun is not installed, build it once elsewhere
+and hand the directory to `build.rs`, which stages it instead of running bun.
+This is what release CI does, so every platform's binary embeds the same bytes:
 
 ```bash
-bun run --cwd frontend build && cargo run -- inspect path/to/show.sqlite
+bun run --cwd frontend build
+SAVE_AUDIO_STREAM_PREBUILT_FRONTEND=frontend/dist cargo build --release
 ```
 
 `--cwd` goes **before** the script name — anything after it is passed to the
 script rather than to bun, so `bun run build --cwd frontend` fails with
 `Script not found "build"`.
-
-If the bundle is missing the server still starts and serves the API; the log says
-so and `/` is a 404.
 
 For frontend work, `bun run --cwd frontend dev` gives HMR on port 5173 and
 proxies `/api` to `VITE_API_PORT` (default 16000).
@@ -739,17 +738,16 @@ cargo build --release
 
 In release mode:
 - Frontend assets are automatically built via `bun run build` during cargo build
-- Assets are embedded into the binary using `include_bytes!`
+- Assets are embedded into the binary with `rust-embed` (`src/web.rs`)
 - No separate dev server needed
 - Single binary deployment
 
 ### Build Process
 
 The `build.rs` script automatically:
-1. Detects release builds
-2. Checks for Bun availability
-3. Runs `bun run build` in the `frontend/` directory to compile frontend assets to `frontend/dist/`
-4. Embeds assets into the binary at compile time via `include_bytes!`
+1. Runs `bun run build` in the `frontend/` directory, writing the bundle to Cargo's `OUT_DIR` (or stages a prebuilt bundle from `SAVE_AUDIO_STREAM_PREBUILT_FRONTEND` instead)
+2. Fails the build if the bundle has no `index.html`
+3. `src/web.rs` embeds every file in the bundle at compile time and serves it with a content-hash `ETag`
 
 ### Example Usage
 

@@ -168,7 +168,8 @@ pub fn inspect_audio(
                 .route("/api/aac-segment/{filename}", get(aac_segment_handler));
         }
 
-        let app = crate::web::attach_static(api_routes)
+        let app = api_routes
+            .fallback(crate::web::serve)
             .layer(cors)
             .with_state(app_state);
 
@@ -1294,7 +1295,8 @@ pub fn receiver_audio(
             .route("/api/sync", post(receiver_trigger_sync_handler))
             .route("/api/sync/status", get(receiver_sync_status_handler));
 
-        let app = crate::web::attach_static(api_routes)
+        let app = api_routes
+            .fallback(crate::web::serve)
             .layer(cors)
             .with_state(app_state);
 

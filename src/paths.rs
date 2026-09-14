@@ -1,7 +1,6 @@
 //! Every filesystem location the program derives rather than is told.
 //!
-//! Three kinds: where the built frontend is, where config files are, and where
-//! recordings go. Each resolves the same way — an explicit environment
+//! Two kinds: where config files are, and where recordings go. Each resolves the same way — an explicit environment
 //! override, then the installed layout inferred from the running binary's own
 //! path, then a per-user fallback.
 
@@ -127,32 +126,6 @@ pub fn default_output_dir() -> PathBuf {
     data_dir().join("recordings")
 }
 
-/// The built frontend, or `None` if it cannot be found.
-///
-/// 1. `SAVE_AUDIO_STREAM_WEB_DIR`
-/// 2. `<install_root>/share/save_audio_stream/web` — one branch covers both the
-///    unix `versions/<v>` layout and the Windows Program Files layout, because
-///    both put the executable at `<root>/bin/` and the bundle at `<root>/share/`
-/// 3. `frontend/dist` relative to the working directory, for `cargo run` in a
-///    checkout. Deliberately not `CARGO_MANIFEST_DIR`, which would bake the
-///    build machine's absolute path into every released binary.
-pub fn static_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("SAVE_AUDIO_STREAM_WEB_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    if let Some(root) = install_root() {
-        let installed = root.join("share").join(APP_NAME).join("web");
-        if installed.is_dir() {
-            return Some(installed);
-        }
-    }
-    let checkout = PathBuf::from("frontend").join("dist");
-    if checkout.is_dir() {
-        return Some(checkout);
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,7 +139,6 @@ mod tests {
         unsafe {
             std::env::set_var("SAVE_AUDIO_STREAM_CONFIG_DIR", "/tmp/sas-cfg");
             std::env::set_var("SAVE_AUDIO_STREAM_DATA_DIR", "/tmp/sas-data");
-            std::env::set_var("SAVE_AUDIO_STREAM_WEB_DIR", "/tmp/sas-web");
         }
 
         assert_eq!(config_dir(), PathBuf::from("/tmp/sas-cfg"));
@@ -181,15 +153,10 @@ mod tests {
             default_output_dir(),
             PathBuf::from("/tmp/sas-data/recordings")
         );
-        // The web override is taken as-is, without an is_dir() check, so a
-        // wrong path 404s loudly (see web::attach_static) instead of silently
-        // falling through to a stale checkout bundle.
-        assert_eq!(static_dir(), Some(PathBuf::from("/tmp/sas-web")));
 
         unsafe {
             std::env::remove_var("SAVE_AUDIO_STREAM_CONFIG_DIR");
             std::env::remove_var("SAVE_AUDIO_STREAM_DATA_DIR");
-            std::env::remove_var("SAVE_AUDIO_STREAM_WEB_DIR");
         }
     }
 
