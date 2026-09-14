@@ -4,7 +4,7 @@ How `save_audio_stream` is built into a release artifact and laid down on disk.
 
 | File | What it does |
 | --- | --- |
-| `build-tarball.sh` | Builds the frontend + release binary and assembles `dist/save_audio_stream-<version>-<os>-<arch>.tar.gz` |
+| `build-tarball.sh` | Builds the release binary (frontend compiled in) and assembles `dist/save_audio_stream-<version>-<os>-<arch>.tar.gz` |
 | `install.sh` | Ships **inside** the tarball. Lays the tree down under `<prefix>`, seeds config, flips `current` |
 | `uninstall.sh` | Ships inside the tarball. Removes versions; keeps config and recordings unless `--purge` |
 | `Dockerfile` | Runtime image built from an *extracted tarball* — nothing is compiled |
@@ -30,9 +30,8 @@ bytes that were attached to the release.
 ├── versions/
 │   ├── 0.2.14/
 │   │   ├── VERSION
-│   │   ├── bin/save_audio_stream
+│   │   ├── bin/save_audio_stream                # the web UI is compiled into it
 │   │   └── share/
-│   │       ├── save_audio_stream/web/           # the frontend, served from disk
 │   │       └── doc/save_audio_stream/*.example
 │   └── 0.2.15/
 ├── current -> versions/0.2.15        # flipped with an atomic rename(2)
@@ -43,16 +42,18 @@ bytes that were attached to the release.
 
 The binary finds all of this from its own location — `current_exe()` is
 canonicalized, so both the launcher symlink and `current` resolve to the real
-`versions/<v>/bin` path, and `share/`, `etc/` and `data/` are derived from
-there. See `src/paths.rs`. Nothing is compiled in, so a tarball is relocatable:
-`PREFIX=/srv/sas BINDIR=~/bin ./install.sh` works with no rebuild.
+`versions/<v>/bin` path, and `etc/` and `data/` are derived from there. See
+`src/paths.rs`. No path is compiled in, so a tarball is relocatable:
+`PREFIX=/srv/sas BINDIR=~/bin ./install.sh` works with no rebuild. The web UI
+is compiled into the binary (`src/web.rs`), so `share/` holds only the config
+templates.
 
 ### Running the tarball without installing it
 
 `install.sh` is a convenience, not a requirement — the tarball is a working tree
 on its own. Extracted anywhere and run as `<extracted>/bin/save_audio_stream`,
-the binary still finds `share/save_audio_stream/web` beside itself, because that
-lookup is `<exe>/../share/...` and holds in every layout.
+the binary serves the web UI from its own bytes, so there is nothing beside it
+to find.
 
 Config and data do *not* resolve to the extracted directory, and that is the
 point of the shape check in `installed_prefix()`: it requires the component
@@ -162,9 +163,10 @@ prepare ──> frontend ──┬──> build (linux x86_64, linux arm64, maco
 `build-tarball.sh` uses, refuses to reuse an existing tag, and opens a **draft**
 release — assets attach to the draft and the tag is created only when it is
 published, so a failed build never leaves a half-populated release behind.
-`frontend` builds the bundle once and every downstream job consumes that
-artifact, so the tarballs, the Windows installer and both images ship identical
-frontend bytes. `build` does not cross-compile — each tarball is produced on a
+`frontend` builds the bundle once and every downstream job hands it to
+`build.rs` through `SAVE_AUDIO_STREAM_PREBUILT_FRONTEND`, so the tarballs, the
+Windows installer and both images embed identical frontend bytes without bun on
+any matrix runner. `build` does not cross-compile — each tarball is produced on a
 runner of its own platform, which is why macOS ships arm64 only (see the matrix
 comment for why Intel is excluded). The `docker` job runs after the release is published and builds
 from the published tarball, smoke-testing each image before it is pushed.

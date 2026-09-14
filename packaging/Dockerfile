@@ -2,9 +2,9 @@
 # compiled here.
 #
 # The build context is an *extracted release tarball* (see build-tarball.sh), so
-# the image ships the exact binary and frontend bundle that were attached to the
-# GitHub release: the frontend is built once for every platform, and each arch's
-# image reuses that arch's release binary instead of rebuilding it.
+# the image ships the exact binary that was attached to the GitHub release, web
+# UI included — the frontend is compiled into the binary (src/web.rs), and each
+# arch's image reuses that arch's release binary instead of rebuilding it.
 # .github/workflows/release.yml wires this up; to do it by hand:
 #
 #   tar -xzf save_audio_stream-0.2.14-linux-x86_64.tar.gz
@@ -46,6 +46,7 @@ ARG VERSION
 RUN test -n "${VERSION}" || { echo "the VERSION build-arg is required" >&2; exit 1; }
 
 COPY bin/save_audio_stream /opt/save_audio_stream/versions/${VERSION}/bin/save_audio_stream
+# share/ holds only the config templates; the web UI is inside the binary.
 COPY share /opt/save_audio_stream/versions/${VERSION}/share
 
 # `current` is the stable path the entrypoint uses; canonicalizing it is how the

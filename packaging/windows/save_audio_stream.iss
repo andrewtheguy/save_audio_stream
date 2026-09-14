@@ -5,16 +5,15 @@
 ;
 ;   ISCC.exe /DAppVersion=0.2.15 packaging\windows\save_audio_stream.iss
 ;
-; Requires target\release\save_audio_stream.exe and frontend\dist to exist —
-; build both before running this.
+; Requires target\release\save_audio_stream.exe to exist — `cargo build --release`
+; compiles the frontend into it, so there is no separate web tree to ship.
 ;
 ; Layout, and why it is two trees: Program Files is not user-writable, so
 ; configuration and recordings cannot live beside the executable the way they do
 ; under /opt on Linux.
 ;
 ;   C:\Program Files\save_audio_stream\      replaced wholesale on upgrade
-;     bin\save_audio_stream.exe
-;     share\save_audio_stream\web\           served from disk by the binary
+;     bin\save_audio_stream.exe               the web UI is compiled into it
 ;     share\doc\save_audio_stream\*.example
 ;
 ;   C:\ProgramData\save_audio_stream\        survives upgrade AND uninstall
@@ -74,8 +73,6 @@ Name: "{commonappdata}\{#AppName}\data\recordings"; Permissions: users-modify
 [Files]
 ; Paths are relative to this .iss file (packaging\windows\), hence the ..\..
 Source: "..\..\target\release\{#AppName}.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\frontend\dist\*"; DestDir: "{app}\share\{#AppName}\web"; \
-        Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\etc\*.toml.example"; DestDir: "{app}\share\doc\{#AppName}"; Flags: ignoreversion
 
 ; Seed each config once — the Windows equivalent of seed_config() in

@@ -23,7 +23,7 @@ uuid = { version = "1", features = ["v4"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tower-http = { version = "0.6", features = ["cors", "fs"] }
+tower-http = { version = "0.6", features = ["cors"] }
 bytes = "1"
 tempfile = "3"
 tokio-util = { version = "0.7", features = ["io"] }
@@ -39,3 +39,14 @@ dashmap = "5.5"
 base64 = "0.22"
 urlencoding = "2.1"
 dirs = "5"
+# The built frontend, compiled into the binary (src/web.rs): build.rs puts the
+# bundle in Cargo's OUT_DIR and the server is one file, with no web root beside
+# it to find, configure or get wrong. `debug-embed` so a debug build is the same
+# one file — the crate would otherwise read the folder from disk at run time in
+# debug, which is a second serving path. `interpolate-folder-path` lets the derive
+# read Cargo's private output. `mime-guess` names each file's content type from
+# its extension.
+rust-embed = { version = "8", features = ["debug-embed", "interpolate-folder-path", "mime-guess"] }
+
+[build-dependencies]
+anyhow = "1"
