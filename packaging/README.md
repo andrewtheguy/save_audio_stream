@@ -9,6 +9,7 @@ How `save_audio_stream` is built into a release artifact and laid down on disk.
 | `uninstall.sh` | Ships inside the tarball. Removes versions; keeps config and recordings unless `--purge` |
 | `Dockerfile` | Runtime image built from an *extracted tarball* — nothing is compiled |
 | `etc/*.toml.example` | Config templates, shipped to `share/doc/save_audio_stream/` and seeded into `<prefix>/etc` |
+| `publish-full-image.sh` | Builds the operator's own multi-arch image of a release tag with the `aac` feature — each architecture on a machine of its own, in podman, through `full-image/builder.sh` — and pushes it to the private `ghcr.io/andrewtheguy/save_audio_stream-full` |
 | `release_version.py` | The one definition of a releasable version — checked against Cargo's grammar *and* the OCI image-tag grammar |
 | `windows/save_audio_stream.iss` | Inno Setup script for the Windows installer |
 | `../install.sh` | Network installer: downloads a release, verifies its SHA-256, runs the bundled `install.sh` |
