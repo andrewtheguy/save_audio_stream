@@ -167,6 +167,8 @@ The AAC encoder is behind the `aac` cargo feature, which is off by default and i
 cargo build --release --features aac
 ```
 
+`packaging/publish-full-image.sh` builds a release tag that way into a container image and pushes it to a private registry; no public image has the encoder.
+
 A build without it refuses to start a session with `audio_format = "aac"`. Serving and syncing AAC that is already recorded needs no encoder and works in every build. On x86_64 the feature links fdk-aac's **x86-64-v3** archive (`features = ["x86-64-v3"]` in `Cargo.toml`), so such a binary needs AVX2, BMI1, BMI2, F16C, FMA, LZCNT and MOVBE — Coffee Lake or Zen or newer.
 
 ### Build
