@@ -3,6 +3,13 @@ name = "save_audio_stream"
 version = "0.3.4"
 edition = "2024"
 
+[features]
+# Recording AAC (src/aac_encoder.rs). Off by default and never in a release
+# artifact: the encoder is Fraunhofer FDK AAC, whose licence is not OSI-approved
+# and grants no patent rights. `cargo build --release --features aac` has it; any
+# other build refuses a session with `audio_format = "aac"`.
+aac = ["dep:fdk-aac"]
+
 [dependencies]
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 symphonia = { version = "0.5", features = ["mp3", "aac"] }
@@ -12,7 +19,8 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 crossbeam-channel = "0.5"
-fdk-aac = { package = "fdk-aac-prebuilt", git = "https://github.com/andrewtheguy/fdk-aac-prebuilt", tag = "v2.0.3-20260906161257-b191431", features = ["x86-64-v3"] }
+# The AAC encoder, behind the `aac` feature below and in no release artifact.
+fdk-aac = { package = "fdk-aac-prebuilt", git = "https://github.com/andrewtheguy/fdk-aac-prebuilt", tag = "v2.0.3-20260906161257-b191431", features = ["x86-64-v3"], optional = true }
 opus = { package = "opus-prebuilt", git = "https://github.com/andrewtheguy/libopus-prebuilt", tag = "v1.6.1-20260906161304-8dd83e8" }
 ogg = "0.9"
 hound = "3.5"

@@ -45,10 +45,11 @@ echo ">> building release binary"
 # each target stages the one platform-independent bundle built by the frontend
 # job instead of running bun.
 #
-# Neither codec is compiled here: Cargo.toml takes libopus from opus-prebuilt
-# and fdk-aac from fdk-aac-prebuilt, both of which pull a prebuilt static
-# archive rather than compiling vendored sources. A C compiler is still needed
-# for the other vendored C (SQLite, libssh2, zlib); every CI runner has one.
+# No codec is compiled here: Cargo.toml takes libopus from opus-prebuilt, which
+# pulls a prebuilt static archive rather than compiling vendored sources. Default
+# features only, so no artifact has the `aac` feature's encoder. A C compiler is
+# still needed for the other vendored C (SQLite, libssh2, zlib); every CI runner
+# has one.
 cargo build --release
 
 echo ">> assembling ${pkg}"

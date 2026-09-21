@@ -16,6 +16,9 @@ pub enum ConfigType {
 pub enum AudioFormat {
     /// AAC-LC format (16kHz mono, 32kbps)
     ///
+    /// Recorded only by a build with the non-default `aac` feature
+    /// (`src/aac_encoder.rs`); any other build refuses the session.
+    ///
     /// ⚠️ EXPERIMENTAL:
     /// - Encoding goes through `fdk-aac-prebuilt`, a fork of the `fdk-aac`
     ///   binding maintained alongside this project. The fork exists because

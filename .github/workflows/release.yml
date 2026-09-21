@@ -114,11 +114,8 @@ jobs:
           # macos-latest silently raising it is a user-visible regression. 14 is
           # the oldest arm64 image GitHub still offers.
           #
-          # arm64 only. The x86_64 image (macos-13) is on its way out, and the
-          # fdk-aac x86_64 archive this crate opts into requires x86-64-v3,
-          # which no Intel Mac before Coffee Lake has — an Intel tarball would
-          # be a support question, not a convenience. Intel users build from
-          # source.
+          # arm64 only. The x86_64 image (macos-13) is on its way out. Intel
+          # users build from source.
           - runner: macos-14
             target-note: macos-arm64
     runs-on: ${{ matrix.runner }}
