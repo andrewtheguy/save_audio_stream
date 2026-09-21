@@ -9,14 +9,11 @@ use crate::schedule::{
 use crate::streaming::StreamingSource;
 
 // Import ShowLocks and get_show_lock from the crate root
+use crate::aac_encoder::AacEncoder;
 use crate::db::SyncDb;
 use crate::{ShowLocks, get_show_lock};
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{Receiver, Sender, bounded};
-use fdk_aac::enc::{
-    AudioObjectType, BitRate as AacBitRate, ChannelMode, Encoder as AacEncoder, EncoderParams,
-    Transport,
-};
 use fs2::FileExt;
 use log::debug;
 use opus::{Application, Bitrate as OpusBitrate, Channels, Encoder as OpusEncoder};
@@ -429,31 +426,24 @@ fn run_connection_loop(
             } else {
                 db_bitrate_val * 1000
             };
-            let params = fdk_aac::enc::EncoderParams {
-                bit_rate: fdk_aac::enc::BitRate::Cbr(aac_bitrate),
-                sample_rate: 16000,
-                channels: fdk_aac::enc::ChannelMode::Mono,
-                transport: fdk_aac::enc::Transport::Adts,
-                audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
-            };
-            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params)
+            if let Ok(encoder) = AacEncoder::new(aac_bitrate)
                 && let Ok(info) = encoder.info()
             {
                 if let Some(db_delay) = db_encoder_delay {
                     let db_delay_val: u32 = db_delay.parse().unwrap_or(0);
-                    if db_delay_val != info.nDelay {
+                    if db_delay_val != info.delay {
                         return Err(format!(
                                 "AAC encoder mismatch: database has encoder_delay '{}' but encoder reports '{}'",
-                                db_delay_val, info.nDelay
+                                db_delay_val, info.delay
                             ).into());
                     }
                 }
                 if let Some(db_frame) = db_frame_size {
                     let db_frame_val: u32 = db_frame.parse().unwrap_or(0);
-                    if db_frame_val != info.frameLength {
+                    if db_frame_val != info.frame_length {
                         return Err(format!(
                                 "AAC encoder mismatch: database has frame_size '{}' but encoder reports '{}'",
-                                db_frame_val, info.frameLength
+                                db_frame_val, info.frame_length
                             ).into());
                     }
                 }
@@ -491,18 +481,11 @@ fn run_connection_loop(
             } else {
                 bitrate_to_store * 1000
             };
-            let params = fdk_aac::enc::EncoderParams {
-                bit_rate: fdk_aac::enc::BitRate::Cbr(aac_bitrate),
-                sample_rate: 16000,
-                channels: fdk_aac::enc::ChannelMode::Mono,
-                transport: fdk_aac::enc::Transport::Adts,
-                audio_object_type: fdk_aac::enc::AudioObjectType::Mpeg4LowComplexity,
-            };
-            if let Ok(encoder) = fdk_aac::enc::Encoder::new(params)
+            if let Ok(encoder) = AacEncoder::new(aac_bitrate)
                 && let Ok(info) = encoder.info()
             {
-                db::insert_metadata_sync(&db, "aac_encoder_delay", &info.nDelay.to_string())?;
-                db::insert_metadata_sync(&db, "aac_frame_size", &info.frameLength.to_string())?;
+                db::insert_metadata_sync(&db, "aac_encoder_delay", &info.delay.to_string())?;
+                db::insert_metadata_sync(&db, "aac_frame_size", &info.frame_length.to_string())?;
             }
         }
 
@@ -750,18 +733,7 @@ fn run_connection_loop(
 
         // Helper to create AAC encoder
         // opus is recommended instead of aac for voip use cases
-        let create_aac_encoder =
-            || -> Result<AacEncoder, Box<dyn std::error::Error + Send + Sync>> {
-                let params = EncoderParams {
-                    bit_rate: AacBitRate::Cbr(bitrate as u32),
-                    sample_rate: 16000,
-                    channels: ChannelMode::Mono,
-                    transport: Transport::Adts,
-                    audio_object_type: AudioObjectType::Mpeg4LowComplexity,
-                };
-                AacEncoder::new(params)
-                    .map_err(|e| format!("Failed to create AAC encoder: {:?}", e).into())
-            };
+        let create_aac_encoder = || AacEncoder::new(bitrate as u32);
 
         // Helper to create Opus encoder
         let create_opus_encoder =
@@ -905,13 +877,12 @@ fn run_connection_loop(
                                     AudioFormat::Aac => {
                                         if let Some(ref mut encoder) = aac_encoder {
                                             match encoder.encode(&frame, &mut encode_output) {
-                                                Ok(info) => {
+                                                Ok(len) => {
                                                     total_output_samples += frame_size as u64;
                                                     segment_samples += frame_size as u64;
 
-                                                    segment_buffer.extend_from_slice(
-                                                        &encode_output[..info.output_size],
-                                                    );
+                                                    segment_buffer
+                                                        .extend_from_slice(&encode_output[..len]);
 
                                                     if split_interval > 0
                                                         && segment_samples >= split_samples
@@ -941,7 +912,7 @@ fn run_connection_loop(
                                                 }
                                                 Err(e) => {
                                                     eprintln!(
-                                                        "[{}] AAC encode error: {:?}",
+                                                        "[{}] AAC encode error: {}",
                                                         name, e
                                                     );
                                                 }
@@ -1068,10 +1039,10 @@ fn run_connection_loop(
                 AudioFormat::Aac => {
                     mono_buffer.resize(frame_size, 0);
                     if let Some(ref mut encoder) = aac_encoder
-                        && let Ok(info) = encoder.encode(&mono_buffer, &mut encode_output)
+                        && let Ok(len) = encoder.encode(&mono_buffer, &mut encode_output)
                     {
                         total_output_samples += frame_size as u64;
-                        segment_buffer.extend_from_slice(&encode_output[..info.output_size]);
+                        segment_buffer.extend_from_slice(&encode_output[..len]);
                     }
                 }
                 AudioFormat::Opus => {
@@ -1294,6 +1265,15 @@ pub fn run_multi_session(
         .clone()
         .unwrap_or_else(crate::paths::default_output_dir);
     let api_port = port_override.unwrap_or(multi_config.api_port);
+
+    // Before anything is tested or created: only a build with the `aac` feature
+    // has the encoder.
+    for session_config in &multi_config.sessions {
+        if matches!(session_config.audio_format, Some(AudioFormat::Aac)) {
+            crate::aac_encoder::require()
+                .map_err(|e| format!("session '{}': {}", session_config.name, e))?;
+        }
+    }
 
     // Test all stream URLs for decode capability
     println!("Testing stream URLs for decode capability...");

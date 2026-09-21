@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use std::sync::{Arc, Mutex};
 
 // Declare all modules
+pub mod aac_encoder;
 pub mod audio;
 pub mod config;
 pub mod constants;

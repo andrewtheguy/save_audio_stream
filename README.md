@@ -50,7 +50,7 @@ This tool is designed for scenarios where you need to:
 - **Web UI**: Browse and play back synced audio in browser (HLS streaming)
 - **Gapless Playback**: Seamless audio across split segments
 - SQLite storage for recording, PostgreSQL for receiver/sync
-- Supports MP3 and AAC input, re-encodes to Opus (recommended), AAC, or WAV
+- Supports MP3 and AAC input, re-encodes to Opus (recommended), WAV, or — in a build with the `aac` feature — AAC
 - Scheduled recording windows (e.g., 9am-5pm daily)
 - Automatic cleanup of old recordings
 
@@ -155,11 +155,19 @@ the config path.
   - **Windows**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with the **Desktop development with C++** workload (provides the MSVC toolchain Rust's `x86_64-pc-windows-msvc` target links against)
 - [Bun](https://bun.sh) for the frontend build
 
-No system audio libraries are needed, and neither codec is compiled here: both come prebuilt as static archives, libopus from [libopus-prebuilt](https://github.com/andrewtheguy/libopus-prebuilt) and fdk-aac from [fdk-aac-prebuilt](https://github.com/andrewtheguy/fdk-aac-prebuilt). Nothing here compiles C++ any more, and there is no cmake, pkg-config or vcpkg in the build. (The MSVC workload above is still needed on Windows — Rust links against it regardless.)
+No system audio libraries are needed, and no codec is compiled here: libopus comes prebuilt as a static archive from [libopus-prebuilt](https://github.com/andrewtheguy/libopus-prebuilt). Nothing here compiles C++, and there is no cmake, pkg-config or vcpkg in the build. (The MSVC workload above is still needed on Windows — Rust links against it regardless.)
 
-Note: the x86_64 binary requires the **x86-64-v3** feature set — AVX2, BMI1, BMI2, F16C, FMA, LZCNT and MOVBE, i.e. Coffee Lake or Zen or newer; arm64 macOS requires an M1 or newer. That floor is fdk-aac's: fdk-aac-prebuilt ships a baseline x86_64 archive too, and this crate opts into the v3 one with `features = ["x86-64-v3"]` in `Cargo.toml`. libopus-prebuilt has no floor above baseline x86-64 — opus picks its SSE4.1 and AVX2 kernels at run time — so linking it excludes no machine fdk-aac does not already exclude.
+The x86_64 binary runs on any x86-64: libopus-prebuilt has no floor above the baseline, because opus picks its SSE4.1 and AVX2 kernels at run time. arm64 macOS requires an M1 or newer.
 
-AAC patent licensing is the user's responsibility — see [fdk-aac-prebuilt's LICENSE](https://github.com/andrewtheguy/fdk-aac-prebuilt/blob/main/LICENSE) for the Fraunhofer terms, which are not OSI-approved and grant no patent rights.
+#### Recording AAC
+
+The AAC encoder is behind the `aac` cargo feature, which is off by default and in no release artifact — tarball, installer or container image. The encoder is Fraunhofer FDK AAC, linked from [fdk-aac-prebuilt](https://github.com/andrewtheguy/fdk-aac-prebuilt), and the Fraunhofer terms are not OSI-approved and grant no patent rights — see [its LICENSE](https://github.com/andrewtheguy/fdk-aac-prebuilt/blob/main/LICENSE). AAC patent licensing is the responsibility of whoever builds with the feature:
+
+```bash
+cargo build --release --features aac
+```
+
+A build without it refuses to start a session with `audio_format = "aac"`. Serving and syncing AAC that is already recorded needs no encoder and works in every build. On x86_64 the feature links fdk-aac's **x86-64-v3** archive (`features = ["x86-64-v3"]` in `Cargo.toml`), so such a binary needs AVX2, BMI1, BMI2, F16C, FMA, LZCNT and MOVBE — Coffee Lake or Zen or newer.
 
 ### Build
 
@@ -301,7 +309,7 @@ Credentials live in `credentials.toml` beside the other config files (see [Where
 | `url` | URL of the Shoutcast/Icecast stream | - | Yes |
 | `name` | Name prefix for output | - | Yes |
 | `schedule` | Schedule configuration table (contains `record_start` and `record_end`) | - | Yes |
-| `audio_format` | Audio encoding: `aac`, `opus`, or `wav` | opus | No |
+| `audio_format` | Audio encoding: `opus`, `wav`, or `aac` (only in a [build with the `aac` feature](#recording-aac)) | opus | No |
 | `bitrate` | Bitrate in kbps | 32 (AAC), 16 (Opus) | No |
 | `split_interval` | Split chunks every N seconds (0 = no split) | 0 | No |
 | `retention_hours` | Auto-delete recordings older than N hours | 168 (~1 week) | No |
@@ -443,13 +451,13 @@ CREATE INDEX idx_sections_start_timestamp ON sections(start_timestamp_ms);
 
 | Format | Sample Rate | Channels | Default Bitrate | Notes |
 |--------|-------------|----------|-----------------|-------|
-| AAC-LC | 16 kHz | Mono | 32 kbps | Good compatibility |
+| AAC-LC | 16 kHz | Mono | 32 kbps | Good compatibility; [`aac` feature](#recording-aac) only |
 | Opus | 48 kHz | Mono | 16 kbps | Best quality/size ratio |
 | WAV | Source rate | Mono | N/A | Lossless, large files |
 
 ### AAC Implementation Notes
 
-- [`fdk-aac-prebuilt`](https://github.com/andrewtheguy/fdk-aac-prebuilt) is used for **encoding** — a fork of the `fdk-aac` crate that links a prebuilt static library instead of compiling ~170 C++ files per clean build. Fraunhofer FDK AAC is the only practical choice for AAC encoding in Rust without FFmpeg
+- [`fdk-aac-prebuilt`](https://github.com/andrewtheguy/fdk-aac-prebuilt) is used for **encoding**, behind the [`aac` feature](#recording-aac) — a fork of the `fdk-aac` crate that links a prebuilt static library instead of compiling ~170 C++ files per clean build. Fraunhofer FDK AAC is the only practical choice for AAC encoding in Rust without FFmpeg
 - **Symphonia AAC decoder** is recommended for decoding - more stable and reliable than fdk-aac decoder
 - Priming sample metadata is written to enable gapless playback during decoding
 
