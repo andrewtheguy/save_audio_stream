@@ -26,6 +26,32 @@ pub struct AppState {
     pub db_paths: std::collections::HashMap<String, PathBuf>,
 }
 
+impl AppState {
+    /// Resolve the database of a show. Shows recorded by this process come from
+    /// the pre-initialized map; any other show is looked up by file name in the
+    /// output directory, the same place the show listing scans. That lets every
+    /// recorder sharing an output directory answer sync requests for all of the
+    /// shows it lists, not only the ones in its own config.
+    fn db_path_for(&self, show_name: &str) -> Option<PathBuf> {
+        if let Some(path) = self.db_paths.get(show_name) {
+            return Some(path.clone());
+        }
+
+        // The name comes from the request path: accept a single plain path
+        // component only, so it cannot reach outside the output directory.
+        let mut components = std::path::Path::new(show_name).components();
+        if !matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        ) {
+            return None;
+        }
+
+        let path = crate::db::get_db_path(&self.output_dir, show_name);
+        path.is_file().then_some(path)
+    }
+}
+
 /// Serve multiple databases from a directory (for sync endpoints during recording)
 pub fn serve_for_sync(
     output_dir: PathBuf,
@@ -297,9 +323,8 @@ pub async fn sync_show_metadata_handler(
     State(state): State<StdArc<AppState>>,
     Path(show_name): Path<String>,
 ) -> impl IntoResponse {
-    // Get database path from pre-initialized HashMap
-    let path = match state.db_paths.get(&show_name) {
-        Some(p) => p.as_path(),
+    let db_path = match state.db_path_for(&show_name) {
+        Some(p) => p,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -308,6 +333,7 @@ pub async fn sync_show_metadata_handler(
                 .into_response();
         }
     };
+    let path = db_path.as_path();
 
     if !path.exists() {
         return (
@@ -488,9 +514,8 @@ pub async fn db_sections_handler(
     Path(name): Path<String>,
     Query(query): Query<SyncSectionsQuery>,
 ) -> impl IntoResponse {
-    // Get database path from pre-initialized HashMap
-    let path = match state.db_paths.get(&name) {
-        Some(p) => p.as_path(),
+    let db_path = match state.db_path_for(&name) {
+        Some(p) => p,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -499,6 +524,7 @@ pub async fn db_sections_handler(
                 .into_response();
         }
     };
+    let path = db_path.as_path();
 
     if !path.exists() {
         return (
@@ -559,9 +585,8 @@ pub async fn sync_show_segments_handler(
     Path(show_name): Path<String>,
     Query(query): Query<SyncSegmentsQuery>,
 ) -> impl IntoResponse {
-    // Get database path from pre-initialized HashMap
-    let db_path = match state.db_paths.get(&show_name) {
-        Some(path) => path.clone(),
+    let db_path = match state.db_path_for(&show_name) {
+        Some(p) => p,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -570,7 +595,7 @@ pub async fn sync_show_segments_handler(
                 .into_response();
         }
     };
-    let path = std::path::Path::new(&db_path);
+    let path = db_path.as_path();
 
     if !path.exists() {
         return (
@@ -667,9 +692,8 @@ pub async fn find_section_by_timestamp_handler(
     Path(show_name): Path<String>,
     Query(query): Query<FindSectionByTimestampQuery>,
 ) -> impl IntoResponse {
-    // Get database path from pre-initialized HashMap
-    let path = match state.db_paths.get(&show_name) {
-        Some(p) => p.as_path(),
+    let db_path = match state.db_path_for(&show_name) {
+        Some(p) => p,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -678,6 +702,7 @@ pub async fn find_section_by_timestamp_handler(
                 .into_response();
         }
     };
+    let path = db_path.as_path();
 
     if !path.exists() {
         return (
@@ -822,9 +847,8 @@ pub async fn section_segment_range_handler(
     State(state): State<StdArc<AppState>>,
     Path((show_name, section_id)): Path<(String, i64)>,
 ) -> impl IntoResponse {
-    // Get database path from pre-initialized HashMap
-    let path = match state.db_paths.get(&show_name) {
-        Some(p) => p.as_path(),
+    let db_path = match state.db_path_for(&show_name) {
+        Some(p) => p,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -833,6 +857,7 @@ pub async fn section_segment_range_handler(
                 .into_response();
         }
     };
+    let path = db_path.as_path();
 
     if !path.exists() {
         return (
@@ -884,4 +909,57 @@ pub async fn section_segment_range_handler(
         };
 
     (StatusCode::OK, axum::Json(response)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_for(output_dir: &std::path::Path) -> AppState {
+        AppState {
+            output_dir: output_dir.to_path_buf(),
+            show_locks: StdArc::new(dashmap::DashMap::new()),
+            db_paths: std::collections::HashMap::from([(
+                "own".to_string(),
+                output_dir.join("own.sqlite"),
+            )]),
+        }
+    }
+
+    #[test]
+    fn db_path_for_resolves_own_and_shared_directory_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("other.sqlite"), b"").unwrap();
+        let state = state_for(dir.path());
+
+        // Own sessions resolve from the map even before the file is checked
+        assert_eq!(
+            state.db_path_for("own"),
+            Some(dir.path().join("own.sqlite"))
+        );
+        // A show recorded by another process sharing the directory
+        assert_eq!(
+            state.db_path_for("other"),
+            Some(dir.path().join("other.sqlite"))
+        );
+        assert_eq!(state.db_path_for("missing"), None);
+    }
+
+    #[test]
+    fn db_path_for_rejects_names_outside_the_output_directory() {
+        let parent = tempfile::tempdir().unwrap();
+        let output_dir = parent.path().join("data");
+        std::fs::create_dir(&output_dir).unwrap();
+        std::fs::write(parent.path().join("secret.sqlite"), b"").unwrap();
+        std::fs::create_dir(output_dir.join("sub")).unwrap();
+        std::fs::write(output_dir.join("sub").join("nested.sqlite"), b"").unwrap();
+        let state = state_for(&output_dir);
+
+        assert_eq!(state.db_path_for("../secret"), None);
+        assert_eq!(state.db_path_for("sub/nested"), None);
+        assert_eq!(state.db_path_for(".."), None);
+        assert_eq!(state.db_path_for(""), None);
+        let absolute = parent.path().join("secret");
+        assert_eq!(state.db_path_for(absolute.to_str().unwrap()), None);
+    }
 }
